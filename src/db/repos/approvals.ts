@@ -1,9 +1,10 @@
 import { Database } from "bun:sqlite";
+import type { ApprovalStatus } from "../../domain/approval-service";
 
 export type ApprovalRecord = {
   requestId: string;
   discordThreadId: string;
-  status: string;
+  status: ApprovalStatus;
   resolvedByDiscordUserId: string | null;
   resolution: string | null;
   createdAt: string;
@@ -13,7 +14,9 @@ export type ApprovalRecord = {
 export type InsertApprovalInput = {
   requestId: string;
   discordThreadId: string;
-  status: string;
+  status: ApprovalStatus;
+  resolvedByDiscordUserId?: string | null;
+  resolution?: string | null;
 };
 
 type ApprovalRow = {
@@ -34,7 +37,7 @@ const mapApproval = (row: ApprovalRow | null): ApprovalRecord | null => {
   return {
     requestId: row.request_id,
     discordThreadId: row.discord_thread_id,
-    status: row.status,
+    status: row.status as ApprovalStatus,
     resolvedByDiscordUserId: row.resolved_by_discord_user_id,
     resolution: row.resolution,
     createdAt: row.created_at,
@@ -54,7 +57,13 @@ export const createApprovalRepo = (db: Database) => {
       resolution,
       created_at,
       updated_at
-    ) VALUES (?, ?, ?, NULL, NULL, ?, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(request_id) DO UPDATE SET
+      discord_thread_id = excluded.discord_thread_id,
+      status = excluded.status,
+      resolved_by_discord_user_id = excluded.resolved_by_discord_user_id,
+      resolution = excluded.resolution,
+      updated_at = excluded.updated_at`,
   );
   const getByRequestIdStatement = db.prepare(
     "SELECT * FROM approvals WHERE request_id = ?",
@@ -67,6 +76,8 @@ export const createApprovalRepo = (db: Database) => {
         input.requestId,
         input.discordThreadId,
         input.status,
+        input.resolvedByDiscordUserId ?? null,
+        input.resolution ?? null,
         timestamp,
         timestamp,
       );
