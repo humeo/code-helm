@@ -10,12 +10,18 @@ import {
   type JsonRpcOutgoingMessage,
   type JsonRpcRequest,
   type JsonRpcSuccess,
+  type ThreadListParams,
+  type ThreadListResult,
+  type ThreadReadParams,
+  type ThreadReadResult,
   type ReplyToServerRequestParams,
   type ResumeThreadParams,
   type RoutedEventMap,
   type ServerRequestResolvedEvent,
   type StartThreadParams,
   type StartTurnParams,
+  type ThreadResumeResult,
+  type ThreadStartResult,
 } from "./protocol-types";
 
 export type TransportHandlers = {
@@ -223,12 +229,22 @@ export class JsonRpcClient {
 
   async startThread(params: StartThreadParams) {
     await this.initialize();
-    return this.sendRequest("thread/start", params);
+    return this.sendRequest<ThreadStartResult>("thread/start", params);
   }
 
   async resumeThread(params: ResumeThreadParams) {
     await this.initialize();
-    return this.sendRequest("thread/resume", params);
+    return this.sendRequest<ThreadResumeResult>("thread/resume", params);
+  }
+
+  async readThread(params: ThreadReadParams) {
+    await this.initialize();
+    return this.sendRequest<ThreadReadResult>("thread/read", params);
+  }
+
+  async listThreads(params: ThreadListParams = {}) {
+    await this.initialize();
+    return this.sendRequest<ThreadListResult>("thread/list", params);
   }
 
   async startTurn(params: StartTurnParams) {

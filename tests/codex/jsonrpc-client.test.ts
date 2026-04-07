@@ -291,3 +291,109 @@ test("session controller updates active thread only after startTurn succeeds", a
   await controller.startTurn({ threadId: "next-thread", input: "hi" });
   expect(controller.activeThreadId).toBe("next-thread");
 });
+
+test("readThread sends the official thread/read request", async () => {
+  const stub = createTransportStub();
+  const client = new JsonRpcClient("ws://example.test", {
+    transport: stub.transport,
+  });
+
+  const readPromise = client.readThread({
+    threadId: "thread-123",
+    includeTurns: true,
+  });
+
+  await Promise.resolve();
+  expect(JSON.parse(stub.sent[0])).toMatchObject({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "initialize",
+  });
+
+  stub.receive({ id: 1, result: {} });
+  await Bun.sleep(0);
+
+  expect(JSON.parse(stub.sent[2])).toMatchObject({
+    jsonrpc: "2.0",
+    id: 2,
+    method: "thread/read",
+    params: {
+      threadId: "thread-123",
+      includeTurns: true,
+    },
+  });
+
+  stub.receive({
+    id: 2,
+    result: {
+      thread: {
+        id: "thread-123",
+        cwd: "/tmp/project",
+        preview: "hello",
+        status: { type: "idle" },
+      },
+    },
+  });
+
+  await expect(readPromise).resolves.toEqual({
+    thread: {
+      id: "thread-123",
+      cwd: "/tmp/project",
+      preview: "hello",
+      status: { type: "idle" },
+    },
+  });
+});
+
+test("listThreads supports cwd filtering via thread/list", async () => {
+  const stub = createTransportStub();
+  const client = new JsonRpcClient("ws://example.test", {
+    transport: stub.transport,
+  });
+
+  const listPromise = client.listThreads({
+    cwd: "/tmp/project",
+    limit: 5,
+  });
+
+  await Promise.resolve();
+  stub.receive({ id: 1, result: {} });
+  await Bun.sleep(0);
+
+  expect(JSON.parse(stub.sent[2])).toMatchObject({
+    jsonrpc: "2.0",
+    id: 2,
+    method: "thread/list",
+    params: {
+      cwd: "/tmp/project",
+      limit: 5,
+    },
+  });
+
+  stub.receive({
+    id: 2,
+    result: {
+      data: [
+        {
+          id: "thread-123",
+          cwd: "/tmp/project",
+          preview: "hello",
+          status: { type: "notLoaded" },
+        },
+      ],
+      nextCursor: null,
+    },
+  });
+
+  await expect(listPromise).resolves.toEqual({
+    data: [
+      {
+        id: "thread-123",
+        cwd: "/tmp/project",
+        preview: "hello",
+        status: { type: "notLoaded" },
+      },
+    ],
+    nextCursor: null,
+  });
+});

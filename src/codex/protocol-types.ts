@@ -47,6 +47,19 @@ export type StartThreadParams = {
   cwd: string;
 };
 
+export type ThreadReadParams = {
+  threadId: string;
+  includeTurns?: boolean;
+};
+
+export type ThreadListParams = {
+  archived?: boolean | null;
+  cursor?: string | null;
+  cwd?: string | null;
+  limit?: number | null;
+  searchTerm?: string | null;
+};
+
 export type ResumeThreadParams = {
   threadId: string;
 };
@@ -76,15 +89,82 @@ export type ApprovalRequestEvent = ApprovalRequestParams & {
 };
 
 export type ServerRequestResolvedEvent = {
+  threadId?: string;
   requestId: JsonRpcId;
 } & Record<string, unknown>;
 
+export type ThreadActiveFlag = "waitingOnApproval" | "waitingOnUserInput";
+
+export type CodexThreadStatus =
+  | { type: "notLoaded" }
+  | { type: "idle" }
+  | { type: "systemError" }
+  | {
+      type: "active";
+      activeFlags: ThreadActiveFlag[];
+    };
+
+export type CodexThread = {
+  id: string;
+  cwd: string;
+  preview: string;
+  status: CodexThreadStatus;
+  name?: string | null;
+  createdAt?: number;
+  updatedAt?: number;
+} & Record<string, unknown>;
+
+export type ThreadStartResult = {
+  thread: CodexThread;
+  cwd: string;
+} & Record<string, unknown>;
+
+export type ThreadResumeResult = {
+  thread: CodexThread;
+  cwd: string;
+} & Record<string, unknown>;
+
+export type ThreadReadResult = {
+  thread: CodexThread;
+} & Record<string, unknown>;
+
+export type ThreadListResult = {
+  data: CodexThread[];
+  nextCursor: string | null;
+} & Record<string, unknown>;
+
 export type RoutedEventMap = {
-  "turn/started": NotificationPayload;
-  "turn/completed": NotificationPayload;
-  "thread/status/changed": NotificationPayload;
-  "item/started": NotificationPayload;
-  "item/completed": NotificationPayload;
+  "turn/started": {
+    threadId?: string;
+    turn?: {
+      id?: string;
+    };
+  } & Record<string, unknown>;
+  "turn/completed": {
+    threadId?: string;
+    turn?: {
+      id?: string;
+      result?: unknown;
+    };
+  } & Record<string, unknown>;
+  "thread/status/changed": {
+    threadId?: string;
+    status?: CodexThreadStatus | string;
+  } & Record<string, unknown>;
+  "item/started": {
+    threadId?: string;
+    turnId?: string;
+    item?: {
+      id?: string;
+    };
+  } & Record<string, unknown>;
+  "item/completed": {
+    threadId?: string;
+    turnId?: string;
+    item?: {
+      id?: string;
+    };
+  } & Record<string, unknown>;
   "item/commandExecution/requestApproval": ApprovalRequestEvent;
   "serverRequest/resolved": ServerRequestResolvedEvent;
 };
