@@ -14,3 +14,15 @@ test("stores Discord thread to Codex session binding", () => {
 
   expect(repo.getByDiscordThreadId("123")?.codexThreadId).toBe("abc");
 });
+
+test("exposes only the narrow session repository API", () => {
+  const repo = createSessionRepo(":memory:");
+
+  expect(Object.keys(repo).sort()).toEqual([
+    "getByCodexThreadId",
+    "getByDiscordThreadId",
+    "insert",
+    "markExternallyModified",
+    "updateState",
+  ]);
+});

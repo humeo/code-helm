@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import { createDatabaseClient, type DatabaseTarget } from "../client";
 
 export type SessionState = string;
@@ -119,10 +118,7 @@ export const createSessionRepo = (target: DatabaseTarget) => {
         discordThreadId,
       );
     },
-    db,
   };
 };
 
 export type SessionRepo = ReturnType<typeof createSessionRepo>;
-
-export const getSessionDb = (repo: { db: Database }) => repo.db;
