@@ -1,0 +1,13 @@
+{
+  "name": "code-helm",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun run src/index.ts",
+    "test": "bun test",
+    "migrate": "bun run src/db/migrate.ts"
+  },
+  "dependencies": {
+    "zod": "^3.25.76"
+  }
+}
