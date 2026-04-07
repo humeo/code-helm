@@ -37,6 +37,39 @@ test("owner idle thread message starts a turn", () => {
       input: [{ type: "text", text: "fix the failing test" }],
     },
   });
+
+  if (result.kind !== "start-turn") {
+    throw new Error("expected a start-turn decision");
+  }
+
+  expect(
+    Object.prototype.hasOwnProperty.call(result.request, "approvalPolicy"),
+  ).toBe(false);
+  expect(
+    Object.prototype.hasOwnProperty.call(result.request, "sandboxPolicy"),
+  ).toBe(false);
+});
+
+test("defined turn policies are forwarded", () => {
+  const result = decideThreadTurn({
+    authorId: "u1",
+    ownerId: "u1",
+    content: "fix the failing test",
+    sessionState: "idle",
+    codexThreadId: "codex-thread-1",
+    approvalPolicy: "on-request",
+    sandboxPolicy: "workspace-write",
+  });
+
+  expect(result).toEqual({
+    kind: "start-turn",
+    request: {
+      threadId: "codex-thread-1",
+      input: [{ type: "text", text: "fix the failing test" }],
+      approvalPolicy: "on-request",
+      sandboxPolicy: "workspace-write",
+    },
+  });
 });
 
 test("non-owner messages are ignored", () => {
@@ -102,8 +135,11 @@ test("degraded sessions stay read-only", () => {
 test("session started renderer returns stable Discord text", () => {
   expect(
     renderSessionStartedText({
-      workdirLabel: "api",
-      codexThreadId: "codex-thread-1",
+      type: "session.started",
+      params: {
+        workdirLabel: "api",
+        codexThreadId: "codex-thread-1",
+      },
     }),
   ).toBe("Session started for `api`.\nCodex thread: `codex-thread-1`.");
 });
@@ -111,25 +147,33 @@ test("session started renderer returns stable Discord text", () => {
 test("running status renderer returns stable Discord text", () => {
   expect(
     renderRunningStatusText({
-      state: "running",
-      detail: "Applying patch",
+      method: "thread/status/changed",
+      params: {
+        status: "running",
+      },
     }),
-  ).toBe("Session running: Applying patch");
+  ).toBe("Thread status changed: `running`.");
 });
 
 test("tool progress renderer summarizes known tool events", () => {
   expect(
     renderToolProgressSummaryText({
-      phase: "started",
-      title: "bun test tests/discord/thread-handler.test.ts",
+      method: "item/started",
+      params: {
+        itemId: "call-1",
+        title: "bun test tests/discord/thread-handler.test.ts",
+      },
     }),
-  ).toBe("Tool started: bun test tests/discord/thread-handler.test.ts");
+  ).toBe("Tool started: `bun test tests/discord/thread-handler.test.ts`.");
 });
 
 test("final answer renderer returns the final text", () => {
   expect(
     renderFinalAnswerText({
-      text: "Implemented the bridge and verified tests pass.",
+      method: "turn/completed",
+      params: {
+        text: "Implemented the bridge and verified tests pass.",
+      },
     }),
   ).toBe("Implemented the bridge and verified tests pass.");
 });
@@ -137,7 +181,10 @@ test("final answer renderer returns the final text", () => {
 test("degradation renderer explains read-only mode", () => {
   expect(
     renderDegradationBannerText({
-      reason: "native_cli_write",
+      type: "session.degraded",
+      params: {
+        reason: "native_cli_write",
+      },
     }),
   ).toBe(
     "Session is now read-only because it was modified outside the supported Discord/Codex flow (`native_cli_write`).",

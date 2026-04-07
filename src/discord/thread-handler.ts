@@ -84,13 +84,21 @@ export const decideThreadTurn = ({
     };
   }
 
+  const request: StartThreadTurnDecision["request"] = {
+    threadId: codexThreadId,
+    input: normalizeOwnerThreadMessage({ authorId, ownerId, content }),
+  };
+
+  if (approvalPolicy !== undefined) {
+    request.approvalPolicy = approvalPolicy;
+  }
+
+  if (sandboxPolicy !== undefined) {
+    request.sandboxPolicy = sandboxPolicy;
+  }
+
   return {
     kind: "start-turn",
-    request: {
-      threadId: codexThreadId,
-      input: normalizeOwnerThreadMessage({ authorId, ownerId, content }),
-      approvalPolicy,
-      sandboxPolicy,
-    },
+    request,
   };
 };

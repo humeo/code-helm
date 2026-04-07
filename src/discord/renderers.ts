@@ -1,57 +1,106 @@
-export type SessionStartedRenderInput = {
-  workdirLabel: string;
-  codexThreadId: string;
+import type { RoutedEventMap } from "../codex/protocol-types";
+
+export type SessionStartedEvent = {
+  type: "session.started";
+  params: {
+    workdirLabel: string;
+    codexThreadId: string;
+  };
 };
 
-export type RunningStatusRenderInput = {
-  state: "running" | "waiting-approval";
-  detail?: string;
+export type RunningStatusEvent =
+  | {
+      method: "turn/started";
+      params: RoutedEventMap["turn/started"];
+    }
+  | {
+      method: "thread/status/changed";
+      params: RoutedEventMap["thread/status/changed"];
+    };
+
+export type ToolProgressEvent =
+  | {
+      method: "item/started";
+      params: RoutedEventMap["item/started"];
+    }
+  | {
+      method: "item/completed";
+      params: RoutedEventMap["item/completed"];
+    };
+
+export type FinalAnswerEvent = {
+  method: "turn/completed";
+  params: RoutedEventMap["turn/completed"];
 };
 
-export type ToolProgressRenderInput = {
-  phase: "started" | "completed";
-  title: string;
+export type DegradationBannerEvent = {
+  type: "session.degraded";
+  params: {
+    reason: string | null;
+  };
 };
 
-export type FinalAnswerRenderInput = {
-  text: string;
-};
+const readString = (value: unknown, keys: string[]) => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
 
-export type DegradationBannerRenderInput = {
-  reason: string | null;
+  const record = value as Record<string, unknown>;
+
+  for (const key of keys) {
+    const candidate = record[key];
+
+    if (typeof candidate === "string" && candidate.length > 0) {
+      return candidate;
+    }
+  }
+
+  return undefined;
 };
 
 export const renderSessionStartedText = ({
-  workdirLabel,
-  codexThreadId,
-}: SessionStartedRenderInput) => {
+  params,
+}: SessionStartedEvent) => {
+  const { workdirLabel, codexThreadId } = params;
+
   return `Session started for \`${workdirLabel}\`.\nCodex thread: \`${codexThreadId}\`.`;
 };
 
 export const renderRunningStatusText = ({
-  state,
-  detail,
-}: RunningStatusRenderInput) => {
-  const prefix =
-    state === "waiting-approval" ? "Session waiting-approval" : "Session running";
+  method,
+  params,
+}: RunningStatusEvent) => {
+  if (method === "turn/started") {
+    const turnId = readString(params, ["turnId"]);
 
-  return detail ? `${prefix}: ${detail}` : prefix;
+    return turnId ? `Turn started: \`${turnId}\`.` : "Turn started.";
+  }
+
+  const status = readString(params, ["status"]);
+
+  return status ? `Thread status changed: \`${status}\`.` : "Thread status changed.";
 };
 
 export const renderToolProgressSummaryText = ({
-  phase,
-  title,
-}: ToolProgressRenderInput) => {
-  return `Tool ${phase}: ${title}`;
+  method,
+  params,
+}: ToolProgressEvent) => {
+  const phase = method === "item/completed" ? "completed" : "started";
+  const title = readString(params, ["title", "command", "toolName", "itemId"]);
+
+  return title ? `Tool ${phase}: \`${title}\`.` : `Tool ${phase}.`;
 };
 
-export const renderFinalAnswerText = ({ text }: FinalAnswerRenderInput) => {
-  return text;
+export const renderFinalAnswerText = ({ params }: FinalAnswerEvent) => {
+  return readString(params, ["text", "message", "outputText", "finalText"])
+    ?? "Turn completed.";
 };
 
 export const renderDegradationBannerText = ({
-  reason,
-}: DegradationBannerRenderInput) => {
+  params,
+}: DegradationBannerEvent) => {
+  const { reason } = params;
+
   if (!reason) {
     return "Session is now read-only because it was modified outside the supported Discord/Codex flow.";
   }
