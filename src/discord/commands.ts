@@ -7,9 +7,22 @@ import {
   type RESTPostAPIChatInputApplicationCommandsJSONBody,
 } from "discord.js";
 
-export type DiscordCommandResponse = {
+export type DiscordReplyPayload = {
   content: string;
   ephemeral?: boolean;
+};
+
+export type DiscordCommandIntent =
+  | {
+      kind: "open-session-thread";
+      sessionId?: string;
+      threadName?: string;
+    }
+  | undefined;
+
+export type DiscordCommandResult = {
+  reply: DiscordReplyPayload;
+  intent?: DiscordCommandIntent;
 };
 
 export type ListWorkdirsInput = {
@@ -40,10 +53,18 @@ export type ListSessionsInput = {
 };
 
 export type DiscordCommandServices = {
-  listWorkdirs(input: ListWorkdirsInput): Promise<DiscordCommandResponse> | DiscordCommandResponse;
-  createSession(input: CreateSessionInput): Promise<DiscordCommandResponse> | DiscordCommandResponse;
-  importSession(input: ImportSessionInput): Promise<DiscordCommandResponse> | DiscordCommandResponse;
-  listSessions(input: ListSessionsInput): Promise<DiscordCommandResponse> | DiscordCommandResponse;
+  listWorkdirs(
+    input: ListWorkdirsInput,
+  ): Promise<DiscordCommandResult> | DiscordCommandResult;
+  createSession(
+    input: CreateSessionInput,
+  ): Promise<DiscordCommandResult> | DiscordCommandResult;
+  importSession(
+    input: ImportSessionInput,
+  ): Promise<DiscordCommandResult> | DiscordCommandResult;
+  listSessions(
+    input: ListSessionsInput,
+  ): Promise<DiscordCommandResult> | DiscordCommandResult;
 };
 
 const guildOnlyCommand = (name: string, description: string) => {
@@ -82,6 +103,17 @@ export const controlChannelCommands: RESTPostAPIChatInputApplicationCommandsJSON
     guildOnlyCommand("session-list", "List known sessions"),
   ].map((command) => command.toJSON());
 
+const controlCommandNames = new Set([
+  "workdir-list",
+  "session-new",
+  "session-import",
+  "session-list",
+]);
+
+export const isControlChannelCommandName = (commandName: string) => {
+  return controlCommandNames.has(commandName);
+};
+
 const interactionContext = (interaction: ChatInputCommandInteraction) => {
   const guildId = interaction.guildId;
 
@@ -99,7 +131,7 @@ const interactionContext = (interaction: ChatInputCommandInteraction) => {
 const toReplyOptions = ({
   content,
   ephemeral,
-}: DiscordCommandResponse): InteractionReplyOptions => {
+}: DiscordReplyPayload): InteractionReplyOptions => {
   return ephemeral
     ? { content, flags: MessageFlags.Ephemeral }
     : { content };
@@ -107,9 +139,9 @@ const toReplyOptions = ({
 
 const safelyReply = async (
   interaction: ChatInputCommandInteraction,
-  response: DiscordCommandResponse,
+  result: DiscordCommandResult,
 ) => {
-  const options = toReplyOptions(response);
+  const options = toReplyOptions(result.reply);
 
   if (interaction.replied || interaction.deferred) {
     await interaction.followUp(options);
@@ -123,13 +155,18 @@ export const handleControlChannelCommand = async (
   interaction: ChatInputCommandInteraction,
   services: DiscordCommandServices,
 ) => {
+  if (!isControlChannelCommandName(interaction.commandName)) {
+    return false;
+  }
+
   const context = interactionContext(interaction);
 
   switch (interaction.commandName) {
-    case "workdir-list":
+    case "workdir-list": {
       await safelyReply(interaction, await services.listWorkdirs(context));
       return true;
-    case "session-new":
+    }
+    case "session-new": {
       await safelyReply(
         interaction,
         await services.createSession({
@@ -138,7 +175,8 @@ export const handleControlChannelCommand = async (
         }),
       );
       return true;
-    case "session-import":
+    }
+    case "session-import": {
       await safelyReply(
         interaction,
         await services.importSession({
@@ -148,6 +186,7 @@ export const handleControlChannelCommand = async (
         }),
       );
       return true;
+    }
     case "session-list":
       await safelyReply(interaction, await services.listSessions(context));
       return true;
@@ -160,10 +199,12 @@ export const replyWithCommandError = async (
   interaction: ChatInputCommandInteraction,
   message = "Command failed.",
 ) => {
-  const response = { content: message, ephemeral: true } satisfies DiscordCommandResponse;
+  const result = {
+    reply: { content: message, ephemeral: true },
+  } satisfies DiscordCommandResult;
 
   try {
-    await safelyReply(interaction, response);
+    await safelyReply(interaction, result);
   } catch (error) {
     if (
       typeof error === "object" &&
