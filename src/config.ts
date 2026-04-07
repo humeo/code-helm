@@ -8,13 +8,5 @@ const ConfigSchema = z.object({
 });
 
 export const parseConfig = (env: Record<string, string | undefined>) => {
-  const result = ConfigSchema.safeParse(env);
-
-  if (result.success) {
-    return result.data;
-  }
-
-  const issue = result.error.issues[0];
-  const field = issue?.path[0];
-  throw new Error(`${String(field ?? "CONFIG")}: ${issue?.message ?? "Invalid config"}`);
+  return ConfigSchema.parse(env);
 };
