@@ -95,6 +95,60 @@ export type ServerRequestResolvedEvent = {
 
 export type ThreadActiveFlag = "waitingOnApproval" | "waitingOnUserInput";
 
+export type CodexTextContentPart = {
+  type: "text";
+  text: string;
+  text_elements?: unknown[];
+} & Record<string, unknown>;
+
+export type CodexUserMessageItem = {
+  type: "userMessage";
+  id: string;
+  content: CodexTextContentPart[];
+} & Record<string, unknown>;
+
+export type CodexAgentMessageItem = {
+  type: "agentMessage";
+  id: string;
+  text: string;
+  phase?: string | null;
+  memoryCitation?: unknown;
+} & Record<string, unknown>;
+
+export type CodexCommandExecutionItem = {
+  type: "commandExecution";
+  id: string;
+  command: string;
+  cwd?: string;
+  status?: string;
+  aggregatedOutput?: string | null;
+  exitCode?: number | null;
+} & Record<string, unknown>;
+
+export type CodexReasoningItem = {
+  type: "reasoning";
+  id: string;
+  summary?: unknown[];
+  content?: unknown[];
+} & Record<string, unknown>;
+
+export type CodexTurnItem =
+  | CodexUserMessageItem
+  | CodexAgentMessageItem
+  | CodexCommandExecutionItem
+  | CodexReasoningItem
+  | ({
+      type: string;
+      id?: string;
+    } & Record<string, unknown>);
+
+export type CodexTurn = {
+  id: string;
+  items: CodexTurnItem[];
+  status?: string;
+  error?: unknown;
+} & Record<string, unknown>;
+
 export type CodexThreadStatus =
   | { type: "notLoaded" }
   | { type: "idle" }
@@ -112,6 +166,7 @@ export type CodexThread = {
   name?: string | null;
   createdAt?: number;
   updatedAt?: number;
+  turns?: CodexTurn[];
 } & Record<string, unknown>;
 
 export type ThreadStartResult = {
@@ -142,8 +197,7 @@ export type RoutedEventMap = {
   } & Record<string, unknown>;
   "turn/completed": {
     threadId?: string;
-    turn?: {
-      id?: string;
+    turn?: CodexTurn & {
       result?: unknown;
     };
   } & Record<string, unknown>;
@@ -154,16 +208,18 @@ export type RoutedEventMap = {
   "item/started": {
     threadId?: string;
     turnId?: string;
-    item?: {
-      id?: string;
-    };
+    item?: CodexTurnItem;
   } & Record<string, unknown>;
   "item/completed": {
     threadId?: string;
     turnId?: string;
-    item?: {
-      id?: string;
-    };
+    item?: CodexTurnItem;
+  } & Record<string, unknown>;
+  "item/agentMessage/delta": {
+    threadId?: string;
+    turnId?: string;
+    itemId?: string;
+    delta?: string;
   } & Record<string, unknown>;
   "item/commandExecution/requestApproval": ApprovalRequestEvent;
   "serverRequest/resolved": ServerRequestResolvedEvent;
@@ -175,6 +231,7 @@ export const routedEventMethods = [
   "thread/status/changed",
   "item/started",
   "item/completed",
+  "item/agentMessage/delta",
   "item/commandExecution/requestApproval",
   "serverRequest/resolved",
 ] as const;

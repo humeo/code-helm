@@ -98,7 +98,7 @@ Use the control channel for session management, not for normal conversation.
 - `session-import --workdir <id> --session <thread-id>` attaches Discord to an existing idle session
 - `session-list` shows known sessions
 
-Session creation creates a new Codex App Server thread and binds it to a new Discord thread. Import reuses an existing Codex thread and creates the Discord thread around it.
+Session creation creates a new Codex App Server thread first, then binds it to a new Discord thread. Import reuses an existing Codex thread, resumes it first, then creates the Discord thread around it and backfills the prior transcript into Discord.
 
 Import is intentionally narrow:
 
@@ -131,7 +131,7 @@ The local supported second client is:
 codex resume --remote <ws-url> <thread-id>
 ```
 
-That local `codex --remote` path attaches to the same live Codex App Server thread as Discord, sharing transcript, runtime state, and approval events. The concrete CLI invocation is `codex resume --remote ...`, and it is only supported on the daemon host through `--remote`.
+That local `codex --remote` path attaches to the same live Codex App Server thread as Discord, sharing transcript, runtime state, live commentary deltas, command output summaries, and approval events. The concrete CLI invocation is `codex resume --remote ...`, and it is only supported on the daemon host through `--remote`.
 
 ## Read-Only Degradation
 
@@ -140,7 +140,9 @@ CodeHelm treats unsupported external modification as a read-only condition in th
 - supported control surfaces are Discord and `codex resume --remote`
 - plain local `codex resume <thread-id>` is unsupported
 - the current runtime preserves already-degraded sessions as read-only
-- automatic unsupported-modification detection is not yet wired end-to-end in this repository snapshot
+- the current runtime seeds a transcript snapshot for mapped sessions and periodically reconciles `thread/read(includeTurns=true)`
+- if new snapshot items appear without having been observed on the live app-server stream, Discord marks the session read-only with reason `snapshot_mismatch`
+- this is a best-effort detector for unsupported/offline modification, not a precise control-surface identifier
 
 ## What Has Been Verified Here
 
@@ -151,6 +153,8 @@ Verified in the current repo state:
 - Discord control commands are guild-only and DM-disabled
 - import eligibility is limited to idle / notLoaded thread states
 - import also rejects Codex threads whose cwd does not match the selected workdir
+- imported sessions backfill prior transcript into the new Discord thread
+- live app-server transcript sync includes user messages, Codex commentary/final answers, and command output summaries
 - owner-only control checks are implemented for Discord thread control
 - approval UI behavior is split between owner controls and status-only viewers
 - the current runtime preserves already-degraded sessions as read-only
@@ -161,4 +165,4 @@ Not verified here:
 - live Codex App Server connectivity
 - `codex resume --remote` against a running daemon host
 - database migrations against a real database file
-- automatic unsupported external modification detection
+- unsupported external modification detection against a real plain local `codex resume <thread-id>` session

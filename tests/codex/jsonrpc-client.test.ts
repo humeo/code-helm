@@ -83,6 +83,36 @@ test("routes requestApproval and resolved events to subscribers", async () => {
   unsubscribe();
 });
 
+test("routes agentMessage delta events to subscribers", () => {
+  const client = new JsonRpcClient("ws://example.test");
+  const seen: Array<{ itemId?: string; delta?: string }> = [];
+  const unsubscribe = client.on("item/agentMessage/delta", (event) => {
+    seen.push({
+      itemId: event.itemId,
+      delta: event.delta,
+    });
+  });
+
+  client.handleMessage({
+    method: "item/agentMessage/delta",
+    params: {
+      threadId: "t1",
+      turnId: "turn1",
+      itemId: "msg1",
+      delta: "Running",
+    },
+  });
+
+  expect(seen).toEqual([
+    {
+      itemId: "msg1",
+      delta: "Running",
+    },
+  ]);
+
+  unsubscribe();
+});
+
 test("initialize sends initialize request before initialized notification", async () => {
   const stub = createTransportStub();
   const client = new JsonRpcClient("ws://example.test", {
@@ -290,6 +320,37 @@ test("session controller updates active thread only after startTurn succeeds", a
   shouldReject = false;
   await controller.startTurn({ threadId: "next-thread", input: "hi" });
   expect(controller.activeThreadId).toBe("next-thread");
+});
+
+test("session controller reads active thread id from thread/start result.thread.id", async () => {
+  const controller = new SessionController({
+    initialize() {
+      return Promise.resolve();
+    },
+    startThread() {
+      return Promise.resolve({
+        thread: {
+          id: "thread-from-start",
+          cwd: "/tmp/project",
+          preview: "",
+          status: { type: "idle" },
+        },
+      });
+    },
+    resumeThread() {
+      return Promise.resolve(undefined);
+    },
+    startTurn() {
+      return Promise.resolve(undefined);
+    },
+    replyToServerRequest() {
+      return Promise.resolve();
+    },
+  } as unknown as JsonRpcClient);
+
+  await controller.startThread({ cwd: "/tmp/project" });
+
+  expect(controller.activeThreadId).toBe("thread-from-start");
 });
 
 test("readThread sends the official thread/read request", async () => {

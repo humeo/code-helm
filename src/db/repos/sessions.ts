@@ -70,6 +70,9 @@ export const createSessionRepo = (db: Database) => {
   const getByCodexThreadIdStatement = db.prepare(
     "SELECT * FROM sessions WHERE codex_thread_id = ?",
   );
+  const listAllStatement = db.prepare(
+    "SELECT * FROM sessions ORDER BY created_at ASC",
+  );
   const updateStateStatement = db.prepare(
     "UPDATE sessions SET state = ?, updated_at = ? WHERE discord_thread_id = ?",
   );
@@ -102,6 +105,9 @@ export const createSessionRepo = (db: Database) => {
       return mapSession(
         getByCodexThreadIdStatement.get(codexThreadId) as SessionRow | null,
       );
+    },
+    listAll() {
+      return (listAllStatement.all() as SessionRow[]).map((row) => mapSession(row)!);
     },
     updateState(discordThreadId: string, state: SessionState) {
       updateStateStatement.run(state, now(), discordThreadId);

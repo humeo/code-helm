@@ -11,9 +11,16 @@ const readThreadId = (result: unknown) => {
     return undefined;
   }
 
-  const { threadId } = result as { threadId?: unknown };
+  const { threadId, thread } = result as {
+    threadId?: unknown;
+    thread?: { id?: unknown };
+  };
 
-  return typeof threadId === "string" ? threadId : undefined;
+  if (typeof threadId === "string") {
+    return threadId;
+  }
+
+  return typeof thread?.id === "string" ? thread.id : undefined;
 };
 
 export class SessionController {

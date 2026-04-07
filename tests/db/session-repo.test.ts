@@ -95,6 +95,34 @@ test("updates stored session state", () => {
   db.close();
 });
 
+test("lists persisted sessions in creation order", () => {
+  const db = createMigratedDb();
+  seedWorkspaceGraph(db);
+  const repo = createSessionRepo(db);
+
+  repo.insert({
+    discordThreadId: "123",
+    codexThreadId: "abc",
+    ownerDiscordUserId: "u1",
+    workdirId: "wd1",
+    state: "idle",
+  });
+  repo.insert({
+    discordThreadId: "456",
+    codexThreadId: "def",
+    ownerDiscordUserId: "u2",
+    workdirId: "wd1",
+    state: "idle",
+  });
+
+  expect(repo.listAll().map((session) => session.discordThreadId)).toEqual([
+    "123",
+    "456",
+  ]);
+
+  db.close();
+});
+
 test("marks externally modified sessions as degraded with a reason", () => {
   const db = createMigratedDb();
   seedWorkspaceGraph(db);
@@ -125,6 +153,7 @@ test("exposes only the narrow session repository API", () => {
     "getByCodexThreadId",
     "getByDiscordThreadId",
     "insert",
+    "listAll",
     "markExternallyModified",
     "updateState",
   ]);

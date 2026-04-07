@@ -9,14 +9,20 @@ import {
   Routes,
   ThreadAutoArchiveDuration,
   type ButtonInteraction,
+  type AnyThreadChannel,
   type Client,
   type RESTPostAPIChatInputApplicationCommandsJSONBody,
 } from "discord.js";
 import { JsonRpcClient } from "./codex/jsonrpc-client";
 import type {
+  CodexAgentMessageItem,
+  CodexCommandExecutionItem,
   ApprovalRequestEvent,
   CodexThread,
   CodexThreadStatus,
+  CodexTurn,
+  CodexTurnItem,
+  CodexUserMessageItem,
   RoutedEventMap,
 } from "./codex/protocol-types";
 import { type AppConfig, parseConfig, type WorkdirConfig } from "./config";
@@ -27,16 +33,21 @@ import { createSessionRepo } from "./db/repos/sessions";
 import { createWorkdirRepo } from "./db/repos/workdirs";
 import { createWorkspaceRepo } from "./db/repos/workspaces";
 import type { ApprovalStatus } from "./domain/approval-service";
+import { shouldDegradeDiscordToReadOnly } from "./domain/external-modification";
 import { applyApprovalResolutionSignal, renderApprovalUi } from "./discord/approval-ui";
 import { createDiscordBot } from "./discord/bot";
 import type { DiscordCommandResult, DiscordCommandServices } from "./discord/commands";
 import {
   renderDegradationBannerText,
-  renderFinalAnswerText,
   renderRunningStatusText,
   renderSessionStartedText,
   renderToolProgressText,
 } from "./discord/renderers";
+import {
+  collectTranscriptEntries,
+  collectTranscriptItemIds,
+  renderTranscriptEntry,
+} from "./discord/transcript";
 import { decideThreadTurn } from "./discord/thread-handler";
 import { logger } from "./logger";
 
@@ -45,6 +56,7 @@ const approvalButtonPrefix = "approval";
 type SessionRuntimeState = "idle" | "running" | "waiting-approval" | "degraded";
 type ApprovalAction = "approve" | "decline" | "cancel";
 type ApprovalButtonMessage = Message<boolean>;
+type StreamingTranscriptMessage = Message<boolean>;
 type SendableChannel = {
   send(payload: { content: string; components?: unknown[] }): Promise<Message<boolean>>;
 };
@@ -53,8 +65,22 @@ type ThreadStarterMessage = Message<boolean> & {
     name: string;
     autoArchiveDuration: ThreadAutoArchiveDuration;
     reason?: string;
-  }): Promise<{ id: string; send(payload: { content: string }): Promise<unknown> }>;
+  }): Promise<AnyThreadChannel>;
 };
+type TranscriptRuntime = {
+  seenItemIds: Set<string>;
+  pendingDiscordInputs: string[];
+  streamingAgentMessages: Map<
+    string,
+    {
+      phase?: string | null;
+      text: string;
+      message?: StreamingTranscriptMessage;
+    }
+  >;
+};
+
+const sessionSnapshotPollIntervalMs = 15_000;
 
 const toRecord = (value: unknown) => {
   if (value && typeof value === "object" && !Array.isArray(value)) {
@@ -186,16 +212,80 @@ const readTurnIdFromEvent = (params: unknown) => {
   return readString(params, "turnId") ?? readNestedString(params, ["turn", "id"]);
 };
 
-const readItemIdFromEvent = (params: unknown) => {
-  return readString(params, "itemId") ?? readNestedString(params, ["item", "id"]);
+const readEventItem = (params: unknown) => {
+  const candidate = toRecord(params).item;
+
+  return candidate && typeof candidate === "object" && !Array.isArray(candidate)
+    ? (candidate as CodexTurnItem)
+    : undefined;
 };
 
-const readFinalAnswerFromEvent = (params: unknown) => {
-  return (
-    readString(params, "text")
-    ?? readNestedString(params, ["turn", "result", "text"])
-    ?? readNestedString(params, ["turn", "result", "outputText"])
-  );
+const hasItemId = (item: CodexTurnItem | undefined): item is CodexTurnItem & {
+  id: string;
+} => {
+  return !!item && typeof item.id === "string" && item.id.length > 0;
+};
+
+const isUserMessageItem = (item: CodexTurnItem | undefined): item is CodexUserMessageItem => {
+  return hasItemId(item) && item.type === "userMessage";
+};
+
+const isAgentMessageItem = (item: CodexTurnItem | undefined): item is CodexAgentMessageItem => {
+  return hasItemId(item) && item.type === "agentMessage" && typeof item.text === "string";
+};
+
+const isCommandExecutionItem = (
+  item: CodexTurnItem | undefined,
+): item is CodexCommandExecutionItem => {
+  return hasItemId(item) && item.type === "commandExecution" && typeof item.command === "string";
+};
+
+const buildTranscriptRuntime = (): TranscriptRuntime => {
+  return {
+    seenItemIds: new Set<string>(),
+    pendingDiscordInputs: [],
+    streamingAgentMessages: new Map(),
+  };
+};
+
+const relayTranscriptEntries = async ({
+  client,
+  channelId,
+  runtime,
+  turns,
+}: {
+  client: Client;
+  channelId: string;
+  runtime: TranscriptRuntime;
+  turns: CodexTurn[] | undefined;
+}) => {
+  for (const entry of collectTranscriptEntries(turns)) {
+    if (runtime.seenItemIds.has(entry.itemId)) {
+      continue;
+    }
+
+    if (
+      entry.kind === "user"
+      && runtime.pendingDiscordInputs.length > 0
+      && runtime.pendingDiscordInputs[0] === entry.text
+    ) {
+      runtime.pendingDiscordInputs.shift();
+      runtime.seenItemIds.add(entry.itemId);
+      continue;
+    }
+
+    const rendered = renderTranscriptEntry(entry);
+
+    if (rendered.length > 0) {
+      await sendTextToChannel(client, channelId, rendered);
+    }
+
+    runtime.seenItemIds.add(entry.itemId);
+  }
+
+  for (const itemId of collectTranscriptItemIds(turns)) {
+    runtime.seenItemIds.add(itemId);
+  }
 };
 
 const isSendableChannel = (value: unknown): value is SendableChannel => {
@@ -416,10 +506,10 @@ const sendTextToChannel = async (
   const channel = await client.channels.fetch(channelId);
 
   if (!isSendableChannel(channel)) {
-    return;
+    return undefined;
   }
 
-  await channel.send({ content });
+  return channel.send({ content });
 };
 
 const buildApprovalComponents = (requestId: string) => {
@@ -513,6 +603,14 @@ const handleApprovalInteraction = async ({
     return true;
   }
 
+  if (session.state === "degraded") {
+    await interaction.reply({
+      content: "This session is read-only because it was modified outside the supported flow.",
+      ephemeral: true,
+    });
+    return true;
+  }
+
   const nextDecision = approvalDecision(parsed.action);
 
   await interaction.deferUpdate();
@@ -550,8 +648,109 @@ export const startCodeHelm = async (
   const approvalRepo = createApprovalRepo(db);
   const codexClient = new JsonRpcClient(config.codex.appServerUrl);
   const approvalDmMessages = new Map<string, ApprovalButtonMessage>();
+  const transcriptRuntimes = new Map<string, TranscriptRuntime>();
   let discordClient: Client | undefined;
   let shuttingDown = false;
+
+  const ensureTranscriptRuntime = (codexThreadId: string) => {
+    const existing = transcriptRuntimes.get(codexThreadId);
+
+    if (existing) {
+      return existing;
+    }
+
+    const runtime = buildTranscriptRuntime();
+    transcriptRuntimes.set(codexThreadId, runtime);
+    return runtime;
+  };
+
+  const updateSessionStateIfWritable = (
+    session: ReturnType<typeof sessionRepo.getByCodexThreadId>,
+    nextState: SessionRuntimeState,
+  ) => {
+    if (!session || session.state === "degraded") {
+      return;
+    }
+
+    sessionRepo.updateState(session.discordThreadId, nextState);
+  };
+
+  const degradeSessionToReadOnly = async ({
+    discord,
+    session,
+    reason,
+  }: {
+    discord: Client;
+    session: NonNullable<ReturnType<typeof sessionRepo.getByCodexThreadId>>;
+    reason: string;
+  }) => {
+    if (session.state === "degraded") {
+      return;
+    }
+
+    sessionRepo.markExternallyModified(session.discordThreadId, reason);
+    await sendTextToChannel(
+      discord,
+      session.discordThreadId,
+      renderDegradationBannerText({
+        type: "session.degraded",
+        params: { reason },
+      }),
+    );
+  };
+
+  const syncTranscriptSnapshot = async ({
+    discord,
+    session,
+    degradeOnUnexpectedItems,
+  }: {
+    discord: Client;
+    session: NonNullable<ReturnType<typeof sessionRepo.getByCodexThreadId>>;
+    degradeOnUnexpectedItems: boolean;
+  }) => {
+    const runtime = ensureTranscriptRuntime(session.codexThreadId);
+    const snapshot = await codexClient.readThread({
+      threadId: session.codexThreadId,
+      includeTurns: true,
+    });
+    const turns = snapshot.thread.turns;
+    const unseenItemIds = collectTranscriptItemIds(turns).filter(
+      (itemId) => !runtime.seenItemIds.has(itemId),
+    );
+
+    if (
+      degradeOnUnexpectedItems
+      && unseenItemIds.length > 0
+      && shouldDegradeDiscordToReadOnly({ controlSurface: "unknown" })
+    ) {
+      await degradeSessionToReadOnly({
+        discord,
+        session,
+        reason: "snapshot_mismatch",
+      });
+    }
+
+    await relayTranscriptEntries({
+      client: discord,
+      channelId: session.discordThreadId,
+      runtime,
+      turns,
+    });
+  };
+
+  const seedTranscriptRuntimeFromSnapshot = async (session: {
+    codexThreadId: string;
+  }) => {
+    const runtime = ensureTranscriptRuntime(session.codexThreadId);
+    const snapshot = await codexClient.readThread({
+      threadId: session.codexThreadId,
+      includeTurns: true,
+    });
+
+    for (const itemId of collectTranscriptItemIds(snapshot.thread.turns)) {
+      runtime.seenItemIds.add(itemId);
+    }
+  };
 
   const services: DiscordCommandServices = {
     async listWorkdirs({ guildId, channelId }) {
@@ -585,45 +784,48 @@ export const startCodeHelm = async (
         };
       }
 
-      const discord = requireDiscordClient(discordClient);
-      const thread = await createVisibleSessionThread({
-        client: discord,
-        controlChannelId: config.discord.controlChannelId,
-        title: `${workdir.label}-session`,
-        starterText: `Opening session for \`${workdir.label}\`.`,
+      const started = await codexClient.startThread({
+        cwd: workdir.absolutePath,
       });
-
-      let codexThreadId: string;
+      const codexThreadId = started.thread.id;
+      const discord = requireDiscordClient(discordClient);
+      let thread: AnyThreadChannel | undefined;
 
       try {
-        const started = await codexClient.startThread({
-          cwd: workdir.absolutePath,
+        thread = await createVisibleSessionThread({
+          client: discord,
+          controlChannelId: config.discord.controlChannelId,
+          title: `${workdir.label}-session`,
+          starterText: `Opening session for \`${workdir.label}\`.`,
         });
 
-        codexThreadId = started.thread.id;
-      } catch (error) {
-        await thread.send({
-          content: "Failed to start the Codex session. Check daemon logs for details.",
+        sessionRepo.insert({
+          discordThreadId: thread.id,
+          codexThreadId,
+          ownerDiscordUserId: actorId,
+          workdirId: workdir.id,
+          state: "idle",
         });
+        ensureTranscriptRuntime(codexThreadId);
+        await thread.send({
+          content: renderSessionStartedText({
+            type: "session.started",
+            params: {
+              workdirLabel: workdir.label,
+              codexThreadId,
+            },
+          }),
+        });
+      } catch (error) {
+        if (thread) {
+          try {
+            await thread.delete("CodeHelm failed to bind the new session");
+          } catch (deleteError) {
+            logger.warn("Failed to clean up orphan Discord thread after session creation", deleteError);
+          }
+        }
         throw error;
       }
-
-      sessionRepo.insert({
-        discordThreadId: thread.id,
-        codexThreadId,
-        ownerDiscordUserId: actorId,
-        workdirId: workdir.id,
-        state: "idle",
-      });
-      await thread.send({
-        content: renderSessionStartedText({
-          type: "session.started",
-          params: {
-            workdirLabel: workdir.label,
-            codexThreadId,
-          },
-        }),
-      });
 
       return {
         reply: {
@@ -662,7 +864,7 @@ export const startCodeHelm = async (
 
       const readResult = await codexClient.readThread({
         threadId: sessionId,
-        includeTurns: false,
+        includeTurns: true,
       });
 
       if (!canImportThreadIntoWorkdir(readResult.thread, workdir.absolutePath)) {
@@ -677,39 +879,50 @@ export const startCodeHelm = async (
         };
       }
 
+      await codexClient.resumeThread({ threadId: sessionId });
+
       const discord = requireDiscordClient(discordClient);
-      const thread = await createVisibleSessionThread({
-        client: discord,
-        controlChannelId: config.discord.controlChannelId,
-        title: `${workdir.label}-import`,
-        starterText: `Importing Codex session \`${sessionId}\` for \`${workdir.label}\`.`,
-      });
+      let thread: AnyThreadChannel | undefined;
 
       try {
-        await codexClient.resumeThread({ threadId: sessionId });
-      } catch (error) {
-        await thread.send({
-          content: "Failed to resume the Codex session. Check daemon logs for details.",
+        thread = await createVisibleSessionThread({
+          client: discord,
+          controlChannelId: config.discord.controlChannelId,
+          title: `${workdir.label}-import`,
+          starterText: `Importing Codex session \`${sessionId}\` for \`${workdir.label}\`.`,
         });
+
+        sessionRepo.insert({
+          discordThreadId: thread.id,
+          codexThreadId: sessionId,
+          ownerDiscordUserId: actorId,
+          workdirId: workdir.id,
+          state: inferSessionStateFromThreadStatus(readResult.thread.status),
+        });
+        await thread.send({
+          content: renderSessionStartedText({
+            type: "session.started",
+            params: {
+              workdirLabel: workdir.label,
+              codexThreadId: sessionId,
+            },
+          }),
+        });
+        await syncTranscriptSnapshot({
+          discord,
+          session: sessionRepo.getByDiscordThreadId(thread.id)!,
+          degradeOnUnexpectedItems: false,
+        });
+      } catch (error) {
+        if (thread) {
+          try {
+            await thread.delete("CodeHelm failed to bind the imported session");
+          } catch (deleteError) {
+            logger.warn("Failed to clean up orphan Discord thread after session import", deleteError);
+          }
+        }
         throw error;
       }
-
-      sessionRepo.insert({
-        discordThreadId: thread.id,
-        codexThreadId: sessionId,
-        ownerDiscordUserId: actorId,
-        workdirId: workdir.id,
-        state: inferSessionStateFromThreadStatus(readResult.thread.status),
-      });
-      await thread.send({
-        content: renderSessionStartedText({
-          type: "session.started",
-          params: {
-            workdirLabel: workdir.label,
-            codexThreadId: sessionId,
-          },
-        }),
-      });
 
       return {
         reply: {
@@ -743,6 +956,82 @@ export const startCodeHelm = async (
     logger,
   });
   discordClient = bot.client;
+
+  const renderStreamingAgentMessage = (phase: string | null | undefined, text: string) => {
+    return renderTranscriptEntry({
+      itemId: "stream",
+      kind: "assistant",
+      text,
+      phase,
+    });
+  };
+
+  const publishAgentDelta = async ({
+    discord,
+    session,
+    itemId,
+    delta,
+  }: {
+    discord: Client;
+    session: NonNullable<ReturnType<typeof sessionRepo.getByCodexThreadId>>;
+    itemId: string;
+    delta: string;
+  }) => {
+    if (session.state === "degraded") {
+      return;
+    }
+
+    const runtime = ensureTranscriptRuntime(session.codexThreadId);
+    const current = runtime.streamingAgentMessages.get(itemId) ?? {
+      phase: undefined,
+      text: "",
+      message: undefined,
+    };
+
+    current.text += delta;
+    runtime.streamingAgentMessages.set(itemId, current);
+
+    const content = renderStreamingAgentMessage(current.phase, current.text);
+
+    if (current.message) {
+      await current.message.edit({ content });
+      return;
+    }
+
+    const message = await sendTextToChannel(discord, session.discordThreadId, content);
+
+    if (message) {
+      current.message = message;
+    }
+  };
+
+  const finalizeAgentTranscriptMessage = async ({
+    discord,
+    session,
+    item,
+  }: {
+    discord: Client;
+    session: NonNullable<ReturnType<typeof sessionRepo.getByCodexThreadId>>;
+    item: CodexAgentMessageItem;
+  }) => {
+    const runtime = ensureTranscriptRuntime(session.codexThreadId);
+    const current = runtime.streamingAgentMessages.get(item.id);
+    const rendered = renderTranscriptEntry({
+      itemId: item.id,
+      kind: "assistant",
+      text: item.text,
+      phase: item.phase,
+    });
+
+    if (current?.message) {
+      await current.message.edit({ content: rendered });
+    } else {
+      await sendTextToChannel(discord, session.discordThreadId, rendered);
+    }
+
+    runtime.seenItemIds.add(item.id);
+    runtime.streamingAgentMessages.delete(item.id);
+  };
 
   bot.client.on(Events.MessageCreate, (message) => {
     void (async () => {
@@ -789,8 +1078,19 @@ export const startCodeHelm = async (
         return;
       }
 
-      await codexClient.startTurn(decision.request);
-      sessionRepo.updateState(session.discordThreadId, "running");
+      const runtime = ensureTranscriptRuntime(session.codexThreadId);
+
+      runtime.pendingDiscordInputs.push(message.content);
+
+      try {
+        await codexClient.startTurn(decision.request);
+        updateSessionStateIfWritable(session, "running");
+      } catch (error) {
+        if (runtime.pendingDiscordInputs.at(-1) === message.content) {
+          runtime.pendingDiscordInputs.pop();
+        }
+        throw error;
+      }
     })().catch((error) => {
       logger.error("Failed to handle Discord thread message", error);
     });
@@ -826,7 +1126,7 @@ export const startCodeHelm = async (
         return;
       }
 
-      sessionRepo.updateState(session.discordThreadId, "running");
+      updateSessionStateIfWritable(session, "running");
       await sendTextToChannel(
         bot.client,
         session.discordThreadId,
@@ -859,8 +1159,8 @@ export const startCodeHelm = async (
       const status = coerceCodexThreadStatus(toRecord(params).status);
 
       if (status) {
-        sessionRepo.updateState(
-          session.discordThreadId,
+        updateSessionStateIfWritable(
+          session,
           inferSessionStateFromThreadStatus(status),
         );
       }
@@ -894,13 +1194,29 @@ export const startCodeHelm = async (
         return;
       }
 
+      const item = readEventItem(params);
+
+      if (isAgentMessageItem(item)) {
+        const runtime = ensureTranscriptRuntime(session.codexThreadId);
+        runtime.streamingAgentMessages.set(item.id, {
+          phase: item.phase,
+          text: item.text,
+          message: undefined,
+        });
+        return;
+      }
+
+      if (!isCommandExecutionItem(item)) {
+        return;
+      }
+
       await sendTextToChannel(
         bot.client,
         session.discordThreadId,
         renderToolProgressText({
           method: "item/started",
           params: {
-            itemId: readItemIdFromEvent(params),
+            itemId: item.id,
           },
         }),
       );
@@ -923,18 +1239,75 @@ export const startCodeHelm = async (
         return;
       }
 
-      await sendTextToChannel(
-        bot.client,
-        session.discordThreadId,
-        renderToolProgressText({
-          method: "item/completed",
-          params: {
-            itemId: readItemIdFromEvent(params),
+      const item = readEventItem(params);
+      const runtime = ensureTranscriptRuntime(session.codexThreadId);
+
+      if (!item) {
+        return;
+      }
+
+      if (isAgentMessageItem(item)) {
+        if (session.state === "degraded") {
+          runtime.seenItemIds.add(item.id);
+          runtime.streamingAgentMessages.delete(item.id);
+          return;
+        }
+
+        await finalizeAgentTranscriptMessage({
+          discord: bot.client,
+          session,
+          item,
+        });
+        return;
+      }
+
+      if (session.state === "degraded") {
+        if (hasItemId(item)) {
+          runtime.seenItemIds.add(item.id);
+        }
+        return;
+      }
+
+      await relayTranscriptEntries({
+        client: bot.client,
+        channelId: session.discordThreadId,
+        runtime,
+        turns: [
+          {
+            id: readTurnIdFromEvent(params) ?? "live",
+            items: [item],
           },
-        }),
-      );
+        ],
+      });
     })().catch((error) => {
       logger.error("Failed to process item/completed event", error);
+    });
+  });
+
+  codexClient.on("item/agentMessage/delta", (params) => {
+    void (async () => {
+      const codexThreadId = readThreadIdFromEvent(params);
+      const itemId = readString(params, "itemId");
+      const delta = readString(params, "delta");
+
+      if (!codexThreadId || !itemId || !delta) {
+        return;
+      }
+
+      const session = sessionRepo.getByCodexThreadId(codexThreadId);
+
+      if (!session) {
+        return;
+      }
+
+      await publishAgentDelta({
+        discord: bot.client,
+        session,
+        itemId,
+        delta,
+      });
+    })().catch((error) => {
+      logger.error("Failed to process item/agentMessage/delta event", error);
     });
   });
 
@@ -952,17 +1325,12 @@ export const startCodeHelm = async (
         return;
       }
 
-      sessionRepo.updateState(session.discordThreadId, "idle");
-      await sendTextToChannel(
-        bot.client,
-        session.discordThreadId,
-        renderFinalAnswerText({
-          method: "turn/completed",
-          params: {
-            text: readFinalAnswerFromEvent(params),
-          },
-        }),
-      );
+      updateSessionStateIfWritable(session, "idle");
+      await syncTranscriptSnapshot({
+        discord: bot.client,
+        session,
+        degradeOnUnexpectedItems: false,
+      });
     })().catch((error) => {
       logger.error("Failed to process turn/completed event", error);
     });
@@ -976,7 +1344,16 @@ export const startCodeHelm = async (
         return;
       }
 
-      sessionRepo.updateState(session.discordThreadId, "waiting-approval");
+      if (session.state === "degraded") {
+        await sendTextToChannel(
+          bot.client,
+          session.discordThreadId,
+          `Approval pending for request \`${event.requestId}\`, but this session is already read-only in Discord.`,
+        );
+        return;
+      }
+
+      updateSessionStateIfWritable(session, "waiting-approval");
       approvalRepo.insert({
         requestId: event.requestId,
         discordThreadId: session.discordThreadId,
@@ -1062,12 +1439,49 @@ export const startCodeHelm = async (
   await registerGuildCommands(config, bot.commands);
   await bot.start();
 
+  for (const session of sessionRepo.listAll()) {
+    try {
+      await seedTranscriptRuntimeFromSnapshot(session);
+    } catch (error) {
+      logger.warn(
+        `Failed to seed transcript runtime for mapped session ${session.codexThreadId}`,
+        error,
+      );
+    }
+  }
+
+  const snapshotPoll = setInterval(() => {
+    void (async () => {
+      for (const session of sessionRepo.listAll()) {
+        if (session.state === "degraded") {
+          continue;
+        }
+
+        try {
+          await syncTranscriptSnapshot({
+            discord: bot.client,
+            session,
+            degradeOnUnexpectedItems: true,
+          });
+        } catch (error) {
+          logger.warn(
+            `Failed to reconcile transcript snapshot for ${session.codexThreadId}`,
+            error,
+          );
+        }
+      }
+    })().catch((error) => {
+      logger.error("Snapshot reconciliation loop failed", error);
+    });
+  }, sessionSnapshotPollIntervalMs);
+
   const stop = async () => {
     if (shuttingDown) {
       return;
     }
 
     shuttingDown = true;
+    clearInterval(snapshotPoll);
     await bot.stop();
     codexClient.close();
     db.close();
