@@ -8,7 +8,7 @@ import {
   renderFinalAnswerText,
   renderRunningStatusText,
   renderSessionStartedText,
-  renderToolProgressSummaryText,
+  renderToolProgressText,
 } from "../../src/discord/renderers";
 
 test("owner thread message becomes Codex input", () => {
@@ -147,6 +147,15 @@ test("session started renderer returns stable Discord text", () => {
 test("running status renderer returns stable Discord text", () => {
   expect(
     renderRunningStatusText({
+      method: "turn/started",
+      params: {
+        turnId: "turn-1",
+      },
+    }),
+  ).toBe("Turn started: `turn-1`.");
+
+  expect(
+    renderRunningStatusText({
       method: "thread/status/changed",
       params: {
         status: "running",
@@ -157,14 +166,13 @@ test("running status renderer returns stable Discord text", () => {
 
 test("tool progress renderer summarizes known tool events", () => {
   expect(
-    renderToolProgressSummaryText({
+    renderToolProgressText({
       method: "item/started",
       params: {
         itemId: "call-1",
-        title: "bun test tests/discord/thread-handler.test.ts",
       },
     }),
-  ).toBe("Tool started: `bun test tests/discord/thread-handler.test.ts`.");
+  ).toBe("Tool started: `call-1`.");
 });
 
 test("final answer renderer returns the final text", () => {

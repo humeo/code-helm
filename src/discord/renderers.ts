@@ -40,19 +40,16 @@ export type DegradationBannerEvent = {
   };
 };
 
-const readString = (value: unknown, keys: string[]) => {
+const readStringField = (value: unknown, key: string) => {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return undefined;
   }
 
   const record = value as Record<string, unknown>;
+  const candidate = record[key];
 
-  for (const key of keys) {
-    const candidate = record[key];
-
-    if (typeof candidate === "string" && candidate.length > 0) {
-      return candidate;
-    }
+  if (typeof candidate === "string" && candidate.length > 0) {
+    return candidate;
   }
 
   return undefined;
@@ -71,28 +68,28 @@ export const renderRunningStatusText = ({
   params,
 }: RunningStatusEvent) => {
   if (method === "turn/started") {
-    const turnId = readString(params, ["turnId"]);
+    const turnId = readStringField(params, "turnId");
 
     return turnId ? `Turn started: \`${turnId}\`.` : "Turn started.";
   }
 
-  const status = readString(params, ["status"]);
+  const status = readStringField(params, "status");
 
   return status ? `Thread status changed: \`${status}\`.` : "Thread status changed.";
 };
 
-export const renderToolProgressSummaryText = ({
+export const renderToolProgressText = ({
   method,
   params,
 }: ToolProgressEvent) => {
   const phase = method === "item/completed" ? "completed" : "started";
-  const title = readString(params, ["title", "command", "toolName", "itemId"]);
+  const itemId = readStringField(params, "itemId");
 
-  return title ? `Tool ${phase}: \`${title}\`.` : `Tool ${phase}.`;
+  return itemId ? `Tool ${phase}: \`${itemId}\`.` : `Tool ${phase}.`;
 };
 
 export const renderFinalAnswerText = ({ params }: FinalAnswerEvent) => {
-  return readString(params, ["text", "message", "outputText", "finalText"])
+  return readStringField(params, "text")
     ?? "Turn completed.";
 };
 
