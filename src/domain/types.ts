@@ -23,7 +23,3 @@ export type ExternalModificationSource =
 export type ExternalModificationObservation = {
   controlSurface: ExternalModificationSource;
 };
-
-export type ReadOnlyDegradationDecision = {
-  unsupportedExternalModificationDetected: boolean;
-};

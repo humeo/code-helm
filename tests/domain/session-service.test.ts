@@ -4,14 +4,28 @@ import {
   canControlSession,
   canImportSession,
 } from "../../src/domain/session-service";
+import type { SessionRuntimeState } from "../../src/domain/types";
 import {
   isUnsupportedExternalModification,
   shouldDegradeDiscordToReadOnly,
 } from "../../src/domain/external-modification";
 
 test("only idle sessions are importable", () => {
-  expect(canImportSession({ runtimeState: "idle" })).toBe(true);
-  expect(canImportSession({ runtimeState: "running" })).toBe(false);
+  const states: Array<[SessionRuntimeState, boolean]> = [
+    ["idle", true],
+    ["running", false],
+    ["waiting-approval", false],
+    ["degraded", false],
+  ];
+
+  for (const [runtimeState, expected] of states) {
+    expect(canImportSession({ runtimeState })).toBe(expected);
+  }
+
+  const runtimeState = "idle" as string;
+
+  // @ts-expect-error runtimeState must be a SessionRuntimeState
+  canImportSession({ runtimeState });
 });
 
 test("sessions keep the same workdir", () => {
@@ -39,16 +53,25 @@ test("unsupported external modifications degrade Discord to read-only", () => {
     false,
   );
   expect(
+    isUnsupportedExternalModification({ controlSurface: "codex-remote" }),
+  ).toBe(false);
+  expect(
     isUnsupportedExternalModification({ controlSurface: "plain-codex" }),
   ).toBe(true);
+  expect(isUnsupportedExternalModification({ controlSurface: "unknown" })).toBe(
+    true,
+  );
+
+  expect(shouldDegradeDiscordToReadOnly({ controlSurface: "discord" })).toBe(
+    false,
+  );
   expect(
-    shouldDegradeDiscordToReadOnly({
-      unsupportedExternalModificationDetected: true,
-    }),
-  ).toBe(true);
-  expect(
-    shouldDegradeDiscordToReadOnly({
-      unsupportedExternalModificationDetected: false,
-    }),
+    shouldDegradeDiscordToReadOnly({ controlSurface: "codex-remote" }),
   ).toBe(false);
+  expect(
+    shouldDegradeDiscordToReadOnly({ controlSurface: "plain-codex" }),
+  ).toBe(true);
+  expect(shouldDegradeDiscordToReadOnly({ controlSurface: "unknown" })).toBe(
+    true,
+  );
 });

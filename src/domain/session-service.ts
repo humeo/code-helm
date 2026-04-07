@@ -1,9 +1,14 @@
 import type {
   SessionOwnership,
+  SessionRuntimeState,
   SessionWorkdirChange,
 } from "./types";
 
-export const canImportSession = ({ runtimeState }: { runtimeState: string }) => {
+export const canImportSession = ({
+  runtimeState,
+}: {
+  runtimeState: SessionRuntimeState;
+}) => {
   return runtimeState === "idle";
 };
 

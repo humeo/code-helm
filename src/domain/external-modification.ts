@@ -1,6 +1,5 @@
 import type {
   ExternalModificationObservation,
-  ReadOnlyDegradationDecision,
 } from "./types";
 
 export const isUnsupportedExternalModification = ({
@@ -10,7 +9,7 @@ export const isUnsupportedExternalModification = ({
 };
 
 export const shouldDegradeDiscordToReadOnly = ({
-  unsupportedExternalModificationDetected,
-}: ReadOnlyDegradationDecision) => {
-  return unsupportedExternalModificationDetected;
+  controlSurface,
+}: ExternalModificationObservation) => {
+  return controlSurface === "plain-codex" || controlSurface === "unknown";
 };
