@@ -1,5 +1,7 @@
 import {
+  isTerminalApprovalStatus,
   shouldShowApprovalControls,
+  normalizeApprovalRequestId,
   type ApprovalState,
   type ApprovalEvent,
 } from "../domain/approval-service";
@@ -45,16 +47,25 @@ export const applyApprovalResolutionSignal = (
   approval: ApprovalState,
   signal: ApprovalResolutionSignal,
 ): ApprovalResolutionOutcome => {
-  if (approval.requestId !== signal.requestId) {
+  const requestId = normalizeApprovalRequestId(signal.requestId);
+
+  if (approval.requestId !== requestId) {
     return {
       approval,
       closeActiveUi: false,
     };
   }
 
+  if (isTerminalApprovalStatus(approval.status)) {
+    return {
+      approval,
+      closeActiveUi: true,
+    };
+  }
+
   return {
     approval: {
-      requestId: approval.requestId,
+      requestId,
       status: "resolved",
     },
     closeActiveUi: true,

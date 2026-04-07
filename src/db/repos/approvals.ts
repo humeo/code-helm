@@ -12,7 +12,7 @@ export type ApprovalRecord = {
 };
 
 export type InsertApprovalInput = {
-  requestId: string;
+  requestId: string | number;
   discordThreadId: string;
   status: ApprovalStatus;
   resolvedByDiscordUserId?: string | null;
@@ -47,6 +47,10 @@ const mapApproval = (row: ApprovalRow | null): ApprovalRecord | null => {
 
 const now = () => new Date().toISOString();
 
+const normalizeRequestId = (requestId: string | number) => {
+  return String(requestId);
+};
+
 export const createApprovalRepo = (db: Database) => {
   const insertStatement = db.prepare(
     `INSERT INTO approvals (
@@ -72,19 +76,33 @@ export const createApprovalRepo = (db: Database) => {
   return {
     insert(input: InsertApprovalInput) {
       const timestamp = now();
+      const requestId = normalizeRequestId(input.requestId);
+      const existing = mapApproval(
+        getByRequestIdStatement.get(requestId) as ApprovalRow | null,
+      );
+
+      const resolvedByDiscordUserId =
+        input.resolvedByDiscordUserId !== undefined
+          ? input.resolvedByDiscordUserId
+          : existing?.resolvedByDiscordUserId ?? null;
+      const resolution =
+        input.resolution !== undefined
+          ? input.resolution
+          : existing?.resolution ?? null;
+
       insertStatement.run(
-        input.requestId,
+        requestId,
         input.discordThreadId,
         input.status,
-        input.resolvedByDiscordUserId ?? null,
-        input.resolution ?? null,
+        resolvedByDiscordUserId,
+        resolution,
         timestamp,
         timestamp,
       );
     },
-    getByRequestId(requestId: string) {
+    getByRequestId(requestId: string | number) {
       return mapApproval(
-        getByRequestIdStatement.get(requestId) as ApprovalRow | null,
+        getByRequestIdStatement.get(normalizeRequestId(requestId)) as ApprovalRow | null,
       );
     },
   };

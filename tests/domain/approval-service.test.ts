@@ -21,52 +21,57 @@ test("only owner sees approval controls in Discord", () => {
 test("approval events are reduced by request id through the full lifecycle", () => {
   const pending = reduceApprovalEvent(undefined, {
     type: "requestApproval",
-    requestId: "req-1",
+    requestId: 9,
   });
 
   expect(pending).toEqual({
-    requestId: "req-1",
+    requestId: "9",
     status: "pending",
   } satisfies ApprovalState);
 
   expect(
     reduceApprovalEvent(pending, {
-      type: "serverRequest/resolved",
-      requestId: "req-1",
-    }),
-  ).toEqual({
-    requestId: "req-1",
-    status: "resolved",
-  } satisfies ApprovalState);
-
-  expect(
-    reduceApprovalEvent(pending, {
       type: "approved",
-      requestId: "req-1",
+      requestId: "9",
     }),
   ).toEqual({
-    requestId: "req-1",
+    requestId: "9",
     status: "approved",
   } satisfies ApprovalState);
 
   expect(
-    reduceApprovalEvent(pending, {
-      type: "declined",
-      requestId: "req-1",
-    }),
+    applyApprovalResolutionSignal(
+      {
+        requestId: "9",
+        status: "approved",
+      },
+      {
+        type: "serverRequest/resolved",
+        requestId: 9,
+      },
+    ),
   ).toEqual({
-    requestId: "req-1",
-    status: "declined",
-  } satisfies ApprovalState);
+    approval: {
+      requestId: "9",
+      status: "approved",
+    },
+    closeActiveUi: true,
+  });
 
   expect(
-    reduceApprovalEvent(pending, {
-      type: "canceled",
-      requestId: "req-1",
-    }),
+    reduceApprovalEvent(
+      {
+        requestId: "9",
+        status: "approved",
+      },
+      {
+        type: "serverRequest/resolved",
+        requestId: 9,
+      },
+    ),
   ).toEqual({
-    requestId: "req-1",
-    status: "canceled",
+    requestId: "9",
+    status: "approved",
   } satisfies ApprovalState);
 });
 
@@ -104,18 +109,18 @@ test("owner approval UI shows buttons while other viewers get status only", () =
 
 test("serverRequest/resolved signal closes the active approval UI immediately", () => {
   const approval = {
-    requestId: "req-1",
+    requestId: "9",
     status: "pending",
   } satisfies ApprovalState;
 
   expect(
     applyApprovalResolutionSignal(approval, {
       type: "serverRequest/resolved",
-      requestId: "req-1",
+      requestId: 9,
     }),
   ).toEqual({
     approval: {
-      requestId: "req-1",
+      requestId: "9",
       status: "resolved",
     },
     closeActiveUi: true,

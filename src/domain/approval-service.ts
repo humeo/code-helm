@@ -11,7 +11,7 @@ export type ApprovalStatus =
 export type ApprovalRequestId = string | number;
 
 export type ApprovalState = {
-  requestId: ApprovalRequestId;
+  requestId: string;
   status: ApprovalStatus;
 };
 
@@ -49,7 +49,7 @@ const approvalStatusByEventType: Record<
 };
 
 const createApprovalState = (
-  requestId: ApprovalRequestId,
+  requestId: string,
   status: ApprovalStatus,
 ): ApprovalState => {
   return {
@@ -58,16 +58,34 @@ const createApprovalState = (
   };
 };
 
+export const normalizeApprovalRequestId = (requestId: ApprovalRequestId) => {
+  return String(requestId);
+};
+
+export const isTerminalApprovalStatus = (status: ApprovalStatus) => {
+  return status === "approved" || status === "declined" || status === "canceled";
+};
+
 export const reduceApprovalEvent = (
   current: ApprovalState | undefined,
   event: ApprovalEvent,
 ) => {
-  if (current && current.requestId !== event.requestId) {
+  const requestId = normalizeApprovalRequestId(event.requestId);
+
+  if (current && current.requestId !== requestId) {
+    return current;
+  }
+
+  if (
+    event.type === "serverRequest/resolved" &&
+    current &&
+    isTerminalApprovalStatus(current.status)
+  ) {
     return current;
   }
 
   return createApprovalState(
-    event.requestId,
+    requestId,
     approvalStatusByEventType[event.type],
   );
 };
