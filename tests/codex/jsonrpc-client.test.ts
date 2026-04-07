@@ -31,8 +31,15 @@ const createTransportStub = () => {
 
 test("routes requestApproval and resolved events to subscribers", async () => {
   const client = new JsonRpcClient("ws://example.test");
+  const seenApproval: Array<number | string> = [];
   const seenResolved: Array<number | string> = [];
 
+  const unsubscribeApproval = client.on(
+    "item/commandExecution/requestApproval",
+    (event) => {
+      seenApproval.push(event.requestId);
+    },
+  );
   const unsubscribe = client.on("serverRequest/resolved", (event) => {
     seenResolved.push(event.requestId);
   });
@@ -47,9 +54,11 @@ test("routes requestApproval and resolved events to subscribers", async () => {
     params: { requestId: 7 },
   });
 
+  expect(seenApproval).toEqual([7]);
   expect(client.lastApprovalRequest?.requestId).toBe(7);
   expect(seenResolved).toEqual([7]);
 
+  unsubscribeApproval();
   unsubscribe();
 });
 
