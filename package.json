@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "discord.js": "^14.26.2",
     "zod": "^3.25.76"
   },
   "devDependencies": {
