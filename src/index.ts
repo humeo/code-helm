@@ -143,6 +143,13 @@ export const isImportableThreadStatus = (status: CodexThreadStatus) => {
   return status.type === "idle" || status.type === "notLoaded";
 };
 
+export const canImportThreadIntoWorkdir = (
+  thread: Pick<CodexThread, "cwd" | "status">,
+  workdirPath: string,
+) => {
+  return thread.cwd === workdirPath && isImportableThreadStatus(thread.status);
+};
+
 export const inferSessionStateFromThreadStatus = (
   status: CodexThreadStatus,
 ): SessionRuntimeState => {
@@ -266,6 +273,27 @@ const formatThreadList = (threads: CodexThread[], workdirs: WorkdirConfig[]) => 
       return `- \`${thread.id}\` [${describeCodexThreadStatus(thread.status)}] ${workdirLabel}`;
     })
     .join("\n");
+};
+
+const listSupportedThreads = async (
+  client: JsonRpcClient,
+  workdirs: WorkdirConfig[],
+) => {
+  const workdirPaths = new Set(workdirs.map((workdir) => workdir.absolutePath));
+  const threads: CodexThread[] = [];
+  let cursor: string | null = null;
+
+  do {
+    const page = await client.listThreads({
+      limit: 50,
+      cursor,
+    });
+
+    threads.push(...page.data.filter((thread) => workdirPaths.has(thread.cwd)));
+    cursor = page.nextCursor;
+  } while (cursor);
+
+  return threads;
 };
 
 const ensureWorkspaceSeeded = (
@@ -558,16 +586,27 @@ export const startCodeHelm = async (
       }
 
       const discord = requireDiscordClient(discordClient);
-      const started = await codexClient.startThread({
-        cwd: workdir.absolutePath,
-      });
-      const codexThreadId = started.thread.id;
       const thread = await createVisibleSessionThread({
         client: discord,
         controlChannelId: config.discord.controlChannelId,
         title: `${workdir.label}-session`,
         starterText: `Opening session for \`${workdir.label}\`.`,
       });
+
+      let codexThreadId: string;
+
+      try {
+        const started = await codexClient.startThread({
+          cwd: workdir.absolutePath,
+        });
+
+        codexThreadId = started.thread.id;
+      } catch (error) {
+        await thread.send({
+          content: "Failed to start the Codex session. Check daemon logs for details.",
+        });
+        throw error;
+      }
 
       sessionRepo.insert({
         discordThreadId: thread.id,
@@ -626,16 +665,17 @@ export const startCodeHelm = async (
         includeTurns: false,
       });
 
-      if (!isImportableThreadStatus(readResult.thread.status)) {
+      if (!canImportThreadIntoWorkdir(readResult.thread, workdir.absolutePath)) {
         return {
           reply: {
-            content: `Session \`${sessionId}\` is not importable because its status is \`${describeCodexThreadStatus(readResult.thread.status)}\`.`,
+            content:
+              readResult.thread.cwd !== workdir.absolutePath
+                ? `Session \`${sessionId}\` belongs to \`${readResult.thread.cwd}\`, not workdir \`${workdir.id}\`.`
+                : `Session \`${sessionId}\` is not importable because its status is \`${describeCodexThreadStatus(readResult.thread.status)}\`.`,
             ephemeral: true,
           },
         };
       }
-
-      await codexClient.resumeThread({ threadId: sessionId });
 
       const discord = requireDiscordClient(discordClient);
       const thread = await createVisibleSessionThread({
@@ -644,6 +684,15 @@ export const startCodeHelm = async (
         title: `${workdir.label}-import`,
         starterText: `Importing Codex session \`${sessionId}\` for \`${workdir.label}\`.`,
       });
+
+      try {
+        await codexClient.resumeThread({ threadId: sessionId });
+      } catch (error) {
+        await thread.send({
+          content: "Failed to resume the Codex session. Check daemon logs for details.",
+        });
+        throw error;
+      }
 
       sessionRepo.insert({
         discordThreadId: thread.id,
@@ -675,10 +724,9 @@ export const startCodeHelm = async (
         return contextError;
       }
 
-      const workdirPaths = new Set(config.workdirs.map((workdir) => workdir.absolutePath));
-      const listed = await codexClient.listThreads({ limit: 50 });
-      const supportedThreads = listed.data.filter((thread) =>
-        workdirPaths.has(thread.cwd),
+      const supportedThreads = await listSupportedThreads(
+        codexClient,
+        config.workdirs,
       );
 
       return {

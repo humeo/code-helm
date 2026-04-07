@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import type { CodexThreadStatus } from "../src/codex/protocol-types";
 import {
+  canImportThreadIntoWorkdir,
   describeCodexThreadStatus,
   inferSessionStateFromThreadStatus,
   isImportableThreadStatus,
@@ -38,6 +39,27 @@ test("thread statuses map into Discord session runtime states", () => {
   expect(inferSessionStateFromThreadStatus({ type: "systemError" })).toBe(
     "degraded",
   );
+});
+
+test("import also requires the selected workdir to match the thread cwd", () => {
+  expect(
+    canImportThreadIntoWorkdir(
+      {
+        cwd: "/tmp/workspace/api",
+        status: { type: "idle" },
+      },
+      "/tmp/workspace/api",
+    ),
+  ).toBe(true);
+  expect(
+    canImportThreadIntoWorkdir(
+      {
+        cwd: "/tmp/workspace/web",
+        status: { type: "idle" },
+      },
+      "/tmp/workspace/api",
+    ),
+  ).toBe(false);
 });
 
 test("status descriptions stay readable in Discord output", () => {

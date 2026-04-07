@@ -110,9 +110,11 @@ Import is intentionally narrow:
 
 Each Discord thread has one controller: the initiating user.
 
-- only the owner can advance the session, approve or cancel approvals, interrupt, or close/archive the thread
+- in the current runtime, only the owner can advance the session and resolve approvals
 - other guild members can view the thread, read transcript, and see session status
 - other guild members only see approval state; they do not get actionable approval controls
+
+Explicit interrupt and close/archive controls are part of the v1 product model but are not yet wired into this repository snapshot.
 
 Approval handling follows Codex protocol behavior, not a stronger ownership model.
 
@@ -133,12 +135,12 @@ That local `codex --remote` path attaches to the same live Codex App Server thre
 
 ## Read-Only Degradation
 
-CodeHelm treats unsupported external modification as a read-only condition.
+CodeHelm treats unsupported external modification as a read-only condition in the product model.
 
 - supported control surfaces are Discord and `codex resume --remote`
 - plain local `codex resume <thread-id>` is unsupported
-- if CodeHelm detects an unsupported advance, the Discord thread is degraded to read-only
-- read-only mode keeps transcript and status visible, but disables new Discord messages, approvals, and interrupt controls
+- the current runtime preserves already-degraded sessions as read-only
+- automatic unsupported-modification detection is not yet wired end-to-end in this repository snapshot
 
 ## What Has Been Verified Here
 
@@ -148,9 +150,10 @@ Verified in the current repo state:
 - `WORKDIRS_JSON` paths must be absolute and under `WORKSPACE_ROOT`
 - Discord control commands are guild-only and DM-disabled
 - import eligibility is limited to idle / notLoaded thread states
+- import also rejects Codex threads whose cwd does not match the selected workdir
 - owner-only control checks are implemented for Discord thread control
 - approval UI behavior is split between owner controls and status-only viewers
-- unsupported external modification degrades the Discord thread to read-only
+- the current runtime preserves already-degraded sessions as read-only
 
 Not verified here:
 
@@ -158,4 +161,4 @@ Not verified here:
 - live Codex App Server connectivity
 - `codex resume --remote` against a running daemon host
 - database migrations against a real database file
-- the full daemon loop beyond the current `src/index.ts` startup entrypoint
+- automatic unsupported external modification detection
