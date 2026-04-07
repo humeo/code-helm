@@ -77,6 +77,5 @@ export const createApprovalRepo = (target: DatabaseTarget) => {
         getByRequestIdStatement.get(requestId) as ApprovalRow | null,
       );
     },
-    db,
   };
 };

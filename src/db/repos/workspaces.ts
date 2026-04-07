@@ -60,6 +60,5 @@ export const createWorkspaceRepo = (target: DatabaseTarget) => {
     getById(id: string) {
       return mapWorkspace(getByIdStatement.get(id) as WorkspaceRow | null);
     },
-    db,
   };
 };

@@ -71,6 +71,5 @@ export const createWorkdirRepo = (target: DatabaseTarget) => {
     getById(id: string) {
       return mapWorkdir(getByIdStatement.get(id) as WorkdirRow | null);
     },
-    db,
   };
 };
