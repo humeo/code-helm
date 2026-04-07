@@ -5,12 +5,14 @@
   "scripts": {
     "dev": "bun run src/index.ts",
     "test": "bun test",
-    "migrate": "bun run src/db/migrate.ts"
+    "migrate": "bun run src/db/migrate.ts",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "zod": "^3.25.76"
   },
   "devDependencies": {
-    "bun-types": "^1.3.11"
+    "bun-types": "^1.3.11",
+    "typescript": "^5.9.3"
   }
 }
