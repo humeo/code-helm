@@ -48,6 +48,29 @@ Strictly:
 - `thread = session`
 - `session belongs to one workdir`
 
+## Configuration and Persistence
+
+CodeHelm v1 uses explicit local configuration and local persistent state.
+
+- the workspace registry is populated by daemon configuration
+- each workspace entry binds one Discord server to one local CodeHelm workspace
+- the workdir registry is also explicitly configured by the operator
+- workdirs are not auto-discovered in v1
+- session bindings are persisted by the daemon as local state
+
+The daemon must persist at least:
+
+- Discord server identifier
+- control channel identifier
+- Discord thread identifier
+- Codex App Server thread identifier
+- owning Discord user identifier
+- bound workdir identifier and path
+- last known session state
+- degradation flags such as externally modified or error
+
+This keeps workdir choice stable and makes imported sessions and Discord threads recoverable across daemon restarts.
+
 ## Source of Truth
 
 The only session truth in v1 is the `Codex App Server thread`.
@@ -76,6 +99,24 @@ The second client is intentionally narrow:
 - plain local `codex resume <thread-id>` is not part of the supported product path
 
 This means V1 supports shared live transcript and status across Discord and the local remote CLI, but it does not attempt to turn arbitrary local Codex clients into first-class participants.
+
+## Trust Boundary
+
+CodeHelm v1 assumes one trusted local machine hosting:
+
+- the CodeHelm daemon
+- the Discord bot connection
+- the Codex App Server
+- the optional local `codex resume --remote` client
+
+The intended trust model is:
+
+- Codex App Server listens on loopback only
+- `--remote` access is therefore limited to the daemon host machine
+- Discord is the remote surface for the same operator identity, not a mechanism for exposing raw App Server control publicly
+- the session owner in Discord is the only Discord user allowed to operate the session
+
+This is an operator trust boundary, not a multi-tenant security model. V1 does not attempt to secure arbitrary third-party local clients beyond the fact that App Server access stays local to the host machine.
 
 ## Workdir Model
 
