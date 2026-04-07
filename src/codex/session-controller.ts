@@ -40,8 +40,10 @@ export class SessionController {
   }
 
   async startTurn(params: StartTurnParams) {
+    const result = await this.client.startTurn(params);
+
     this.activeThreadId = params.threadId;
-    return this.client.startTurn(params);
+    return result;
   }
 
   replyToServerRequest(params: ReplyToServerRequestParams) {

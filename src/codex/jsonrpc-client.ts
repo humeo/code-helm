@@ -84,6 +84,7 @@ class WebSocketTransport implements JsonRpcTransport {
     onMessage() {},
   };
   private connectPromise: Promise<void> | undefined;
+  private connectReject: ((error: Error) => void) | undefined;
 
   constructor(private readonly url: string) {}
 
@@ -103,15 +104,24 @@ class WebSocketTransport implements JsonRpcTransport {
     this.connectPromise = new Promise<void>((resolve, reject) => {
       const socket = new WebSocket(this.url) as unknown as WebSocketLike;
 
+      this.connectReject = reject;
       this.socket = socket;
       socket.onopen = () => {
         this.connectPromise = undefined;
+        this.connectReject = undefined;
         resolve();
       };
       socket.onmessage = (event) => {
         this.handlers.onMessage(toTransportMessage(event.data));
       };
       socket.onclose = () => {
+        if (this.connectReject) {
+          const rejectConnect = this.connectReject;
+
+          this.connectPromise = undefined;
+          this.connectReject = undefined;
+          rejectConnect(new Error("JSON-RPC transport closed"));
+        }
         this.handlers.onClose?.();
       };
       socket.onerror = (error) => {
@@ -119,6 +129,7 @@ class WebSocketTransport implements JsonRpcTransport {
 
         this.handlers.onError?.(error);
         this.connectPromise = undefined;
+        this.connectReject = undefined;
         reject(nextError);
       };
     });
@@ -143,7 +154,7 @@ export class JsonRpcClient {
   private readonly transport: JsonRpcTransport;
   private readonly eventRouter = new EventRouter<RoutedEventMap>();
   private readonly pendingRequests = new Map<JsonRpcId, PendingRequest>();
-  readonly pendingApprovalRequests = new Map<JsonRpcId, ApprovalRequestEvent>();
+  private readonly pendingApprovalRequests = new Map<JsonRpcId, ApprovalRequestEvent>();
 
   private nextRequestId = 1;
   private initializePromise: Promise<void> | undefined;
@@ -162,18 +173,16 @@ export class JsonRpcClient {
         this.handleRawMessage(message);
       },
       onClose: () => {
+        this.rejectPendingRequests(new Error("JSON-RPC transport closed"));
         this.isInitialized = false;
         this.initializePromise = undefined;
       },
       onError: (error) => {
-        for (const pendingRequest of this.pendingRequests.values()) {
-          pendingRequest.reject(
-            error instanceof Error
-              ? error
-              : new Error("JSON-RPC transport error"),
-          );
-        }
-        this.pendingRequests.clear();
+        this.rejectPendingRequests(
+          error instanceof Error
+            ? error
+            : new Error("JSON-RPC transport error"),
+        );
         this.isInitialized = false;
         this.initializePromise = undefined;
       },
@@ -279,6 +288,14 @@ export class JsonRpcClient {
     this.transport.close(code, reason);
   }
 
+  getPendingApprovalRequest(requestId: JsonRpcId) {
+    return this.pendingApprovalRequests.get(requestId);
+  }
+
+  getPendingRequestCount() {
+    return this.pendingRequests.size;
+  }
+
   private handleRawMessage(rawMessage: string) {
     this.handleMessage(JSON.parse(rawMessage) as JsonRpcIncomingMessage);
   }
@@ -345,13 +362,6 @@ export class JsonRpcClient {
   private sendRequest<TResult = unknown>(method: string, params?: unknown) {
     const id = this.nextRequestId++;
 
-    this.sendMessage({
-      jsonrpc: "2.0",
-      id,
-      method,
-      params,
-    });
-
     return new Promise<TResult>((resolve, reject) => {
       this.pendingRequests.set(id, {
         resolve: (result) => {
@@ -359,7 +369,27 @@ export class JsonRpcClient {
         },
         reject,
       });
+
+      try {
+        this.sendMessage({
+          jsonrpc: "2.0",
+          id,
+          method,
+          params,
+        });
+      } catch (error) {
+        this.pendingRequests.delete(id);
+        reject(error instanceof Error ? error : new Error("Failed to send JSON-RPC request"));
+      }
     });
+  }
+
+  private rejectPendingRequests(error: Error) {
+    for (const pendingRequest of this.pendingRequests.values()) {
+      pendingRequest.reject(error);
+    }
+
+    this.pendingRequests.clear();
   }
 }
 

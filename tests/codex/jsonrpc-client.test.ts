@@ -4,20 +4,31 @@ import {
   type JsonRpcTransport,
   type TransportHandlers,
 } from "../../src/codex/jsonrpc-client";
+import type { StartTurnParams } from "../../src/codex/protocol-types";
+import { SessionController } from "../../src/codex/session-controller";
 
 const createTransportStub = () => {
   const sent: string[] = [];
   let handlers: TransportHandlers | undefined;
+  let isClosed = false;
 
   const transport: JsonRpcTransport = {
-    async connect() {},
+    async connect() {
+      isClosed = false;
+    },
     setHandlers(nextHandlers) {
       handlers = nextHandlers;
     },
     send(message) {
+      if (isClosed) {
+        throw new Error("transport closed");
+      }
       sent.push(message);
     },
-    close() {},
+    close() {
+      isClosed = true;
+      handlers?.onClose?.();
+    },
   };
 
   return {
@@ -25,6 +36,12 @@ const createTransportStub = () => {
     sent,
     receive(message: unknown) {
       handlers?.onMessage(JSON.stringify(message));
+    },
+    fail(error: unknown) {
+      handlers?.onError?.(error);
+    },
+    close() {
+      transport.close();
     },
   };
 };
@@ -49,14 +66,18 @@ test("routes requestApproval and resolved events to subscribers", async () => {
     id: 7,
     params: { threadId: "t1", turnId: "turn1", itemId: "call1" },
   });
+
+  expect(seenApproval).toEqual([7]);
+  expect(client.lastApprovalRequest?.requestId).toBe(7);
+  expect(client.getPendingApprovalRequest(7)?.itemId).toBe("call1");
+
   client.handleMessage({
     method: "serverRequest/resolved",
     params: { requestId: 7 },
   });
 
-  expect(seenApproval).toEqual([7]);
-  expect(client.lastApprovalRequest?.requestId).toBe(7);
   expect(seenResolved).toEqual([7]);
+  expect(client.getPendingApprovalRequest(7)).toBeUndefined();
 
   unsubscribeApproval();
   unsubscribe();
@@ -111,4 +132,162 @@ test("replies to server requests with the original request id", async () => {
     id: 9,
     result: { decision: "approved" },
   });
+});
+
+test("pending approval state is populated and then cleared on resolution", () => {
+  const client = new JsonRpcClient("ws://example.test");
+
+  client.handleMessage({
+    method: "item/commandExecution/requestApproval",
+    id: 11,
+    params: { threadId: "t1", turnId: "turn1", itemId: "call1" },
+  });
+
+  expect(client.getPendingApprovalRequest(11)?.threadId).toBe("t1");
+
+  client.handleMessage({
+    method: "serverRequest/resolved",
+    params: { requestId: 11 },
+  });
+
+  expect(client.getPendingApprovalRequest(11)).toBeUndefined();
+});
+
+test("rejects and clears in-flight RPCs when the transport closes", async () => {
+  const stub = createTransportStub();
+  const client = new JsonRpcClient("ws://example.test", {
+    transport: stub.transport,
+  });
+
+  const initializePromise = client.initialize();
+
+  await Promise.resolve();
+  stub.receive({ id: 1, result: {} });
+  await initializePromise;
+
+  const threadPromise = client.startThread({ cwd: "/tmp/project" });
+
+  await Promise.resolve();
+  stub.close();
+
+  await expect(threadPromise).rejects.toThrow("JSON-RPC transport closed");
+  expect(client.getPendingRequestCount()).toBe(0);
+});
+
+test("synchronous loopback transports resolve requests without dropping replies", async () => {
+  let handlers: TransportHandlers | undefined;
+
+  const transport: JsonRpcTransport = {
+    async connect() {},
+    setHandlers(nextHandlers) {
+      handlers = nextHandlers;
+    },
+    send(message) {
+      const parsed = JSON.parse(message) as {
+        id?: number | string;
+        method?: string;
+      };
+
+      if (parsed.id === undefined || !parsed.method) {
+        return;
+      }
+
+      handlers?.onMessage(
+        JSON.stringify({
+          id: parsed.id,
+          result:
+            parsed.method === "initialize"
+              ? { serverInfo: { name: "codex-app" } }
+              : { threadId: "thread-sync" },
+        }),
+      );
+    },
+    close() {},
+  };
+
+  const client = new JsonRpcClient("ws://example.test", { transport });
+  const result = await Promise.race([
+    client.startThread({ cwd: "/tmp/project" }),
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error("request timed out")), 50);
+    }),
+  ]);
+
+  expect(result).toEqual({ threadId: "thread-sync" });
+});
+
+test("default transport rejects initialize if the socket closes before opening", async () => {
+  const OriginalWebSocket = globalThis.WebSocket;
+  const socket = {
+    readyState: 0,
+    onopen: null as ((event: unknown) => void) | null,
+    onmessage: null as ((event: { data: unknown }) => void) | null,
+    onclose: null as ((event: unknown) => void) | null,
+    onerror: null as ((event: unknown) => void) | null,
+    send() {},
+    close() {
+      socket.readyState = 3;
+      socket.onclose?.({});
+    },
+  };
+
+  (globalThis as { WebSocket: typeof WebSocket }).WebSocket = class {
+    constructor(url: string) {
+      void url;
+      return socket as unknown as WebSocket;
+    }
+  } as unknown as typeof WebSocket;
+
+  try {
+    const client = new JsonRpcClient("ws://example.test");
+    const initializePromise = Promise.race([
+      client.initialize(),
+      new Promise((_, reject) => {
+        setTimeout(() => reject(new Error("initialize timed out")), 50);
+      }),
+    ]);
+
+    socket.onclose?.({});
+
+    await expect(initializePromise).rejects.toThrow("JSON-RPC transport closed");
+  } finally {
+    (globalThis as { WebSocket: typeof WebSocket }).WebSocket =
+      OriginalWebSocket;
+  }
+});
+
+test("session controller updates active thread only after startTurn succeeds", async () => {
+  let shouldReject = true;
+
+  const controller = new SessionController({
+    initialize() {
+      return Promise.resolve();
+    },
+    startThread() {
+      return Promise.resolve(undefined);
+    },
+    resumeThread() {
+      return Promise.resolve(undefined);
+    },
+    startTurn(params: StartTurnParams) {
+      if (shouldReject) {
+        return Promise.reject(new Error(`turn failed for ${params.threadId}`));
+      }
+
+      return Promise.resolve({ ok: true });
+    },
+    replyToServerRequest() {
+      return Promise.resolve();
+    },
+  } as unknown as JsonRpcClient);
+
+  controller.activeThreadId = "existing-thread";
+  await expect(
+    controller.startTurn({ threadId: "next-thread", input: "hi" }),
+  ).rejects.toThrow("turn failed for next-thread");
+  expect(controller.activeThreadId).toBe("existing-thread");
+
+  shouldReject = false;
+  await controller.startTurn({ threadId: "next-thread", input: "hi" });
+  expect(controller.activeThreadId).toBe("next-thread");
 });
