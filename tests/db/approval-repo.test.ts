@@ -38,7 +38,7 @@ const createMigratedDb = () => {
   return db;
 };
 
-test("repo upsert preserves existing resolution metadata when omitted", () => {
+test("repo upsert preserves terminal status and resolution metadata on resolved ack", () => {
   const db = createMigratedDb();
   seedWorkspaceGraph(db);
   const repo = createApprovalRepo(db);
@@ -60,7 +60,7 @@ test("repo upsert preserves existing resolution metadata when omitted", () => {
   expect(repo.getByRequestId(9)).toEqual({
     requestId: "9",
     discordThreadId: "123",
-    status: "resolved",
+    status: "approved",
     resolvedByDiscordUserId: "u1",
     resolution: "approved",
     createdAt: expect.any(String),

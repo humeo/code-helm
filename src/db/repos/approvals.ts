@@ -1,5 +1,8 @@
 import { Database } from "bun:sqlite";
-import type { ApprovalStatus } from "../../domain/approval-service";
+import {
+  isTerminalApprovalStatus,
+  type ApprovalStatus,
+} from "../../domain/approval-service";
 
 export type ApprovalRecord = {
   requestId: string;
@@ -89,11 +92,17 @@ export const createApprovalRepo = (db: Database) => {
         input.resolution !== undefined
           ? input.resolution
           : existing?.resolution ?? null;
+      const status =
+        existing &&
+        isTerminalApprovalStatus(existing.status) &&
+        input.status === "resolved"
+          ? existing.status
+          : input.status;
 
       insertStatement.run(
         requestId,
         input.discordThreadId,
-        input.status,
+        status,
         resolvedByDiscordUserId,
         resolution,
         timestamp,
