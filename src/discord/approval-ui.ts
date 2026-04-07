@@ -1,6 +1,7 @@
 import {
   shouldShowApprovalControls,
   type ApprovalState,
+  type ApprovalEvent,
 } from "../domain/approval-service";
 
 export type ApprovalUiButton = "approve" | "decline" | "cancel";
@@ -11,13 +12,11 @@ export type ApprovalUiRender =
       requestId: ApprovalState["requestId"];
       status: ApprovalState["status"];
       buttons: ApprovalUiButton[];
-      closeOnResolved: boolean;
     }
   | {
       kind: "status-only";
       requestId: ApprovalState["requestId"];
       status: ApprovalState["status"];
-      closeOnResolved: boolean;
     };
 
 export type ApprovalUiInput = {
@@ -26,14 +25,40 @@ export type ApprovalUiInput = {
   ownerId: string;
 };
 
+export type ApprovalResolutionSignal = Extract<
+  ApprovalEvent,
+  { type: "serverRequest/resolved" }
+>;
+
+export type ApprovalResolutionOutcome = {
+  approval: ApprovalState;
+  closeActiveUi: boolean;
+};
+
 const approvalButtons: ApprovalUiButton[] = [
   "approve",
   "decline",
   "cancel",
 ];
 
-export const shouldCloseApprovalUi = ({ status }: ApprovalState) => {
-  return status === "resolved";
+export const applyApprovalResolutionSignal = (
+  approval: ApprovalState,
+  signal: ApprovalResolutionSignal,
+): ApprovalResolutionOutcome => {
+  if (approval.requestId !== signal.requestId) {
+    return {
+      approval,
+      closeActiveUi: false,
+    };
+  }
+
+  return {
+    approval: {
+      requestId: approval.requestId,
+      status: "resolved",
+    },
+    closeActiveUi: true,
+  };
 };
 
 export const renderApprovalUi = ({
@@ -41,7 +66,6 @@ export const renderApprovalUi = ({
   viewerId,
   ownerId,
 }: ApprovalUiInput): ApprovalUiRender => {
-  const closeOnResolved = shouldCloseApprovalUi(approval);
   const canShowControls =
     approval.status === "pending" &&
     shouldShowApprovalControls({ viewerId, ownerId });
@@ -52,7 +76,6 @@ export const renderApprovalUi = ({
       requestId: approval.requestId,
       status: approval.status,
       buttons: approvalButtons,
-      closeOnResolved,
     };
   }
 
@@ -60,6 +83,5 @@ export const renderApprovalUi = ({
     kind: "status-only",
     requestId: approval.requestId,
     status: approval.status,
-    closeOnResolved,
   };
 };

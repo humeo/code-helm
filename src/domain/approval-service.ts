@@ -21,7 +21,7 @@ export type ApprovalEvent =
       requestId: ApprovalRequestId;
     }
   | {
-      type: "resolved";
+      type: "serverRequest/resolved";
       requestId: ApprovalRequestId;
     }
   | {
@@ -42,7 +42,7 @@ const approvalStatusByEventType: Record<
   ApprovalStatus
 > = {
   requestApproval: "pending",
-  resolved: "resolved",
+  "serverRequest/resolved": "resolved",
   approved: "approved",
   declined: "declined",
   canceled: "canceled",

@@ -5,8 +5,8 @@ import {
   type ApprovalState,
 } from "../../src/domain/approval-service";
 import {
+  applyApprovalResolutionSignal,
   renderApprovalUi,
-  shouldCloseApprovalUi,
 } from "../../src/discord/approval-ui";
 
 test("only owner sees approval controls in Discord", () => {
@@ -31,7 +31,7 @@ test("approval events are reduced by request id through the full lifecycle", () 
 
   expect(
     reduceApprovalEvent(pending, {
-      type: "resolved",
+      type: "serverRequest/resolved",
       requestId: "req-1",
     }),
   ).toEqual({
@@ -87,7 +87,6 @@ test("owner approval UI shows buttons while other viewers get status only", () =
     requestId: "req-1",
     status: "pending",
     buttons: ["approve", "decline", "cancel"],
-    closeOnResolved: false,
   });
 
   expect(
@@ -100,15 +99,25 @@ test("owner approval UI shows buttons while other viewers get status only", () =
     kind: "status-only",
     requestId: "req-1",
     status: "pending",
-    closeOnResolved: false,
   });
 });
 
-test("resolved approval UI closes immediately", () => {
+test("serverRequest/resolved signal closes the active approval UI immediately", () => {
+  const approval = {
+    requestId: "req-1",
+    status: "pending",
+  } satisfies ApprovalState;
+
   expect(
-    shouldCloseApprovalUi({
+    applyApprovalResolutionSignal(approval, {
+      type: "serverRequest/resolved",
+      requestId: "req-1",
+    }),
+  ).toEqual({
+    approval: {
       requestId: "req-1",
       status: "resolved",
-    }),
-  ).toBe(true);
+    },
+    closeActiveUi: true,
+  });
 });
