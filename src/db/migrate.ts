@@ -13,10 +13,10 @@ export const applyMigrations = (db: Database) => {
 };
 
 if (import.meta.main) {
-  const { DATABASE_PATH } = parseConfig(Bun.env);
-  const db = createDatabaseClient(DATABASE_PATH);
+  const config = parseConfig(Bun.env);
+  const db = createDatabaseClient(config.databasePath);
 
   applyMigrations(db);
   db.close();
-  console.log(`Applied migrations to ${DATABASE_PATH}`);
+  console.log(`Applied migrations to ${config.databasePath}`);
 }
