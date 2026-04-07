@@ -953,7 +953,7 @@ export const startCodeHelm = async (
         }
       } catch (error) {
         logger.warn(
-          `Could not DM approval controls to ${session.ownerDiscordUserId}; local codex --remote remains the fallback path.`,
+          `Could not DM approval controls to ${session.ownerDiscordUserId}; local codex resume --remote remains the fallback path.`,
           error,
         );
       }

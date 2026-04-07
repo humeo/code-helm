@@ -29,7 +29,7 @@ CodeHelm connects to the local Codex App Server over WebSocket.
 
 - set `CODEX_APP_SERVER_URL` to a `ws://` or `wss://` URL
 - in v1, keep that server on the daemon host machine
-- `codex resume --remote` is the supported local attachment path; plain local `codex resume <thread-id>` is not
+- the supported local `codex --remote` attachment path is `codex resume --remote <ws-url> <thread-id>`; plain local `codex resume <thread-id>` is not
 
 ### Environment Variables
 
@@ -87,7 +87,7 @@ Then start the daemon:
 bun run dev
 ```
 
-In this repository snapshot, `bun run dev` executes `src/index.ts`, which parses config and logs startup. The broader daemon wiring is still being built around that entrypoint.
+`bun run dev` starts the full CodeHelm daemon entrypoint in `src/index.ts`. That path parses config, applies migrations, seeds the configured workspace/workdirs, initializes the Codex App Server client, registers guild commands, starts the Discord bot, subscribes to Codex events, and installs shutdown hooks.
 
 ## Session Flow
 
@@ -129,7 +129,7 @@ The local supported second client is:
 codex resume --remote <ws-url> <thread-id>
 ```
 
-That client attaches to the same live Codex App Server thread as Discord, sharing transcript, runtime state, and approval events. It is only supported on the daemon host through `--remote`.
+That local `codex --remote` path attaches to the same live Codex App Server thread as Discord, sharing transcript, runtime state, and approval events. The concrete CLI invocation is `codex resume --remote ...`, and it is only supported on the daemon host through `--remote`.
 
 ## Read-Only Degradation
 
