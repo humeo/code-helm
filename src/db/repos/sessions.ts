@@ -1,4 +1,4 @@
-import { createDatabaseClient, type DatabaseTarget } from "../client";
+import { Database } from "bun:sqlite";
 
 export type SessionState = string;
 
@@ -51,8 +51,7 @@ const mapSession = (row: SessionRow | null): SessionRecord | null => {
 
 const now = () => new Date().toISOString();
 
-export const createSessionRepo = (target: DatabaseTarget) => {
-  const db = createDatabaseClient(target);
+export const createSessionRepo = (db: Database) => {
   const insertStatement = db.prepare(
     `INSERT INTO sessions (
       discord_thread_id,

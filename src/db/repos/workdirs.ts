@@ -1,4 +1,4 @@
-import { createDatabaseClient, type DatabaseTarget } from "../client";
+import { Database } from "bun:sqlite";
 
 export type WorkdirRecord = {
   id: string;
@@ -42,8 +42,7 @@ const mapWorkdir = (row: WorkdirRow | null): WorkdirRecord | null => {
 
 const now = () => new Date().toISOString();
 
-export const createWorkdirRepo = (target: DatabaseTarget) => {
-  const db = createDatabaseClient(target);
+export const createWorkdirRepo = (db: Database) => {
   const insertStatement = db.prepare(
     `INSERT INTO workdirs (
       id,

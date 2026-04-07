@@ -1,4 +1,4 @@
-import { createDatabaseClient, type DatabaseTarget } from "../client";
+import { Database } from "bun:sqlite";
 
 export type WorkspaceRecord = {
   id: string;
@@ -38,8 +38,7 @@ const mapWorkspace = (row: WorkspaceRow | null): WorkspaceRecord | null => {
 
 const now = () => new Date().toISOString();
 
-export const createWorkspaceRepo = (target: DatabaseTarget) => {
-  const db = createDatabaseClient(target);
+export const createWorkspaceRepo = (db: Database) => {
   const insertStatement = db.prepare(
     `INSERT INTO workspaces (id, name, root_path, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?)`,

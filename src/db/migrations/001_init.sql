@@ -12,7 +12,8 @@ CREATE TABLE IF NOT EXISTS workdirs (
   label TEXT NOT NULL,
   absolute_path TEXT NOT NULL UNIQUE,
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (workspace_id) REFERENCES workspaces(id)
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -23,7 +24,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   state TEXT NOT NULL,
   degradation_reason TEXT,
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (workdir_id) REFERENCES workdirs(id)
 );
 
 CREATE TABLE IF NOT EXISTS approvals (
@@ -33,5 +35,6 @@ CREATE TABLE IF NOT EXISTS approvals (
   resolved_by_discord_user_id TEXT,
   resolution TEXT,
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (discord_thread_id) REFERENCES sessions(discord_thread_id)
 );

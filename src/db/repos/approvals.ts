@@ -1,4 +1,4 @@
-import { createDatabaseClient, type DatabaseTarget } from "../client";
+import { Database } from "bun:sqlite";
 
 export type ApprovalRecord = {
   requestId: string;
@@ -44,8 +44,7 @@ const mapApproval = (row: ApprovalRow | null): ApprovalRecord | null => {
 
 const now = () => new Date().toISOString();
 
-export const createApprovalRepo = (target: DatabaseTarget) => {
-  const db = createDatabaseClient(target);
+export const createApprovalRepo = (db: Database) => {
   const insertStatement = db.prepare(
     `INSERT INTO approvals (
       request_id,
