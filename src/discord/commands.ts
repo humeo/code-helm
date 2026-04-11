@@ -52,6 +52,25 @@ export type ListSessionsInput = {
   channelId: string;
 };
 
+export type CloseSessionInput = {
+  actorId: string;
+  guildId: string;
+  channelId: string;
+};
+
+export type SyncSessionInput = {
+  actorId: string;
+  guildId: string;
+  channelId: string;
+};
+
+export type ResumeSessionInput = {
+  actorId: string;
+  guildId: string;
+  channelId: string;
+  codexThreadId: string;
+};
+
 export type DiscordCommandServices = {
   listWorkdirs(
     input: ListWorkdirsInput,
@@ -65,6 +84,15 @@ export type DiscordCommandServices = {
   listSessions(
     input: ListSessionsInput,
   ): Promise<DiscordCommandResult> | DiscordCommandResult;
+  closeSession(
+    input: CloseSessionInput,
+  ): Promise<DiscordCommandResult> | DiscordCommandResult;
+  syncSession(
+    input: SyncSessionInput,
+  ): Promise<DiscordCommandResult> | DiscordCommandResult;
+  resumeSession(
+    input: ResumeSessionInput,
+  ): Promise<DiscordCommandResult> | DiscordCommandResult;
 };
 
 const guildOnlyCommand = (name: string, description: string) => {
@@ -76,38 +104,74 @@ const guildOnlyCommand = (name: string, description: string) => {
 
 const workdirOptionDescription = "Configured workdir identifier";
 const importOptionDescription = "Codex session identifier to import";
+const resumeOptionDescription = "Managed Codex thread identifier to resume";
 
-export const controlChannelCommands: RESTPostAPIChatInputApplicationCommandsJSONBody[] =
+type CommandWorkdir = {
+  id: string;
+  label: string;
+};
+
+const addWorkdirOption = (
+  command: SlashCommandBuilder,
+  workdirs: CommandWorkdir[],
+) => {
+  return command.addStringOption((option) => {
+    option
+      .setName("workdir")
+      .setDescription(workdirOptionDescription)
+      .setRequired(true);
+
+    for (const workdir of workdirs.slice(0, 25)) {
+      option.addChoices({
+        name: `${workdir.label} (${workdir.id})`,
+        value: workdir.id,
+      });
+    }
+
+    return option;
+  });
+};
+
+export const buildControlChannelCommands = (
+  workdirs: CommandWorkdir[] = [],
+): RESTPostAPIChatInputApplicationCommandsJSONBody[] =>
   [
     guildOnlyCommand("workdir-list", "List configured workdirs"),
-    guildOnlyCommand("session-new", "Create a new session for a workdir")
-      .addStringOption((option) =>
-        option
-          .setName("workdir")
-          .setDescription(workdirOptionDescription)
-          .setRequired(true),
-      ),
-    guildOnlyCommand("session-import", "Import an idle session into Discord")
-      .addStringOption((option) =>
-        option
-          .setName("workdir")
-          .setDescription(workdirOptionDescription)
-          .setRequired(true),
-      )
+    addWorkdirOption(
+      guildOnlyCommand("session-new", "Create a new session for a workdir"),
+      workdirs,
+    ),
+    addWorkdirOption(
+      guildOnlyCommand("session-import", "Import an idle session into Discord"),
+      workdirs,
+    ).addStringOption((option) =>
+      option
+        .setName("session")
+        .setDescription(importOptionDescription)
+        .setRequired(true),
+    ),
+    guildOnlyCommand("session-list", "List known sessions"),
+    guildOnlyCommand("session-close", "Close the current managed session thread"),
+    guildOnlyCommand("session-sync", "Sync the current degraded session thread"),
+    guildOnlyCommand("session-resume", "Resume a managed session thread")
       .addStringOption((option) =>
         option
           .setName("session")
-          .setDescription(importOptionDescription)
+          .setDescription(resumeOptionDescription)
           .setRequired(true),
       ),
-    guildOnlyCommand("session-list", "List known sessions"),
   ].map((command) => command.toJSON());
+
+export const controlChannelCommands = buildControlChannelCommands();
 
 const controlCommandNames = new Set([
   "workdir-list",
   "session-new",
   "session-import",
   "session-list",
+  "session-close",
+  "session-sync",
+  "session-resume",
 ]);
 
 export const isControlChannelCommandName = (commandName: string) => {
@@ -151,6 +215,14 @@ const safelyReply = async (
   await interaction.reply(options);
 };
 
+const safelyDeferReply = async (interaction: ChatInputCommandInteraction) => {
+  if (interaction.replied || interaction.deferred) {
+    return;
+  }
+
+  await interaction.deferReply();
+};
+
 export const handleControlChannelCommand = async (
   interaction: ChatInputCommandInteraction,
   services: DiscordCommandServices,
@@ -167,6 +239,7 @@ export const handleControlChannelCommand = async (
       return true;
     }
     case "session-new": {
+      await safelyDeferReply(interaction);
       await safelyReply(
         interaction,
         await services.createSession({
@@ -177,6 +250,7 @@ export const handleControlChannelCommand = async (
       return true;
     }
     case "session-import": {
+      await safelyDeferReply(interaction);
       await safelyReply(
         interaction,
         await services.importSession({
@@ -188,7 +262,26 @@ export const handleControlChannelCommand = async (
       return true;
     }
     case "session-list":
+      await safelyDeferReply(interaction);
       await safelyReply(interaction, await services.listSessions(context));
+      return true;
+    case "session-close":
+      await safelyDeferReply(interaction);
+      await safelyReply(interaction, await services.closeSession(context));
+      return true;
+    case "session-sync":
+      await safelyDeferReply(interaction);
+      await safelyReply(interaction, await services.syncSession(context));
+      return true;
+    case "session-resume":
+      await safelyDeferReply(interaction);
+      await safelyReply(
+        interaction,
+        await services.resumeSession({
+          ...context,
+          codexThreadId: interaction.options.getString("session", true),
+        }),
+      );
       return true;
     default:
       return false;
@@ -206,6 +299,15 @@ export const replyWithCommandError = async (
   try {
     await safelyReply(interaction, result);
   } catch (error) {
+    if (
+      typeof error === "object"
+      && error !== null
+      && "code" in error
+      && error.code === 10062
+    ) {
+      return;
+    }
+
     if (
       typeof error === "object" &&
       error !== null &&

@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 
 export type SessionState = string;
+export type SessionLifecycleState = "active" | "archived" | "deleted";
 
 export type SessionRecord = {
   discordThreadId: string;
@@ -8,6 +9,7 @@ export type SessionRecord = {
   ownerDiscordUserId: string;
   workdirId: string;
   state: SessionState;
+  lifecycleState: SessionLifecycleState;
   degradationReason: string | null;
   createdAt: string;
   updatedAt: string;
@@ -27,9 +29,14 @@ type SessionRow = {
   owner_discord_user_id: string;
   workdir_id: string;
   state: string;
+  lifecycle_state: SessionLifecycleState;
   degradation_reason: string | null;
   created_at: string;
   updated_at: string;
+};
+
+type MutationResult = {
+  changes: number;
 };
 
 const mapSession = (row: SessionRow | null): SessionRecord | null => {
@@ -43,6 +50,7 @@ const mapSession = (row: SessionRow | null): SessionRecord | null => {
     ownerDiscordUserId: row.owner_discord_user_id,
     workdirId: row.workdir_id,
     state: row.state,
+    lifecycleState: row.lifecycle_state,
     degradationReason: row.degradation_reason,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -50,6 +58,17 @@ const mapSession = (row: SessionRow | null): SessionRecord | null => {
 };
 
 const now = () => new Date().toISOString();
+
+const assertSessionUpdated = (
+  result: MutationResult,
+  discordThreadId: string,
+) => {
+  if (result.changes === 0) {
+    throw new Error(
+      `Session not found for Discord thread ${discordThreadId}`,
+    );
+  }
+};
 
 export const createSessionRepo = (db: Database) => {
   const insertStatement = db.prepare(
@@ -73,12 +92,30 @@ export const createSessionRepo = (db: Database) => {
   const listAllStatement = db.prepare(
     "SELECT * FROM sessions ORDER BY created_at ASC",
   );
+  const listArchivedStatement = db.prepare(
+    "SELECT * FROM sessions WHERE lifecycle_state = 'archived' ORDER BY created_at ASC",
+  );
   const updateStateStatement = db.prepare(
     "UPDATE sessions SET state = ?, updated_at = ? WHERE discord_thread_id = ?",
+  );
+  const syncStateStatement = db.prepare(
+    `UPDATE sessions
+      SET state = ?, degradation_reason = ?, updated_at = ?
+      WHERE discord_thread_id = ?`,
+  );
+  const updateLifecycleStateStatement = db.prepare(
+    `UPDATE sessions
+      SET lifecycle_state = ?, updated_at = ?
+      WHERE discord_thread_id = ?`,
   );
   const markExternallyModifiedStatement = db.prepare(
     `UPDATE sessions
       SET state = ?, degradation_reason = ?, updated_at = ?
+      WHERE discord_thread_id = ?`,
+  );
+  const markDeletedStatement = db.prepare(
+    `UPDATE sessions
+      SET lifecycle_state = 'deleted', updated_at = ?
       WHERE discord_thread_id = ?`,
   );
 
@@ -109,17 +146,67 @@ export const createSessionRepo = (db: Database) => {
     listAll() {
       return (listAllStatement.all() as SessionRow[]).map((row) => mapSession(row)!);
     },
+    listArchived() {
+      return (listArchivedStatement.all() as SessionRow[]).map((row) => mapSession(row)!);
+    },
     updateState(discordThreadId: string, state: SessionState) {
-      updateStateStatement.run(state, now(), discordThreadId);
+      assertSessionUpdated(
+        updateStateStatement.run(
+          state,
+          now(),
+          discordThreadId,
+        ) as MutationResult,
+        discordThreadId,
+      );
+    },
+    syncState(
+      discordThreadId: string,
+      state: SessionState,
+      degradationReason: string | null = null,
+    ) {
+      assertSessionUpdated(
+        syncStateStatement.run(
+          state,
+          degradationReason,
+          now(),
+          discordThreadId,
+        ) as MutationResult,
+        discordThreadId,
+      );
+    },
+    updateLifecycleState(
+      discordThreadId: string,
+      lifecycleState: SessionLifecycleState,
+    ) {
+      assertSessionUpdated(
+        updateLifecycleStateStatement.run(
+          lifecycleState,
+          now(),
+          discordThreadId,
+        ) as MutationResult,
+        discordThreadId,
+      );
     },
     markExternallyModified(
       discordThreadId: string,
       reason = "externally_modified",
     ) {
-      markExternallyModifiedStatement.run(
-        "degraded",
-        reason,
-        now(),
+      assertSessionUpdated(
+        markExternallyModifiedStatement.run(
+          "degraded",
+          reason,
+          now(),
+          discordThreadId,
+        ) as MutationResult,
+        discordThreadId,
+      );
+    },
+    markDeleted(discordThreadId: string) {
+      assertSessionUpdated(
+        markDeletedStatement.run(
+          now(),
+          discordThreadId,
+        ) as MutationResult,
         discordThreadId,
       );
     },

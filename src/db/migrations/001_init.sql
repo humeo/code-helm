@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   owner_discord_user_id TEXT NOT NULL,
   workdir_id TEXT NOT NULL,
   state TEXT NOT NULL,
+  lifecycle_state TEXT NOT NULL DEFAULT 'active' CHECK (lifecycle_state IN ('active', 'archived', 'deleted')),
   degradation_reason TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,

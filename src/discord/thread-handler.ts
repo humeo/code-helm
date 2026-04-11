@@ -22,6 +22,11 @@ export type StartThreadTurnDecision = {
   };
 };
 
+export type ArchivedThreadResumeDecision = {
+  kind: "implicit-resume";
+  request: StartThreadTurnDecision["request"];
+};
+
 export type NoopThreadTurnDecision = {
   kind: "noop";
   reason: "non-owner" | "session-busy";
@@ -36,6 +41,10 @@ export type ThreadTurnDecision =
   | StartThreadTurnDecision
   | NoopThreadTurnDecision
   | ReadOnlyThreadTurnDecision;
+
+export type ArchivedThreadDecision =
+  | ArchivedThreadResumeDecision
+  | NoopThreadTurnDecision;
 
 export type DecideThreadTurnInput = OwnerThreadMessage & {
   sessionState: SessionRuntimeState;
@@ -99,6 +108,40 @@ export const decideThreadTurn = ({
 
   return {
     kind: "start-turn",
+    request,
+  };
+};
+
+export const decideArchivedThreadResume = ({
+  authorId,
+  ownerId,
+  content,
+  codexThreadId,
+  approvalPolicy,
+  sandboxPolicy,
+}: DecideThreadTurnInput): ArchivedThreadDecision => {
+  if (!canControlSession({ actorId: authorId, ownerId })) {
+    return {
+      kind: "noop",
+      reason: "non-owner",
+    };
+  }
+
+  const request: ArchivedThreadResumeDecision["request"] = {
+    threadId: codexThreadId,
+    input: normalizeOwnerThreadMessage({ authorId, ownerId, content }),
+  };
+
+  if (approvalPolicy !== undefined) {
+    request.approvalPolicy = approvalPolicy;
+  }
+
+  if (sandboxPolicy !== undefined) {
+    request.sandboxPolicy = sandboxPolicy;
+  }
+
+  return {
+    kind: "implicit-resume",
     request,
   };
 };

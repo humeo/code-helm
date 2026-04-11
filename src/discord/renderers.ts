@@ -1,5 +1,11 @@
 import type { RoutedEventMap } from "../codex/protocol-types";
 
+export type StatusCardState = {
+  state: "idle" | "running" | "waiting-approval";
+  activity?: string;
+  command?: string;
+};
+
 export type SessionStartedEvent = {
   type: "session.started";
   params: {
@@ -63,6 +69,30 @@ export const renderSessionStartedText = ({
   return `Session started for \`${workdirLabel}\`.\nCodex thread: \`${codexThreadId}\`.`;
 };
 
+export const renderStatusCardText = ({
+  state,
+  activity,
+  command,
+}: StatusCardState) => {
+  if (state === "waiting-approval") {
+    return "CodeHelm status: Waiting for approval.";
+  }
+
+  if (state === "idle") {
+    return "CodeHelm status: Idle.";
+  }
+
+  if (command && command.length > 0) {
+    return `CodeHelm status: Running: \`${command}\`.`;
+  }
+
+  if (activity && activity.length > 0) {
+    return `CodeHelm status: Running: ${activity}.`;
+  }
+
+  return "CodeHelm status: Running.";
+};
+
 export const renderRunningStatusText = ({
   method,
   params,
@@ -97,6 +127,10 @@ export const renderDegradationBannerText = ({
   params,
 }: DegradationBannerEvent) => {
   const { reason } = params;
+
+  if (reason === "thread_missing") {
+    return "Session is now read-only because the bound Codex session no longer exists. Create or import a new session.";
+  }
 
   if (!reason) {
     return "Session is now read-only because it was modified outside the supported Discord/Codex flow.";

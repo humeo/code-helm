@@ -57,6 +57,16 @@ type WebSocketLike = {
 };
 
 const webSocketOpenState = 1;
+const initializeParams = {
+  clientInfo: {
+    name: "code-helm",
+    title: "CodeHelm",
+    version: "0.1.0",
+  },
+  capabilities: {
+    experimentalApi: true,
+  },
+} as const;
 
 const toRecord = (value: unknown) => {
   if (value && typeof value === "object" && !Array.isArray(value)) {
@@ -213,7 +223,7 @@ export class JsonRpcClient {
 
     this.initializePromise = (async () => {
       await this.transport.connect();
-      await this.sendRequest("initialize", {});
+      await this.sendRequest("initialize", initializeParams);
       this.sendNotification("initialized", {});
       this.isInitialized = true;
     })();

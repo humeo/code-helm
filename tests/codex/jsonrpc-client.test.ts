@@ -127,6 +127,16 @@ test("initialize sends initialize request before initialized notification", asyn
     jsonrpc: "2.0",
     id: 1,
     method: "initialize",
+    params: {
+      clientInfo: {
+        name: "code-helm",
+        title: "CodeHelm",
+        version: "0.1.0",
+      },
+      capabilities: {
+        experimentalApi: true,
+      },
+    },
   });
 
   stub.receive({ id: 1, result: { serverInfo: { name: "codex-app" } } });

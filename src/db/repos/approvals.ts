@@ -75,6 +75,18 @@ export const createApprovalRepo = (db: Database) => {
   const getByRequestIdStatement = db.prepare(
     "SELECT * FROM approvals WHERE request_id = ?",
   );
+  const listPendingByDiscordThreadIdStatement = db.prepare(
+    `SELECT * FROM approvals
+      WHERE discord_thread_id = ?
+        AND status = 'pending'
+      ORDER BY rowid DESC`,
+  );
+  const getLatestByDiscordThreadIdStatement = db.prepare(
+    `SELECT * FROM approvals
+      WHERE discord_thread_id = ?
+      ORDER BY rowid DESC
+      LIMIT 1`,
+  );
 
   return {
     insert(input: InsertApprovalInput) {
@@ -92,17 +104,19 @@ export const createApprovalRepo = (db: Database) => {
         input.resolution !== undefined
           ? input.resolution
           : existing?.resolution ?? null;
-      const status =
-        existing &&
-        isTerminalApprovalStatus(existing.status) &&
-        input.status === "resolved"
-          ? existing.status
-          : input.status;
+
+      if (existing && isTerminalApprovalStatus(existing.status)) {
+        return;
+      }
+
+      if (existing?.status === "resolved" && input.status === "pending") {
+        return;
+      }
 
       insertStatement.run(
         requestId,
         input.discordThreadId,
-        status,
+        input.status,
         resolvedByDiscordUserId,
         resolution,
         timestamp,
@@ -112,6 +126,16 @@ export const createApprovalRepo = (db: Database) => {
     getByRequestId(requestId: string | number) {
       return mapApproval(
         getByRequestIdStatement.get(normalizeRequestId(requestId)) as ApprovalRow | null,
+      );
+    },
+    listPendingByDiscordThreadId(discordThreadId: string) {
+      return (
+        listPendingByDiscordThreadIdStatement.all(discordThreadId) as ApprovalRow[]
+      ).map((row) => mapApproval(row)!);
+    },
+    getLatestByDiscordThreadId(discordThreadId: string) {
+      return mapApproval(
+        getLatestByDiscordThreadIdStatement.get(discordThreadId) as ApprovalRow | null,
       );
     },
   };

@@ -96,15 +96,37 @@ Use the control channel for session management, not for normal conversation.
 - `workdir-list` shows the configured workdirs
 - `session-new --workdir <id>` creates a new Codex session in that workdir
 - `session-import --workdir <id> --session <thread-id>` attaches Discord to an existing idle session
+- `session-close` archives the current managed Discord thread without destroying the Codex session
+- `session-resume --session <thread-id>` syncs and reopens an archived managed session on the same Discord thread
 - `session-list` shows known sessions
 
-Session creation creates a new Codex App Server thread first, then binds it to a new Discord thread. Import reuses an existing Codex thread, resumes it first, then creates the Discord thread around it and backfills the prior transcript into Discord.
+Session creation creates a new Codex App Server thread first, then binds it to a new Discord thread. Import reuses an existing Codex thread, resumes it first, then creates the Discord thread around it and backfills the durable conversation-first subset into Discord.
 
 Import is intentionally narrow:
 
 - only `idle` and `notLoaded` Codex thread states are importable
 - `running` sessions cannot be imported
 - `waiting-approval` sessions cannot be imported
+
+Close and resume keep `thread = session` intact:
+
+- `session-close` archives the same Discord thread and marks the managed session `archived`
+- `session-resume` always syncs the Codex session first, then reopens that same thread
+- a resumed thread only accepts new Discord input after sync says the session is `idle`
+- if resume sync finds `running` or `waiting-approval`, the thread reopens but the original message is not forwarded
+- if resume sync finds a degraded session, the thread reopens in read-only mode
+- deleting the Discord thread is treated as detaching the Discord container, not as deleting the Codex session
+
+## Conversation-First Transcript
+
+CodeHelm renders one shared conversation, not separate Discord and Codex logs.
+
+- Discord-originated user messages are recorded once and are not echoed back as a second `User:` line
+- live non-Discord input observed on the daemon host is labeled `Codex CLI`
+- assistant commentary feeds the status card when a final reply is also present, instead of becoming durable transcript noise
+- active turns use a status-only recovery probe; periodic `includeTurns=true` snapshot polling is idle-only and resumes after recovery
+
+This keeps the thread readable as a conversation while still preserving the durable items that matter.
 
 ## Ownership And Approval
 
@@ -115,13 +137,14 @@ Each Discord thread has one controller: the initiating user.
 - other guild members only see approval state; they do not get actionable approval controls
 
 Explicit interrupt and close/archive controls are part of the v1 product model but are not yet wired into this repository snapshot.
-
 Approval handling follows Codex protocol behavior, not a stronger ownership model.
 
 - approval events fan out to subscribed clients
 - the first processed response wins
 - if Discord answers an approval, the Discord UI closes when Codex emits `serverRequest/resolved`
 - if a local Codex client leaves a stale approval screen open after resolution, that is a native-client limitation
+- if an approval is raised while the Discord thread is archived, CodeHelm persists it and recreates the owner DM controls on resume
+- if an approval resolves while the thread is archived, CodeHelm still tears down the DM controls and updates any existing approval lifecycle message without reopening the thread
 
 ## Local Remote CLI
 
@@ -131,7 +154,9 @@ The local supported second client is:
 codex resume --remote <ws-url> <thread-id>
 ```
 
-That local `codex --remote` path attaches to the same live Codex App Server thread as Discord, sharing transcript, runtime state, live commentary deltas, command output summaries, and approval events. The concrete CLI invocation is `codex resume --remote ...`, and it is only supported on the daemon host through `--remote`.
+That `codex resume --remote` path is the supported shared-thread mode. It attaches to the same live Codex App Server thread as Discord and shares transcript state, runtime state, live commentary deltas, command output summaries, and approval events. The plain local `codex resume <thread-id>` path is not supported here.
+
+If a managed Discord thread has been closed, remote CLI activity does not auto-reopen it. CodeHelm keeps tracking the shared Codex session internally and backfills transcript/state on the next explicit or implicit Discord resume.
 
 ## Read-Only Degradation
 
@@ -143,6 +168,7 @@ CodeHelm treats unsupported external modification as a read-only condition in th
 - the current runtime seeds a transcript snapshot for mapped sessions and periodically reconciles `thread/read(includeTurns=true)`
 - if new snapshot items appear without having been observed on the live app-server stream, Discord marks the session read-only with reason `snapshot_mismatch`
 - this is a best-effort detector for unsupported/offline modification, not a precise control-surface identifier
+- once downgraded, the thread stays read-only in Discord until the session is recreated or re-imported
 
 ## What Has Been Verified Here
 
@@ -153,8 +179,8 @@ Verified in the current repo state:
 - Discord control commands are guild-only and DM-disabled
 - import eligibility is limited to idle / notLoaded thread states
 - import also rejects Codex threads whose cwd does not match the selected workdir
-- imported sessions backfill prior transcript into the new Discord thread
-- live app-server transcript sync includes user messages, Codex commentary/final answers, and command output summaries
+- imported sessions backfill the durable conversation-first subset into the new Discord thread
+- live app-server transcript sync relays Discord-originated user messages once, labels live non-Discord user input as `Codex CLI`, keeps commentary durable only when no final reply exists, and omits successful command executions from the main transcript
 - owner-only control checks are implemented for Discord thread control
 - approval UI behavior is split between owner controls and status-only viewers
 - the current runtime preserves already-degraded sessions as read-only

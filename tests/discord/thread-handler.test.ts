@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import {
+  decideArchivedThreadResume,
   decideThreadTurn,
   normalizeOwnerThreadMessage,
 } from "../../src/discord/thread-handler";
@@ -132,6 +133,39 @@ test("degraded sessions stay read-only", () => {
   });
 });
 
+test("owner archived-thread message is treated as an implicit resume attempt", () => {
+  expect(
+    decideArchivedThreadResume({
+      authorId: "u1",
+      ownerId: "u1",
+      content: "resume from here",
+      codexThreadId: "codex-thread-1",
+      sessionState: "idle",
+    }),
+  ).toEqual({
+    kind: "implicit-resume",
+    request: {
+      threadId: "codex-thread-1",
+      input: [{ type: "text", text: "resume from here" }],
+    },
+  });
+});
+
+test("non-owner archived-thread message is ignored", () => {
+  expect(
+    decideArchivedThreadResume({
+      authorId: "u2",
+      ownerId: "u1",
+      content: "resume from here",
+      codexThreadId: "codex-thread-1",
+      sessionState: "idle",
+    }),
+  ).toEqual({
+    kind: "noop",
+    reason: "non-owner",
+  });
+});
+
 test("session started renderer returns stable Discord text", () => {
   expect(
     renderSessionStartedText({
@@ -144,7 +178,7 @@ test("session started renderer returns stable Discord text", () => {
   ).toBe("Session started for `api`.\nCodex thread: `codex-thread-1`.");
 });
 
-test("running status renderer returns stable Discord text", () => {
+test("running status helper renders turn and thread status text", () => {
   expect(
     renderRunningStatusText({
       method: "turn/started",
@@ -164,7 +198,7 @@ test("running status renderer returns stable Discord text", () => {
   ).toBe("Thread status changed: `running`.");
 });
 
-test("tool progress renderer summarizes known tool events", () => {
+test("tool progress helper renders item progress text", () => {
   expect(
     renderToolProgressText({
       method: "item/started",
@@ -196,5 +230,18 @@ test("degradation renderer explains read-only mode", () => {
     }),
   ).toBe(
     "Session is now read-only because it was modified outside the supported Discord/Codex flow (`native_cli_write`).",
+  );
+});
+
+test("degradation renderer explains when the bound Codex thread is gone", () => {
+  expect(
+    renderDegradationBannerText({
+      type: "session.degraded",
+      params: {
+        reason: "thread_missing",
+      },
+    }),
+  ).toBe(
+    "Session is now read-only because the bound Codex session no longer exists. Create or import a new session.",
   );
 });

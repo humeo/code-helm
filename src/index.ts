@@ -24,41 +24,105 @@ import type {
   CodexTurnItem,
   CodexUserMessageItem,
   RoutedEventMap,
+  StartTurnParams,
+  ThreadReadResult,
 } from "./codex/protocol-types";
 import { type AppConfig, parseConfig, type WorkdirConfig } from "./config";
 import { createDatabaseClient } from "./db/client";
 import { applyMigrations } from "./db/migrate";
-import { createApprovalRepo } from "./db/repos/approvals";
-import { createSessionRepo } from "./db/repos/sessions";
+import { createApprovalRepo, type ApprovalRecord } from "./db/repos/approvals";
+import { createSessionRepo, type SessionRecord } from "./db/repos/sessions";
 import { createWorkdirRepo } from "./db/repos/workdirs";
 import { createWorkspaceRepo } from "./db/repos/workspaces";
 import type { ApprovalStatus } from "./domain/approval-service";
 import { shouldDegradeDiscordToReadOnly } from "./domain/external-modification";
+import {
+  canControlSession,
+  coercePersistedSessionRuntimeState,
+  inferSyncedSessionRuntimeState,
+  resolveResumeSessionState,
+  resolveSyncSessionState,
+  resolveSessionAccessMode,
+} from "./domain/session-service";
+import type {
+  SessionLifecycleState,
+  SessionPersistedRuntimeState,
+  SessionResumeState,
+  SessionRuntimeState,
+} from "./domain/types";
 import { applyApprovalResolutionSignal, renderApprovalUi } from "./discord/approval-ui";
 import { createDiscordBot } from "./discord/bot";
-import type { DiscordCommandResult, DiscordCommandServices } from "./discord/commands";
+import {
+  buildControlChannelCommands,
+  type DiscordCommandResult,
+  type DiscordCommandServices,
+} from "./discord/commands";
 import {
   renderDegradationBannerText,
-  renderRunningStatusText,
   renderSessionStartedText,
-  renderToolProgressText,
+  renderStatusCardText,
 } from "./discord/renderers";
 import {
+  appendProcessStep,
+  buildCommandProcessStep,
+  collectComparableTranscriptItemIds,
   collectTranscriptEntries,
   collectTranscriptItemIds,
+  getAssistantTranscriptEntryId,
+  type DiscordMessagePayload,
+  getProcessTranscriptEntryId,
+  getUserTranscriptEntryId,
+  isDiscordMessagePayloadEmpty,
+  type ProcessFooterText,
+  normalizeProcessStepText,
   renderTranscriptEntry,
 } from "./discord/transcript";
-import { decideThreadTurn } from "./discord/thread-handler";
+import {
+  decideArchivedThreadResume,
+  decideThreadTurn,
+  type CodexTurnInput,
+} from "./discord/thread-handler";
 import { logger } from "./logger";
 
 const approvalButtonPrefix = "approval";
 
-type SessionRuntimeState = "idle" | "running" | "waiting-approval" | "degraded";
 type ApprovalAction = "approve" | "decline" | "cancel";
-type ApprovalButtonMessage = Message<boolean>;
+type DiscordMessageComponents = ActionRowBuilder<ButtonBuilder>[];
+type DiscordChannelMessagePayload = DiscordMessagePayload & {
+  components?: DiscordMessageComponents;
+};
+type ApprovalButtonMessage = {
+  edit(payload: { content: string; components: [] }): Promise<ApprovalButtonMessage>;
+};
+type ApprovalLifecycleMessage = {
+  content: string;
+  edit(payload: DiscordChannelMessagePayload): Promise<ApprovalLifecycleMessage>;
+};
+type ApprovalLifecycleState = {
+  message?: ApprovalLifecycleMessage;
+  pendingMessage?: Promise<ApprovalLifecycleMessage | undefined>;
+};
 type StreamingTranscriptMessage = Message<boolean>;
+export type EditableStatusCardMessage = {
+  edit(payload: { content: string }): Promise<EditableStatusCardMessage>;
+  content: string;
+};
+type StatusCardCandidate = {
+  id: string;
+  content: string;
+  editable: boolean;
+  author?: {
+    bot?: boolean;
+    id?: string;
+  };
+};
 type SendableChannel = {
-  send(payload: { content: string; components?: unknown[] }): Promise<Message<boolean>>;
+  send(payload: DiscordChannelMessagePayload): Promise<Message<boolean>>;
+};
+type StatusCardRecoverableChannel = {
+  messages: {
+    fetch(options: { limit: number; before?: string }): Promise<Iterable<Message<boolean>> | Map<string, Message<boolean>>>;
+  };
 };
 type ThreadStarterMessage = Message<boolean> & {
   startThread(options: {
@@ -67,20 +131,894 @@ type ThreadStarterMessage = Message<boolean> & {
     reason?: string;
   }): Promise<AnyThreadChannel>;
 };
+type ArchiveableThreadChannel = {
+  setArchived(archived?: boolean, reason?: string): Promise<unknown>;
+};
 type TranscriptRuntime = {
   seenItemIds: Set<string>;
+  finalizingItemIds: Set<string>;
   pendingDiscordInputs: string[];
-  streamingAgentMessages: Map<
+  turnProcessMessages: Map<
     string,
     {
-      phase?: string | null;
-      text: string;
+      steps: string[];
+      liveCommentaryItemId?: string;
+      liveCommentaryText?: string;
+      footer?: ProcessFooterText;
       message?: StreamingTranscriptMessage;
+      pendingCreate?: Promise<StreamingTranscriptMessage | undefined>;
     }
   >;
+  itemTurnIds: Map<string, string>;
+  activeTurnId?: string;
+  statusMessage?: EditableStatusCardMessage;
+  statusActivity?: string;
+  statusCommand?: string;
+  attemptedStatusRecovery: boolean;
+  pendingStatusUpdate?: Promise<EditableStatusCardMessage | undefined>;
 };
 
 const sessionSnapshotPollIntervalMs = 15_000;
+
+export const shouldRenderLiveAssistantTranscriptBubble = (
+  phase: string | null | undefined,
+) => {
+  return phase !== "commentary";
+};
+
+export const shouldRenderCommandExecutionStartMessage = () => {
+  return false;
+};
+
+const createTurnProcessMessageState = () => {
+  return {
+    steps: [] as string[],
+    liveCommentaryItemId: undefined as string | undefined,
+    liveCommentaryText: undefined as string | undefined,
+    footer: undefined as ProcessFooterText | undefined,
+    message: undefined as StreamingTranscriptMessage | undefined,
+    pendingCreate: undefined as Promise<StreamingTranscriptMessage | undefined> | undefined,
+  };
+};
+
+const ensureTurnProcessMessageState = (
+  runtime: Pick<TranscriptRuntime, "turnProcessMessages">,
+  turnId: string,
+) => {
+  const current = runtime.turnProcessMessages.get(turnId);
+
+  if (current) {
+    return current;
+  }
+
+  const created = createTurnProcessMessageState();
+  runtime.turnProcessMessages.set(turnId, created);
+  return created;
+};
+
+const getFooterForSessionState = (
+  state: SessionRuntimeState,
+): ProcessFooterText | undefined => {
+  if (state === "waiting-approval") {
+    return "Waiting for approval";
+  }
+
+  if (state === "running") {
+    return "Working...";
+  }
+
+  return undefined;
+};
+
+const collectVisibleTurnProcessSteps = ({
+  steps,
+  liveCommentaryText,
+}: {
+  steps: string[];
+  liveCommentaryText?: string;
+}) => {
+  const visibleSteps = [...steps];
+  const normalizedLiveCommentary = liveCommentaryText
+    ? normalizeProcessStepText(liveCommentaryText)
+    : "";
+
+  if (
+    normalizedLiveCommentary.length > 0
+    && visibleSteps.at(-1) !== normalizedLiveCommentary
+  ) {
+    visibleSteps.push(normalizedLiveCommentary);
+  }
+
+  return visibleSteps;
+};
+
+export const renderLiveTurnProcessMessage = ({
+  turnId,
+  steps,
+  liveCommentaryText,
+  footer,
+}: {
+  turnId: string;
+  steps: string[];
+  liveCommentaryText?: string;
+  footer?: ProcessFooterText;
+}) => {
+  const visibleSteps = collectVisibleTurnProcessSteps({
+    steps,
+    liveCommentaryText,
+  });
+
+  if (visibleSteps.length === 0 && !footer) {
+    return undefined;
+  }
+
+  return renderTranscriptEntry({
+    itemId: getProcessTranscriptEntryId(turnId),
+    kind: "process",
+    turnId,
+    steps: visibleSteps,
+    footer,
+  });
+};
+
+export const finalizeLiveTurnProcessMessage = async ({
+  currentMessage,
+  currentMessagePromise,
+  rendered,
+  sendRendered,
+}: {
+  currentMessage?: {
+    delete(): Promise<unknown>;
+    edit(payload: DiscordMessagePayload): Promise<unknown>;
+  };
+  currentMessagePromise?: Promise<{
+    delete(): Promise<unknown>;
+    edit(payload: DiscordMessagePayload): Promise<unknown>;
+  } | undefined>;
+  rendered?: DiscordMessagePayload;
+  sendRendered: (payload: DiscordMessagePayload) => Promise<unknown>;
+}) => {
+  const message = currentMessage ?? await currentMessagePromise;
+
+  if (isDiscordMessagePayloadEmpty(rendered)) {
+    if (message) {
+      await message.delete();
+    }
+
+    return;
+  }
+
+  const payload = rendered as DiscordMessagePayload;
+
+  if (message) {
+    await message.edit(payload);
+    return;
+  }
+
+  await sendRendered(payload);
+};
+
+export const shouldPollSnapshotForSessionState = (state: SessionRuntimeState) => {
+  return state === "idle";
+};
+
+export const shouldPollRecoveryProbeForSessionState = (
+  state: SessionRuntimeState,
+) => {
+  return state === "running" || state === "waiting-approval";
+};
+
+export const isExpectedPreMaterializationIncludeTurnsError = (error: unknown) => {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  const normalizedMessage = error.message.toLowerCase();
+
+  return (
+    (normalizedMessage.includes("includeturns")
+      && normalizedMessage.includes("before first user message"))
+    || (normalizedMessage.includes("includeturns")
+      && normalizedMessage.includes("not yet materialized"))
+  );
+};
+
+export const shouldLogSnapshotReconciliationWarning = (error: unknown) => {
+  return !isExpectedPreMaterializationIncludeTurnsError(error);
+};
+
+export const isMissingCodexThreadError = (error: unknown) => {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  const normalizedMessage = error.message.toLowerCase();
+
+  return normalizedMessage.includes("thread not found");
+};
+
+export const isNotLoadedCodexThreadError = (error: unknown) => {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  return error.message.toLowerCase().includes("thread not loaded");
+};
+
+export const startTurnWithThreadResumeRetry = async <TResult>({
+  request,
+  startTurn,
+  resumeThread,
+}: {
+  request: StartTurnParams;
+  startTurn: (request: StartTurnParams) => Promise<TResult>;
+  resumeThread: (params: { threadId: string }) => Promise<unknown>;
+}) => {
+  try {
+    return await startTurn(request);
+  } catch (error) {
+    if (!isNotLoadedCodexThreadError(error)) {
+      throw error;
+    }
+
+    await resumeThread({
+      threadId: request.threadId,
+    });
+
+    return startTurn(request);
+  }
+};
+
+const isRecoverableStaleStatusMessageError = (error: unknown) => {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  const normalizedMessage = error.message.toLowerCase();
+
+  return normalizedMessage.includes("unknown message")
+    || normalizedMessage.includes("message not found")
+    || normalizedMessage.includes("not found")
+    || normalizedMessage.includes("deleted");
+};
+
+export const hasHandledTranscriptItem = (
+  runtime: {
+    seenItemIds: Set<string>;
+    finalizingItemIds: Set<string>;
+  },
+  itemId: string,
+) => {
+  return runtime.seenItemIds.has(itemId) || runtime.finalizingItemIds.has(itemId);
+};
+
+export const shouldSkipTranscriptSnapshotItem = (
+  runtime: {
+    seenItemIds: Set<string>;
+    finalizingItemIds: Set<string>;
+  },
+  itemId: string,
+) => {
+  return runtime.seenItemIds.has(itemId) || runtime.finalizingItemIds.has(itemId);
+};
+
+export const shouldSkipTranscriptRelayEntry = ({
+  runtime,
+  itemId,
+  source,
+}: {
+  runtime: {
+    seenItemIds: Set<string>;
+    finalizingItemIds: Set<string>;
+  };
+  itemId: string;
+  source: "live" | "snapshot";
+}) => {
+  if (source === "snapshot") {
+    return shouldSkipTranscriptSnapshotItem(runtime, itemId);
+  }
+
+  return runtime.seenItemIds.has(itemId);
+};
+
+export const shouldDegradeForSnapshotMismatch = ({
+  runtime,
+  turns,
+}: {
+  runtime: {
+    seenItemIds: Set<string>;
+    finalizingItemIds: Set<string>;
+    pendingDiscordInputs: string[];
+  };
+  turns: CodexTurn[] | undefined;
+}) => {
+  const pendingDiscordInputsProbe = [...runtime.pendingDiscordInputs];
+  const unseenItemIds = collectComparableTranscriptItemIds(turns, {
+    pendingDiscordInputs: pendingDiscordInputsProbe,
+  }).filter(
+    (itemId) => !shouldSkipTranscriptSnapshotItem(runtime, itemId),
+  );
+
+  if (unseenItemIds.length === 0) {
+    return false;
+  }
+
+  if (runtime.pendingDiscordInputs.length === 0) {
+    return true;
+  }
+
+  return pendingDiscordInputsProbe.length === runtime.pendingDiscordInputs.length;
+};
+
+export const canReuseStatusCardMessage = ({
+  content,
+  editable,
+  author,
+  botUserId,
+}: StatusCardCandidate & {
+  botUserId?: string;
+}) => {
+  return (
+    content.startsWith("CodeHelm status: ")
+    && editable
+    && author?.bot === true
+    && (botUserId === undefined || author.id === botUserId)
+  );
+};
+
+export const findReusableStatusCardMessage = <T extends StatusCardCandidate>({
+  messages,
+  botUserId,
+}: {
+  messages: T[];
+  botUserId?: string;
+}) => {
+  return messages.find((message) =>
+    canReuseStatusCardMessage({
+      ...message,
+      botUserId,
+    }));
+};
+
+export const recoverStatusCardMessageFromHistory = async <T extends StatusCardCandidate>({
+  fetchPage,
+  botUserId,
+  pageSize = 50,
+  maxPages = 5,
+}: {
+  fetchPage: (options: { limit: number; before?: string }) => Promise<T[]>;
+  botUserId?: string;
+  pageSize?: number;
+  maxPages?: number;
+}) => {
+  let before: string | undefined;
+
+  for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {
+    const messages = await fetchPage({
+      limit: pageSize,
+      before,
+    });
+    const recovered = findReusableStatusCardMessage({
+      messages,
+      botUserId,
+    });
+
+    if (recovered) {
+      return recovered;
+    }
+
+    if (messages.length === 0) {
+      return undefined;
+    }
+
+    before = messages.at(-1)?.id;
+
+    if (!before || messages.length < pageSize) {
+      return undefined;
+    }
+  }
+
+  return undefined;
+};
+
+export const upsertStatusCardMessage = async ({
+  currentMessage,
+  recoverMessage,
+  content,
+  sendMessage,
+}: {
+  currentMessage?: EditableStatusCardMessage;
+  recoverMessage: () => Promise<EditableStatusCardMessage | undefined>;
+  content: string;
+  sendMessage: (content: string) => Promise<EditableStatusCardMessage | undefined>;
+}) => {
+  const message = currentMessage ?? await recoverMessage();
+
+  if (message) {
+    if (message.content === content) {
+      return message;
+    }
+
+    return message.edit({ content });
+  }
+
+  return sendMessage(content);
+};
+
+export const applyStatusCardUpdate = async ({
+  runtime,
+  content,
+  recoverMessage,
+  sendMessage,
+}: {
+  runtime: {
+    attemptedStatusRecovery: boolean;
+    statusMessage?: EditableStatusCardMessage;
+    pendingStatusUpdate?: Promise<EditableStatusCardMessage | undefined>;
+  };
+  content: string;
+  recoverMessage: () => Promise<EditableStatusCardMessage | undefined>;
+  sendMessage: (content: string) => Promise<EditableStatusCardMessage | undefined>;
+}) => {
+  const previousUpdate = runtime.pendingStatusUpdate;
+  const operation = (async () => {
+    if (previousUpdate) {
+      try {
+        await previousUpdate;
+      } catch {
+        // Let the next update retry recovery/send after a failed prior attempt.
+      }
+    }
+
+    try {
+      const recoveredStatusMessage = await tryRecoverStatusCardMessage({
+        runtime,
+        recoverMessage,
+      });
+
+      runtime.statusMessage = await upsertStatusCardMessage({
+        currentMessage: runtime.statusMessage ?? recoveredStatusMessage,
+        recoverMessage: async () => undefined,
+        content,
+        sendMessage,
+      });
+    } catch (error) {
+      if (!runtime.statusMessage || !isRecoverableStaleStatusMessageError(error)) {
+        throw error;
+      }
+
+      runtime.statusMessage = undefined;
+      runtime.attemptedStatusRecovery = false;
+      const recoveredStatusMessage = await tryRecoverStatusCardMessage({
+        runtime,
+        recoverMessage,
+      });
+
+      runtime.statusMessage = await upsertStatusCardMessage({
+        currentMessage: runtime.statusMessage ?? recoveredStatusMessage,
+        recoverMessage: async () => undefined,
+        content,
+        sendMessage,
+      });
+    }
+
+    return runtime.statusMessage;
+  })();
+
+  runtime.pendingStatusUpdate = operation;
+
+  try {
+    return await operation;
+  } finally {
+    if (runtime.pendingStatusUpdate === operation) {
+      runtime.pendingStatusUpdate = undefined;
+    }
+  }
+};
+
+export const tryRecoverStatusCardMessage = async ({
+  runtime,
+  recoverMessage,
+}: {
+  runtime: {
+    attemptedStatusRecovery: boolean;
+    statusMessage?: EditableStatusCardMessage;
+  };
+  recoverMessage: () => Promise<EditableStatusCardMessage | undefined>;
+}) => {
+  if (runtime.statusMessage || runtime.attemptedStatusRecovery) {
+    return runtime.statusMessage;
+  }
+
+  const recovered = await recoverMessage();
+  runtime.attemptedStatusRecovery = true;
+  runtime.statusMessage = recovered;
+
+  return recovered;
+};
+
+export const readThreadForSnapshotReconciliation = async ({
+  codexClient,
+  threadId,
+}: {
+  codexClient: Pick<JsonRpcClient, "readThread">;
+  threadId: string;
+}): Promise<ThreadReadResult> => {
+  try {
+    return await codexClient.readThread({
+      threadId,
+      includeTurns: true,
+    });
+  } catch (error) {
+    if (!isExpectedPreMaterializationIncludeTurnsError(error)) {
+      throw error;
+    }
+
+    const snapshot = await codexClient.readThread({
+      threadId,
+    });
+
+    return {
+      ...snapshot,
+      thread: {
+        ...snapshot.thread,
+        turns: snapshot.thread.turns ?? [],
+      },
+    };
+  }
+};
+
+export const getSessionRecoveryProbeOutcome = ({
+  sessionState,
+  threadStatus,
+}: {
+  sessionState: SessionRuntimeState;
+  threadStatus: CodexThreadStatus;
+}) => {
+  const nextState = inferSessionStateFromThreadStatus(threadStatus);
+
+  return {
+    nextState,
+    shouldUpdateSessionState: nextState !== sessionState,
+    shouldUpdateStatusCard: nextState !== sessionState,
+    shouldSyncTranscriptSnapshot:
+      sessionState !== "idle" && nextState === "idle",
+  };
+};
+
+export const pollSessionRecovery = async ({
+  session,
+  sessionState,
+  readThread,
+  updateSessionState,
+  updateStatusCard,
+  syncTranscriptSnapshot,
+}: {
+  session: {
+    codexThreadId: string;
+    discordThreadId: string;
+    state: string;
+  };
+  sessionState: SessionRuntimeState;
+  readThread: (threadId: string) => Promise<ThreadReadResult>;
+  updateSessionState: (nextState: SessionRuntimeState) => Promise<void> | void;
+  updateStatusCard: (nextState: SessionRuntimeState) => Promise<void>;
+  syncTranscriptSnapshot: () => Promise<void>;
+}) => {
+  const probe = await readThread(session.codexThreadId);
+  const outcome = getSessionRecoveryProbeOutcome({
+    sessionState,
+    threadStatus: probe.thread.status,
+  });
+
+  if (outcome.shouldUpdateSessionState) {
+    await updateSessionState(outcome.nextState);
+  }
+
+  if (outcome.shouldUpdateStatusCard) {
+    await updateStatusCard(outcome.nextState);
+  }
+
+  if (outcome.shouldSyncTranscriptSnapshot) {
+    await syncTranscriptSnapshot();
+  }
+};
+
+const coerceSessionRuntimeState = (state: string): SessionRuntimeState => {
+  return coercePersistedSessionRuntimeState(state);
+};
+
+const maxStatusActivityLength = 62;
+
+const truncateStatusActivity = (value: string) => {
+  return value.length > maxStatusActivityLength
+    ? `${value.slice(0, Math.max(0, maxStatusActivityLength - 3))}...`
+    : value;
+};
+
+export const summarizeStatusActivity = (value: string) => {
+  const normalized = value
+    .split("\n")[0]
+    ?.replace(/\s+/g, " ")
+    .trim() ?? "";
+
+  return truncateStatusActivity(normalized);
+};
+
+const isFailedCommandExecutionItem = (item: CodexCommandExecutionItem) => {
+  if (typeof item.exitCode === "number") {
+    return item.exitCode !== 0;
+  }
+
+  return item.status === "failed" || item.status === "error";
+};
+
+export const shouldRelayLiveCompletedItemToTranscript = (item: CodexTurnItem) => {
+  if (!isCommandExecutionItem(item)) {
+    return true;
+  }
+
+  return false;
+};
+
+export const shouldTrackLiveCompletedItemAsFinalizing = (item: CodexTurnItem) => {
+  return isCommandExecutionItem(item) && shouldRelayLiveCompletedItemToTranscript(item);
+};
+
+export const shouldDeleteLiveAssistantTranscriptBubbleOnCompletion = (
+  _startedPhase: string | null | undefined,
+  completedPhase: string | null | undefined,
+) => {
+  return completedPhase === "commentary";
+};
+
+export const shouldMarkAssistantItemSeenOnCompletion = (
+  startedPhase: string | null | undefined,
+  completedPhase: string | null | undefined,
+) => {
+  return !shouldDeleteLiveAssistantTranscriptBubbleOnCompletion(
+    startedPhase,
+    completedPhase,
+  );
+};
+
+export const finalizeLiveAssistantTranscriptBubble = async ({
+  currentMessage,
+  currentMessagePromise,
+  startedPhase,
+  completedPhase,
+  rendered,
+  sendRendered,
+}: {
+  currentMessage?: {
+    delete(): Promise<unknown>;
+    edit(payload: DiscordMessagePayload): Promise<unknown>;
+  };
+  currentMessagePromise?: Promise<{
+    delete(): Promise<unknown>;
+    edit(payload: DiscordMessagePayload): Promise<unknown>;
+  } | undefined>;
+  startedPhase: string | null | undefined;
+  completedPhase: string | null | undefined;
+  rendered: DiscordMessagePayload;
+  sendRendered: (payload: DiscordMessagePayload) => Promise<unknown>;
+}) => {
+  const message = currentMessage ?? await currentMessagePromise;
+
+  if (shouldDeleteLiveAssistantTranscriptBubbleOnCompletion(startedPhase, completedPhase)) {
+    if (message) {
+      await message.delete();
+    }
+
+    return;
+  }
+
+  if (message) {
+    await message.edit(rendered);
+    return;
+  }
+
+  await sendRendered(rendered);
+};
+
+export const upsertStreamingTranscriptMessage = async <T extends {
+  edit(payload: DiscordMessagePayload): Promise<unknown>;
+}>({
+  state,
+  payload,
+  sendMessage,
+}: {
+  state: {
+    message?: T;
+    pendingCreate?: Promise<T | undefined>;
+  };
+  payload: DiscordMessagePayload;
+  sendMessage: (payload: DiscordMessagePayload) => Promise<T | undefined>;
+}) => {
+  if (state.message) {
+    await state.message.edit(payload);
+    return state.message;
+  }
+
+  if (state.pendingCreate) {
+    const message = await state.pendingCreate;
+
+    if (message) {
+      state.message = message;
+      await message.edit(payload);
+    }
+
+    return message;
+  }
+
+  const createPromise = sendMessage(payload);
+  state.pendingCreate = createPromise;
+
+  try {
+    const message = await createPromise;
+
+    if (message) {
+      state.message = message;
+    }
+
+    return message;
+  } finally {
+    if (state.pendingCreate === createPromise) {
+      state.pendingCreate = undefined;
+    }
+  }
+};
+
+export const renderApprovalLifecycleMessage = ({
+  requestId,
+  status,
+}: {
+  requestId: string;
+  status: ApprovalStatus;
+}) => {
+  if (status === "pending") {
+    return `Approval \`${requestId}\`: pending.`;
+  }
+
+  return `Approval \`${requestId}\`: ${status}.`;
+};
+
+export const renderApprovalLifecyclePayload = ({
+  requestId,
+  status,
+}: {
+  requestId: string;
+  status: ApprovalStatus;
+}) => {
+  return {
+    content: renderApprovalLifecycleMessage({
+      requestId,
+      status,
+    }),
+    components: status === "pending" ? buildApprovalComponents(requestId) : [],
+  };
+};
+
+export const shouldAcceptApprovalInteraction = (
+  status: ApprovalStatus,
+) => {
+  return status === "pending";
+};
+
+export const upsertApprovalLifecycleMessage = async ({
+  currentMessage,
+  currentMessagePromise,
+  recoverMessage,
+  payload,
+  sendMessage,
+}: {
+  currentMessage?: ApprovalLifecycleMessage;
+  currentMessagePromise?: Promise<ApprovalLifecycleMessage | undefined>;
+  recoverMessage: () => Promise<ApprovalLifecycleMessage | undefined>;
+  payload: DiscordChannelMessagePayload;
+  sendMessage: (payload: DiscordChannelMessagePayload) => Promise<ApprovalLifecycleMessage | undefined>;
+}) => {
+  const message = currentMessage ?? await currentMessagePromise ?? await recoverMessage();
+
+  if (message) {
+    if (message.content === payload.content && payload.components === undefined) {
+      return message;
+    }
+
+    return message.edit(payload);
+  }
+
+  return sendMessage(payload);
+};
+
+export const canReuseApprovalLifecycleMessage = ({
+  requestId,
+  content,
+  editable,
+  author,
+  botUserId,
+}: StatusCardCandidate & {
+  requestId: string;
+  botUserId?: string;
+}) => {
+  return (
+    content.startsWith(`Approval \`${requestId}\`:`)
+    && editable
+    && author?.bot === true
+    && (botUserId === undefined || author.id === botUserId)
+  );
+};
+
+export const recoverApprovalLifecycleMessageFromHistory = async <
+  T extends StatusCardCandidate,
+>({
+  requestId,
+  fetchPage,
+  botUserId,
+  pageSize = 50,
+  maxPages = 5,
+}: {
+  requestId: string;
+  fetchPage: (options: { limit: number; before?: string }) => Promise<T[]>;
+  botUserId?: string;
+  pageSize?: number;
+  maxPages?: number;
+}) => {
+  let before: string | undefined;
+
+  for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {
+    const messages = await fetchPage({
+      limit: pageSize,
+      before,
+    });
+    const recovered = messages.find((message) =>
+      canReuseApprovalLifecycleMessage({
+        ...message,
+        requestId,
+        botUserId,
+      }));
+
+    if (recovered) {
+      return recovered;
+    }
+
+    if (messages.length === 0) {
+      return undefined;
+    }
+
+    before = messages.at(-1)?.id;
+
+    if (!before || messages.length < pageSize) {
+      return undefined;
+    }
+  }
+
+  return undefined;
+};
+
+export const finalizeApprovalLifecycleMessageState = async ({
+  state,
+  operation,
+}: {
+  state: ApprovalLifecycleState;
+  operation: Promise<ApprovalLifecycleMessage | undefined>;
+}) => {
+  state.pendingMessage = operation;
+
+  try {
+    const message = await operation;
+
+    if (message) {
+      state.message = message;
+    }
+
+    return message;
+  } finally {
+    if (state.pendingMessage === operation) {
+      state.pendingMessage = undefined;
+    }
+  }
+};
 
 const toRecord = (value: unknown) => {
   if (value && typeof value === "object" && !Array.isArray(value)) {
@@ -243,9 +1181,53 @@ const isCommandExecutionItem = (
 const buildTranscriptRuntime = (): TranscriptRuntime => {
   return {
     seenItemIds: new Set<string>(),
+    finalizingItemIds: new Set<string>(),
     pendingDiscordInputs: [],
-    streamingAgentMessages: new Map(),
+    turnProcessMessages: new Map(),
+    itemTurnIds: new Map(),
+    activeTurnId: undefined,
+    statusMessage: undefined,
+    statusActivity: undefined,
+    statusCommand: undefined,
+    attemptedStatusRecovery: false,
+    pendingStatusUpdate: undefined,
   };
+};
+
+export const markTranscriptItemsSeen = ({
+  runtime,
+  turns,
+  source,
+}: {
+  runtime: Pick<TranscriptRuntime, "seenItemIds" | "finalizingItemIds">;
+  turns: CodexTurn[] | undefined;
+  source: "live" | "snapshot";
+}) => {
+  for (const itemId of collectTranscriptItemIds(turns)) {
+    if (source === "snapshot" && shouldSkipTranscriptSnapshotItem(runtime, itemId)) {
+      continue;
+    }
+
+    runtime.seenItemIds.add(itemId);
+  }
+
+  for (const itemId of collectComparableTranscriptItemIds(turns)) {
+    runtime.seenItemIds.add(itemId);
+  }
+};
+
+export const seedTranscriptRuntimeSeenItemsFromSnapshot = ({
+  runtime,
+  turns,
+}: {
+  runtime: Pick<TranscriptRuntime, "seenItemIds" | "finalizingItemIds">;
+  turns: CodexTurn[] | undefined;
+}) => {
+  markTranscriptItemsSeen({
+    runtime,
+    turns,
+    source: "snapshot",
+  });
 };
 
 const relayTranscriptEntries = async ({
@@ -253,39 +1235,45 @@ const relayTranscriptEntries = async ({
   channelId,
   runtime,
   turns,
+  source,
+  activeTurnId,
+  activeTurnFooter,
 }: {
   client: Client;
   channelId: string;
   runtime: TranscriptRuntime;
   turns: CodexTurn[] | undefined;
+  source: "live" | "snapshot";
+  activeTurnId?: string;
+  activeTurnFooter?: ProcessFooterText;
 }) => {
-  for (const entry of collectTranscriptEntries(turns)) {
-    if (runtime.seenItemIds.has(entry.itemId)) {
-      continue;
-    }
-
-    if (
-      entry.kind === "user"
-      && runtime.pendingDiscordInputs.length > 0
-      && runtime.pendingDiscordInputs[0] === entry.text
-    ) {
-      runtime.pendingDiscordInputs.shift();
-      runtime.seenItemIds.add(entry.itemId);
+  for (const entry of collectTranscriptEntries(turns, {
+    source,
+    pendingDiscordInputs: runtime.pendingDiscordInputs,
+    activeTurnId,
+    activeTurnFooter,
+  })) {
+    if (shouldSkipTranscriptRelayEntry({
+      runtime,
+      itemId: entry.itemId,
+      source,
+    })) {
       continue;
     }
 
     const rendered = renderTranscriptEntry(entry);
 
-    if (rendered.length > 0) {
-      await sendTextToChannel(client, channelId, rendered);
+    if (!isDiscordMessagePayloadEmpty(rendered)) {
+      await sendChannelMessage(client, channelId, rendered);
     }
 
     runtime.seenItemIds.add(entry.itemId);
   }
-
-  for (const itemId of collectTranscriptItemIds(turns)) {
-    runtime.seenItemIds.add(itemId);
-  }
+  markTranscriptItemsSeen({
+    runtime,
+    turns,
+    source,
+  });
 };
 
 const isSendableChannel = (value: unknown): value is SendableChannel => {
@@ -294,6 +1282,28 @@ const isSendableChannel = (value: unknown): value is SendableChannel => {
     typeof value === "object" &&
     "send" in value &&
     typeof (value as { send?: unknown }).send === "function"
+  );
+};
+
+const isStatusCardRecoverableChannel = (
+  value: unknown,
+): value is StatusCardRecoverableChannel => {
+  return (
+    !!value
+    && typeof value === "object"
+    && "messages" in value
+    && typeof (value as { messages?: { fetch?: unknown } }).messages?.fetch === "function"
+  );
+};
+
+const isArchiveableThreadChannel = (
+  value: unknown,
+): value is ArchiveableThreadChannel => {
+  return (
+    !!value
+    && typeof value === "object"
+    && "setArchived" in value
+    && typeof (value as { setArchived?: unknown }).setArchived === "function"
   );
 };
 
@@ -348,42 +1358,575 @@ const formatWorkdirList = (workdirs: WorkdirConfig[]) => {
     .join("\n");
 };
 
-const formatThreadList = (threads: CodexThread[], workdirs: WorkdirConfig[]) => {
-  const workdirByPath = new Map(workdirs.map((workdir) => [workdir.absolutePath, workdir]));
+export const describeSessionAccessMode = (
+  session: Pick<SessionRecord, "state" | "lifecycleState">,
+) => {
+  return resolveSessionAccessMode({
+    lifecycleState: session.lifecycleState,
+    runtimeState: coercePersistedSessionRuntimeState(session.state),
+  });
+};
 
-  if (threads.length === 0) {
-    return "No Codex sessions found for configured workdirs.";
+export const canAcceptManagedSessionThreadInput = (
+  session: Pick<SessionRecord, "lifecycleState">,
+) => {
+  return session.lifecycleState === "active";
+};
+
+export const shouldProjectManagedSessionDiscordSurface = (
+  session: Pick<SessionRecord, "lifecycleState">,
+) => {
+  return session.lifecycleState === "active";
+};
+
+export const handleManagedThreadDeletion = ({
+  threadId,
+  sessionRepo,
+}: {
+  threadId: string;
+  sessionRepo: Pick<ReturnType<typeof createSessionRepo>, "getByDiscordThreadId" | "markDeleted">;
+}) => {
+  const session = sessionRepo.getByDiscordThreadId(threadId);
+
+  if (!session) {
+    return false;
   }
 
-  return threads
-    .map((thread) => {
-      const workdir = workdirByPath.get(thread.cwd);
-      const workdirLabel = workdir ? `${workdir.label} (${workdir.id})` : thread.cwd;
+  sessionRepo.markDeleted(threadId);
+  return true;
+};
 
-      return `- \`${thread.id}\` [${describeCodexThreadStatus(thread.status)}] ${workdirLabel}`;
-    })
+export const handleArchivedManagedSessionThreadMessage = async ({
+  authorId,
+  ownerId,
+  content,
+  codexThreadId,
+  resumeSession,
+  forwardMessage,
+  rearchiveSession,
+}: {
+  authorId: string;
+  ownerId: string;
+  content: string;
+  codexThreadId?: string;
+  resumeSession: () => Promise<SessionResumeState>;
+  forwardMessage: (input: CodexTurnInput) => Promise<void>;
+  rearchiveSession: () => Promise<void>;
+}) => {
+  const decision = decideArchivedThreadResume({
+    authorId,
+    ownerId,
+    content,
+    sessionState: "idle",
+    codexThreadId: codexThreadId ?? "implicit-resume",
+  });
+
+  if (decision.kind === "noop") {
+    await rearchiveSession();
+    return {
+      kind: "ignored" as const,
+      reason: decision.reason,
+    };
+  }
+
+  try {
+    const outcome = await resumeSession();
+
+    if (outcome.kind === "untrusted") {
+      await rearchiveSession();
+      return {
+        kind: "failed-closed" as const,
+        reason: "resume-untrusted" as const,
+      };
+    }
+
+    if (outcome.kind === "ready" && outcome.session.runtimeState === "idle") {
+      await forwardMessage(decision.request.input);
+      return {
+        kind: "forwarded" as const,
+        session: outcome.session,
+      };
+    }
+
+    return {
+      kind: outcome.kind,
+      session: outcome.session,
+    };
+  } catch (error) {
+    await rearchiveSession();
+    throw error;
+  }
+};
+
+export const applyManagedTurnCompletion = async ({
+  session,
+  markIdle,
+  updateStatusCard,
+  syncTranscriptSnapshot,
+}: {
+  session: Pick<SessionRecord, "lifecycleState">;
+  markIdle: () => void;
+  updateStatusCard: () => Promise<void>;
+  syncTranscriptSnapshot: () => Promise<void>;
+}) => {
+  markIdle();
+
+  if (!shouldProjectManagedSessionDiscordSurface(session)) {
+    return;
+  }
+
+  await updateStatusCard();
+  await syncTranscriptSnapshot();
+};
+
+const formatManagedSessionThreadReference = (
+  session: Pick<SessionRecord, "discordThreadId" | "lifecycleState">,
+) => {
+  if (session.lifecycleState === "deleted") {
+    return `deleted (\`${session.discordThreadId}\`)`;
+  }
+
+  return `<#${session.discordThreadId}>`;
+};
+
+export const formatManagedSessionList = (
+  sessions: Array<
+    Pick<
+      SessionRecord,
+      "discordThreadId"
+      | "codexThreadId"
+      | "workdirId"
+      | "lifecycleState"
+      | "state"
+    >
+  >,
+) => {
+  if (sessions.length === 0) {
+    return "No managed sessions found.";
+  }
+
+  return sessions
+    .map((session) =>
+      [
+        `- Discord ${formatManagedSessionThreadReference(session)}`,
+        `Codex \`${session.codexThreadId}\``,
+        `workdir \`${session.workdirId}\``,
+        `lifecycle \`${session.lifecycleState}\``,
+        `runtime \`${session.state}\``,
+        `access \`${describeSessionAccessMode(session)}\``,
+      ].join(" | "),
+    )
     .join("\n");
 };
 
-const listSupportedThreads = async (
-  client: JsonRpcClient,
-  workdirs: WorkdirConfig[],
-) => {
-  const workdirPaths = new Set(workdirs.map((workdir) => workdir.absolutePath));
-  const threads: CodexThread[] = [];
-  let cursor: string | null = null;
+export const resolveCloseSessionCommand = ({
+  actorId,
+  session,
+}: {
+  actorId: string;
+  session:
+    | Pick<SessionRecord, "discordThreadId" | "ownerDiscordUserId">
+    | null;
+}): DiscordCommandResult => {
+  if (!session) {
+    return {
+      reply: {
+        content: "Use this command in a managed session thread.",
+        ephemeral: true,
+      },
+    };
+  }
 
-  do {
-    const page = await client.listThreads({
-      limit: 50,
-      cursor,
+  if (session.ownerDiscordUserId !== actorId) {
+    return {
+      reply: {
+        content: "Only the session owner can close this session.",
+        ephemeral: true,
+      },
+    };
+  }
+
+  return {
+    reply: {
+      content:
+        `Close is wired for <#${session.discordThreadId}> ` +
+        "but archive behavior is not implemented yet.",
+      ephemeral: true,
+    },
+  };
+};
+
+export const resolveResumeSessionCommand = ({
+  actorId,
+  codexThreadId,
+  session,
+}: {
+  actorId: string;
+  codexThreadId: string;
+  session:
+    | Pick<
+        SessionRecord,
+        "discordThreadId"
+        | "ownerDiscordUserId"
+        | "lifecycleState"
+      >
+    | null;
+}): DiscordCommandResult => {
+  if (!session) {
+    return {
+      reply: {
+        content: `Unknown managed session \`${codexThreadId}\`.`,
+        ephemeral: true,
+      },
+    };
+  }
+
+  if (session.ownerDiscordUserId !== actorId) {
+    return {
+      reply: {
+        content: "Only the session owner can resume this session.",
+        ephemeral: true,
+      },
+    };
+  }
+
+  if (session.lifecycleState === "deleted") {
+    return {
+      reply: {
+        content: `Session \`${codexThreadId}\` no longer has a resumable Discord thread.`,
+        ephemeral: true,
+      },
+    };
+  }
+
+  if (session.lifecycleState !== "archived") {
+    return {
+      reply: {
+        content:
+          `Session \`${codexThreadId}\` is currently \`${session.lifecycleState}\`, ` +
+          "not `archived`.",
+        ephemeral: true,
+      },
+    };
+  }
+
+  return {
+    reply: {
+      content:
+        `Resume is wired for \`${codexThreadId}\` ` +
+        `(${formatManagedSessionThreadReference(session)}) ` +
+        "but sync-and-unarchive behavior is not implemented yet.",
+      ephemeral: true,
+    },
+  };
+};
+
+export const resolveSyncSessionCommand = ({
+  actorId,
+  session,
+}: {
+  actorId: string;
+  session:
+    | Pick<
+        SessionRecord,
+        "codexThreadId"
+        | "discordThreadId"
+        | "ownerDiscordUserId"
+        | "lifecycleState"
+        | "state"
+      >
+    | null;
+}): DiscordCommandResult => {
+  if (!session) {
+    return {
+      reply: {
+        content: "Use this command in a managed session thread.",
+        ephemeral: true,
+      },
+    };
+  }
+
+  if (session.ownerDiscordUserId !== actorId) {
+    return {
+      reply: {
+        content: "Only the session owner can sync this session.",
+        ephemeral: true,
+      },
+    };
+  }
+
+  if (session.lifecycleState === "deleted") {
+    return {
+      reply: {
+        content: `Session \`${session.codexThreadId}\` no longer has a syncable Discord thread.`,
+        ephemeral: true,
+      },
+    };
+  }
+
+  if (session.lifecycleState !== "active") {
+    return {
+      reply: {
+        content:
+          `Session \`${session.codexThreadId}\` is currently \`${session.lifecycleState}\`, ` +
+          "not `active`.",
+        ephemeral: true,
+      },
+    };
+  }
+
+  if (coercePersistedSessionRuntimeState(session.state) !== "degraded") {
+    return {
+      reply: {
+        content:
+          `Session \`${session.codexThreadId}\` is currently \`${session.state}\`, ` +
+          "not `degraded`.",
+        ephemeral: true,
+      },
+    };
+  }
+
+  return {
+    reply: {
+      content:
+        `Sync is wired for \`${session.codexThreadId}\` ` +
+        `(${formatManagedSessionThreadReference(session)}) ` +
+        "but manual re-sync behavior is not implemented yet.",
+      ephemeral: true,
+    },
+  };
+};
+
+export const closeManagedSession = async ({
+  archiveThread,
+  unarchiveThread,
+  persistLifecycleState,
+}: {
+  archiveThread: () => Promise<void>;
+  unarchiveThread: () => Promise<void>;
+  persistLifecycleState: (
+    lifecycleState: Extract<SessionLifecycleState, "archived">,
+  ) => Promise<void> | void;
+}) => {
+  await archiveThread();
+
+  try {
+    await persistLifecycleState("archived");
+  } catch (error) {
+    try {
+      await unarchiveThread();
+    } catch (rollbackError) {
+      logger.warn(
+        "Failed to restore Discord thread after close lifecycle persistence failed",
+        rollbackError,
+      );
+    }
+
+    throw error;
+  }
+
+  return {
+    lifecycleState: "archived" as const,
+  };
+};
+
+export const reconcileResumedApprovalState = async ({
+  runtimeState,
+  pendingApprovals,
+  latestApproval,
+  upsertApprovalMessage,
+  ensureOwnerControls,
+}: {
+  runtimeState: SessionRuntimeState;
+  pendingApprovals: Array<Pick<ApprovalRecord, "requestId" | "status">>;
+  latestApproval?: Pick<ApprovalRecord, "requestId" | "status"> | null;
+  upsertApprovalMessage: (
+    requestId: string,
+    status: Extract<ApprovalStatus, "pending">,
+  ) => Promise<void> | void;
+  ensureOwnerControls?: (
+    requestId: string,
+    status: Extract<ApprovalStatus, "pending">,
+  ) => Promise<void> | void;
+}) => {
+  if (runtimeState !== "waiting-approval") {
+    return undefined;
+  }
+
+  const pendingApproval = pendingApprovals.find((approval) => approval.status === "pending");
+
+  if (!pendingApproval) {
+    if (latestApproval && latestApproval.status !== "pending") {
+      return undefined;
+    }
+
+    throw new Error(
+      "waiting-approval session has no pending approval to reconcile",
+    );
+  }
+
+  await upsertApprovalMessage(pendingApproval.requestId, "pending");
+  await ensureOwnerControls?.(pendingApproval.requestId, "pending");
+  return pendingApproval.requestId;
+};
+
+export const reconcileApprovalResolutionSurface = async ({
+  requestId,
+  status,
+  session,
+  currentThreadMessage,
+  currentThreadMessagePromise,
+  recoverThreadMessage,
+  sendThreadMessage,
+  dmMessage,
+}: {
+  requestId: string;
+  status: ApprovalStatus;
+  session?: Pick<SessionRecord, "lifecycleState"> | null;
+  currentThreadMessage?: ApprovalLifecycleMessage;
+  currentThreadMessagePromise?: Promise<ApprovalLifecycleMessage | undefined>;
+  recoverThreadMessage: () => Promise<ApprovalLifecycleMessage | undefined>;
+  sendThreadMessage: (payload: DiscordChannelMessagePayload) => Promise<ApprovalLifecycleMessage | undefined>;
+  dmMessage?: ApprovalButtonMessage;
+}) => {
+  if (dmMessage) {
+    await dmMessage.edit({
+      content: `Approval resolved: \`${status}\`.`,
+      components: [],
     });
+  }
 
-    threads.push(...page.data.filter((thread) => workdirPaths.has(thread.cwd)));
-    cursor = page.nextCursor;
-  } while (cursor);
+  return upsertApprovalLifecycleMessage({
+    currentMessage: currentThreadMessage,
+    currentMessagePromise: currentThreadMessagePromise,
+    recoverMessage: recoverThreadMessage,
+    payload: renderApprovalLifecyclePayload({
+      requestId,
+      status,
+    }),
+    sendMessage:
+      session && shouldProjectManagedSessionDiscordSurface(session)
+        ? sendThreadMessage
+        : async () => undefined,
+  });
+};
 
-  return threads;
+export const resumeManagedSession = async ({
+  session,
+  readThread,
+  archiveThread,
+  persistRuntimeState,
+  reconcileApprovalState,
+  unarchiveThread,
+  persistLifecycleState,
+  syncReadOnlySurface,
+  updateStatusCard,
+  syncTranscriptSnapshot,
+}: {
+  session: Pick<SessionRecord, "state" | "lifecycleState" | "degradationReason">;
+  readThread: () => Promise<ThreadReadResult>;
+  archiveThread: () => Promise<void>;
+  persistRuntimeState: (
+    runtimeState: SessionPersistedRuntimeState,
+  ) => Promise<void> | void;
+  reconcileApprovalState?: (
+    outcome: Exclude<SessionResumeState, { kind: "untrusted" }>,
+  ) => Promise<void> | void;
+  unarchiveThread: () => Promise<void>;
+  persistLifecycleState: (
+    lifecycleState: Extract<SessionLifecycleState, "active">,
+  ) => Promise<void> | void;
+  syncReadOnlySurface?: (
+    outcome: Extract<SessionResumeState, { kind: "read-only" }>,
+  ) => Promise<void>;
+  updateStatusCard: (
+    runtimeState: Extract<SessionPersistedRuntimeState, "idle" | "running" | "waiting-approval">,
+  ) => Promise<void>;
+  syncTranscriptSnapshot: (readResult: ThreadReadResult) => Promise<void>;
+}): Promise<SessionResumeState> => {
+  const readResult = await readThread();
+  const syncedRuntimeState = inferSyncedSessionRuntimeState(readResult.thread);
+  const outcome = resolveResumeSessionState({
+    lifecycleState: session.lifecycleState,
+    persistedRuntimeState: coercePersistedSessionRuntimeState(session.state),
+    degradationReason: session.degradationReason,
+    syncedRuntimeState,
+  });
+
+  if (outcome.kind === "untrusted") {
+    return outcome;
+  }
+
+  await reconcileApprovalState?.(outcome);
+  await persistRuntimeState(outcome.persistedRuntimeState);
+  if (outcome.kind === "read-only") {
+    await syncReadOnlySurface?.(outcome);
+  } else if (outcome.statusCardState) {
+    await updateStatusCard(outcome.statusCardState);
+  }
+
+  await syncTranscriptSnapshot(readResult);
+  await unarchiveThread();
+  try {
+    await persistLifecycleState("active");
+  } catch (error) {
+    try {
+      await archiveThread();
+    } catch (rollbackError) {
+      logger.warn(
+        "Failed to restore Discord thread after resume lifecycle persistence failed",
+        rollbackError,
+      );
+    }
+
+    throw error;
+  }
+
+  return outcome;
+};
+
+export const syncManagedSession = async ({
+  session,
+  readThread,
+  persistSessionState,
+  syncReadOnlySurface,
+  updateStatusCard,
+  syncTranscriptSnapshot,
+}: {
+  session: Pick<SessionRecord, "state" | "lifecycleState" | "degradationReason">;
+  readThread: () => Promise<ThreadReadResult>;
+  persistSessionState: (
+    runtimeState: SessionPersistedRuntimeState,
+    degradationReason: string | null,
+  ) => Promise<void> | void;
+  syncReadOnlySurface?: (
+    outcome: Extract<SessionResumeState, { kind: "read-only" | "error" }>,
+  ) => Promise<void>;
+  updateStatusCard: (
+    runtimeState: Extract<SessionPersistedRuntimeState, "idle" | "running" | "waiting-approval">,
+  ) => Promise<void>;
+  syncTranscriptSnapshot: (readResult: ThreadReadResult) => Promise<void>;
+}): Promise<SessionResumeState> => {
+  const readResult = await readThread();
+  const syncedRuntimeState = inferSyncedSessionRuntimeState(readResult.thread);
+  const outcome = resolveSyncSessionState({
+    syncedRuntimeState,
+  });
+
+  if (outcome.kind === "untrusted") {
+    return outcome;
+  }
+
+  await persistSessionState(outcome.persistedRuntimeState, null);
+
+  if (outcome.kind === "read-only" || outcome.kind === "error") {
+    await syncReadOnlySurface?.(outcome);
+  } else if (outcome.statusCardState) {
+    await updateStatusCard(outcome.statusCardState);
+  }
+
+  await syncTranscriptSnapshot(readResult);
+  return outcome;
 };
 
 const ensureWorkspaceSeeded = (
@@ -431,6 +1974,22 @@ const requireConfiguredControlChannel = (
     return {
       reply: {
         content: `Use this command in <#${config.discord.controlChannelId}>.`,
+        ephemeral: true,
+      },
+    };
+  }
+
+  return null;
+};
+
+const requireConfiguredGuild = (
+  config: AppConfig,
+  guildId: string,
+): DiscordCommandResult | null => {
+  if (guildId !== config.discord.guildId) {
+    return {
+      reply: {
+        content: `This daemon is bound to guild \`${config.discord.guildId}\`.`,
         ephemeral: true,
       },
     };
@@ -501,7 +2060,19 @@ const createVisibleSessionThread = async ({
 const sendTextToChannel = async (
   client: Client,
   channelId: string,
-  content: string,
+  payload: string | DiscordChannelMessagePayload,
+) => {
+  return sendChannelMessage(
+    client,
+    channelId,
+    typeof payload === "string" ? { content: payload } : payload,
+  );
+};
+
+const sendChannelMessage = async (
+  client: Client,
+  channelId: string,
+  payload: DiscordChannelMessagePayload,
 ) => {
   const channel = await client.channels.fetch(channelId);
 
@@ -509,7 +2080,89 @@ const sendTextToChannel = async (
     return undefined;
   }
 
-  return channel.send({ content });
+  return channel.send(payload);
+};
+
+const setThreadArchivedState = async ({
+  client,
+  threadId,
+  archived,
+  reason,
+}: {
+  client: Client;
+  threadId: string;
+  archived: boolean;
+  reason: string;
+}) => {
+  const channel = await client.channels.fetch(threadId);
+
+  if (!isArchiveableThreadChannel(channel)) {
+    throw new Error(`Managed session thread ${threadId} is not archivable`);
+  }
+
+  await channel.setArchived(archived, reason);
+};
+
+const recoverStatusCardMessage = async (
+  client: Client,
+  channelId: string,
+) => {
+  const channel = await client.channels.fetch(channelId);
+
+  if (!isStatusCardRecoverableChannel(channel)) {
+    return undefined;
+  }
+
+  return recoverStatusCardMessageFromHistory({
+    botUserId: client.user?.id,
+    fetchPage: async (options) => {
+      const fetched = await channel.messages.fetch(options);
+      const messages = fetched instanceof Map ? [...fetched.values()] : [...fetched];
+
+      return messages.map((message) => ({
+        id: message.id,
+        content: message.content,
+        editable: message.editable,
+        author: {
+          bot: message.author?.bot,
+          id: message.author?.id,
+        },
+        edit: message.edit.bind(message),
+      }));
+    },
+  });
+};
+
+const recoverApprovalLifecycleMessage = async (
+  client: Client,
+  channelId: string,
+  requestId: string,
+) => {
+  const channel = await client.channels.fetch(channelId);
+
+  if (!isStatusCardRecoverableChannel(channel)) {
+    return undefined;
+  }
+
+  return recoverApprovalLifecycleMessageFromHistory({
+    requestId,
+    botUserId: client.user?.id,
+    fetchPage: async (options) => {
+      const fetched = await channel.messages.fetch(options);
+      const messages = fetched instanceof Map ? [...fetched.values()] : [...fetched];
+
+      return messages.map((message) => ({
+        id: message.id,
+        content: message.content,
+        editable: message.editable,
+        author: {
+          bot: message.author?.bot,
+          id: message.author?.id,
+        },
+        edit: message.edit.bind(message),
+      }));
+    },
+  });
 };
 
 const buildApprovalComponents = (requestId: string) => {
@@ -533,17 +2186,17 @@ const buildApprovalComponents = (requestId: string) => {
 
 const maybeSendApprovalDm = async ({
   client,
-  request,
+  requestId,
   ownerId,
   threadId,
 }: {
   client: Client;
-  request: ApprovalRequestEvent;
+  requestId: string;
   ownerId: string;
   threadId: string;
 }) => {
   const approval = {
-    requestId: String(request.requestId),
+    requestId: String(requestId),
     status: "pending" as const,
   };
   const ui = renderApprovalUi({
@@ -564,18 +2217,18 @@ const maybeSendApprovalDm = async ({
   });
 };
 
-const handleApprovalInteraction = async ({
+export const handleApprovalInteraction = async ({
   interaction,
   client,
   sessionRepo,
   approvalRepo,
-  codexClient,
+  inFlightRequestIds,
 }: {
   interaction: ButtonInteraction;
   client: JsonRpcClient;
   sessionRepo: ReturnType<typeof createSessionRepo>;
   approvalRepo: ReturnType<typeof createApprovalRepo>;
-  codexClient: Client;
+  inFlightRequestIds?: Set<string>;
 }) => {
   const parsed = parseApprovalCustomId(interaction.customId);
 
@@ -611,26 +2264,43 @@ const handleApprovalInteraction = async ({
     return true;
   }
 
+  if (!shouldAcceptApprovalInteraction(approvalRecord.status)) {
+    await interaction.reply({
+      content: "That approval is no longer pending.",
+      ephemeral: true,
+    });
+    return true;
+  }
+
   const nextDecision = approvalDecision(parsed.action);
+  const requestId = String(parsed.requestId);
 
-  await interaction.deferUpdate();
-  approvalRepo.insert({
-    requestId: parsed.requestId,
-    discordThreadId: approvalRecord.discordThreadId,
-    status: nextDecision.status,
-    resolvedByDiscordUserId: interaction.user.id,
-    resolution: nextDecision.status,
-  });
-  await client.replyToServerRequest({
-    requestId: parsed.requestId,
-    decision: nextDecision.providerDecision,
-  });
+  if (inFlightRequestIds?.has(requestId)) {
+    await interaction.reply({
+      content: "That approval is already being resolved.",
+      ephemeral: true,
+    });
+    return true;
+  }
 
-  await sendTextToChannel(
-    codexClient,
-    approvalRecord.discordThreadId,
-    `Approval ${nextDecision.status} by <@${interaction.user.id}>.`,
-  );
+  inFlightRequestIds?.add(requestId);
+
+  try {
+    await interaction.deferUpdate();
+    await client.replyToServerRequest({
+      requestId: parsed.requestId,
+      decision: nextDecision.providerDecision,
+    });
+    approvalRepo.insert({
+      requestId: parsed.requestId,
+      discordThreadId: approvalRecord.discordThreadId,
+      status: nextDecision.status,
+      resolvedByDiscordUserId: interaction.user.id,
+      resolution: nextDecision.status,
+    });
+  } finally {
+    inFlightRequestIds?.delete(requestId);
+  }
 
   return true;
 };
@@ -648,6 +2318,8 @@ export const startCodeHelm = async (
   const approvalRepo = createApprovalRepo(db);
   const codexClient = new JsonRpcClient(config.codex.appServerUrl);
   const approvalDmMessages = new Map<string, ApprovalButtonMessage>();
+  const approvalThreadMessages = new Map<string, ApprovalLifecycleState>();
+  const approvalResolutionsInFlight = new Set<string>();
   const transcriptRuntimes = new Map<string, TranscriptRuntime>();
   let discordClient: Client | undefined;
   let shuttingDown = false;
@@ -675,6 +2347,77 @@ export const startCodeHelm = async (
     sessionRepo.updateState(session.discordThreadId, nextState);
   };
 
+  const renderSessionStatusCard = ({
+    state,
+    runtime,
+  }: {
+    state: SessionRuntimeState;
+    runtime: TranscriptRuntime;
+  }) => {
+    return renderStatusCardText({
+      state: state === "waiting-approval" ? "waiting-approval" : state === "idle" ? "idle" : "running",
+      activity: runtime.statusActivity,
+      command: runtime.statusCommand,
+    });
+  };
+
+  const updateStatusCard = async ({
+    discord,
+    session,
+    state,
+    activity,
+    command,
+  }: {
+    discord: Client;
+    session: NonNullable<ReturnType<typeof sessionRepo.getByCodexThreadId>>;
+    state?: SessionRuntimeState;
+    activity?: string | null;
+    command?: string | null;
+  }) => {
+    if (!shouldProjectManagedSessionDiscordSurface(session)) {
+      return;
+    }
+
+    const currentSessionState = coerceSessionRuntimeState(session.state);
+    const nextState = state ?? currentSessionState;
+
+    if (currentSessionState === "degraded" || nextState === "degraded") {
+      return;
+    }
+
+    const runtime = ensureTranscriptRuntime(session.codexThreadId);
+
+    if (activity !== undefined) {
+      runtime.statusActivity = activity ?? undefined;
+    }
+
+    if (command !== undefined) {
+      runtime.statusCommand = command ?? undefined;
+    }
+
+    if (nextState !== "running") {
+      runtime.statusActivity = undefined;
+      runtime.statusCommand = undefined;
+    }
+
+    const content = renderSessionStatusCard({
+      state: nextState,
+      runtime,
+    });
+
+    await applyStatusCardUpdate({
+      runtime,
+      content,
+      recoverMessage: async () =>
+        recoverStatusCardMessage(
+          discord,
+          session.discordThreadId,
+        ),
+      sendMessage: async (nextContent) =>
+        sendTextToChannel(discord, session.discordThreadId, nextContent),
+    });
+  };
+
   const degradeSessionToReadOnly = async ({
     discord,
     session,
@@ -699,28 +2442,26 @@ export const startCodeHelm = async (
     );
   };
 
-  const syncTranscriptSnapshot = async ({
+  const syncTranscriptSnapshotFromReadResult = async ({
     discord,
     session,
+    snapshot,
     degradeOnUnexpectedItems,
   }: {
     discord: Client;
     session: NonNullable<ReturnType<typeof sessionRepo.getByCodexThreadId>>;
+    snapshot: ThreadReadResult;
     degradeOnUnexpectedItems: boolean;
   }) => {
     const runtime = ensureTranscriptRuntime(session.codexThreadId);
-    const snapshot = await codexClient.readThread({
-      threadId: session.codexThreadId,
-      includeTurns: true,
-    });
     const turns = snapshot.thread.turns;
-    const unseenItemIds = collectTranscriptItemIds(turns).filter(
-      (itemId) => !runtime.seenItemIds.has(itemId),
-    );
 
     if (
       degradeOnUnexpectedItems
-      && unseenItemIds.length > 0
+      && shouldDegradeForSnapshotMismatch({
+        runtime,
+        turns,
+      })
       && shouldDegradeDiscordToReadOnly({ controlSurface: "unknown" })
     ) {
       await degradeSessionToReadOnly({
@@ -730,11 +2471,43 @@ export const startCodeHelm = async (
       });
     }
 
+    const activeRuntimeState = inferSessionStateFromThreadStatus(snapshot.thread.status);
+    const activeTurnId =
+      activeRuntimeState === "running" || activeRuntimeState === "waiting-approval"
+        ? snapshot.thread.turns?.at(-1)?.id
+        : undefined;
+
     await relayTranscriptEntries({
       client: discord,
       channelId: session.discordThreadId,
       runtime,
       turns,
+      source: "snapshot",
+      activeTurnId,
+      activeTurnFooter: activeTurnId
+        ? getFooterForSessionState(activeRuntimeState)
+        : undefined,
+    });
+  };
+
+  const syncTranscriptSnapshot = async ({
+    discord,
+    session,
+    degradeOnUnexpectedItems,
+  }: {
+    discord: Client;
+    session: NonNullable<ReturnType<typeof sessionRepo.getByCodexThreadId>>;
+    degradeOnUnexpectedItems: boolean;
+  }) => {
+    const snapshot = await readThreadForSnapshotReconciliation({
+      codexClient,
+      threadId: session.codexThreadId,
+    });
+    await syncTranscriptSnapshotFromReadResult({
+      discord,
+      session,
+      snapshot,
+      degradeOnUnexpectedItems,
     });
   };
 
@@ -742,14 +2515,259 @@ export const startCodeHelm = async (
     codexThreadId: string;
   }) => {
     const runtime = ensureTranscriptRuntime(session.codexThreadId);
-    const snapshot = await codexClient.readThread({
+    const snapshot = await readThreadForSnapshotReconciliation({
+      codexClient,
       threadId: session.codexThreadId,
-      includeTurns: true,
     });
+    seedTranscriptRuntimeSeenItemsFromSnapshot({
+      runtime,
+      turns: snapshot.thread.turns,
+    });
+  };
 
-    for (const itemId of collectTranscriptItemIds(snapshot.thread.turns)) {
-      runtime.seenItemIds.add(itemId);
+  const startTurnFromDiscordInput = async ({
+    session,
+    content,
+    request,
+  }: {
+    session: Pick<SessionRecord, "codexThreadId" | "state" | "discordThreadId">;
+    content: string;
+    request: Omit<StartTurnParams, "input"> & {
+      input: CodexTurnInput;
+    };
+  }) => {
+    const runtime = ensureTranscriptRuntime(session.codexThreadId);
+
+    runtime.pendingDiscordInputs.push(content);
+
+    try {
+      await startTurnWithThreadResumeRetry({
+        request,
+        startTurn: async (params) => codexClient.startTurn(params),
+        resumeThread: async ({ threadId }) => codexClient.resumeThread({
+          threadId,
+        }),
+      });
+      const refreshedSession = sessionRepo.getByCodexThreadId(session.codexThreadId);
+
+      if (refreshedSession) {
+        updateSessionStateIfWritable(refreshedSession, "running");
+      } else {
+        sessionRepo.updateState(session.discordThreadId, "running");
+      }
+    } catch (error) {
+      if (runtime.pendingDiscordInputs.at(-1) === content) {
+        runtime.pendingDiscordInputs.pop();
+      }
+      throw error;
     }
+  };
+
+  const resumeManagedSessionIntoDiscordThread = async (
+    session: NonNullable<ReturnType<typeof sessionRepo.getByCodexThreadId>>,
+  ) => {
+    const discord = requireDiscordClient(discordClient);
+
+    return resumeManagedSession({
+      session,
+      readThread: async () =>
+        readThreadForSnapshotReconciliation({
+          codexClient,
+          threadId: session.codexThreadId,
+        }),
+      archiveThread: async () =>
+        setThreadArchivedState({
+          client: discord,
+          threadId: session.discordThreadId,
+          archived: true,
+          reason: "CodeHelm restored the managed session after resume persistence failed",
+        }),
+      persistRuntimeState: async (runtimeState) => {
+        sessionRepo.updateState(session.discordThreadId, runtimeState);
+      },
+      reconcileApprovalState: async (outcome) => {
+        await reconcileResumedApprovalState({
+          runtimeState: outcome.session.runtimeState,
+          pendingApprovals: approvalRepo.listPendingByDiscordThreadId(
+            session.discordThreadId,
+          ),
+          latestApproval: approvalRepo.getLatestByDiscordThreadId(
+            session.discordThreadId,
+          ),
+          upsertApprovalMessage: async (requestId) => {
+            const lifecycleState = approvalThreadMessages.get(requestId) ?? {};
+            const pendingMessagePromise = upsertApprovalLifecycleMessage({
+              currentMessage: lifecycleState.message,
+              currentMessagePromise: lifecycleState.pendingMessage,
+              recoverMessage: async () =>
+                recoverApprovalLifecycleMessage(
+                  discord,
+                  session.discordThreadId,
+                  requestId,
+                ),
+              payload: renderApprovalLifecyclePayload({
+                requestId,
+                status: "pending",
+              }),
+              sendMessage: async (payload) =>
+                sendTextToChannel(
+                  discord,
+                  session.discordThreadId,
+                  payload,
+                ),
+            });
+            approvalThreadMessages.set(requestId, lifecycleState);
+            const threadMessage = await finalizeApprovalLifecycleMessageState({
+              state: lifecycleState,
+              operation: pendingMessagePromise,
+            });
+
+            if (threadMessage) {
+              lifecycleState.message = threadMessage;
+            }
+          },
+          ensureOwnerControls: async (requestId) => {
+            if (approvalDmMessages.has(requestId)) {
+              return;
+            }
+
+            try {
+              const dmMessage = await maybeSendApprovalDm({
+                client: bot.client,
+                requestId,
+                ownerId: session.ownerDiscordUserId,
+                threadId: session.discordThreadId,
+              });
+
+              if (dmMessage) {
+                approvalDmMessages.set(requestId, dmMessage);
+              }
+            } catch (error) {
+              logger.warn(
+                `Could not DM approval controls to ${session.ownerDiscordUserId}; local codex resume --remote remains the fallback path.`,
+                error,
+              );
+            }
+          },
+        });
+      },
+      unarchiveThread: async () =>
+        setThreadArchivedState({
+          client: discord,
+          threadId: session.discordThreadId,
+          archived: false,
+          reason: "CodeHelm resumed the managed session",
+        }),
+      persistLifecycleState: async (lifecycleState) => {
+        sessionRepo.updateLifecycleState(session.discordThreadId, lifecycleState);
+      },
+      syncReadOnlySurface: async () => {
+        await sendTextToChannel(
+          discord,
+          session.discordThreadId,
+          renderDegradationBannerText({
+            type: "session.degraded",
+            params: {
+              reason: session.degradationReason,
+            },
+          }),
+        );
+      },
+      updateStatusCard: async (runtimeState) => {
+        const refreshedSession = sessionRepo.getByCodexThreadId(session.codexThreadId);
+
+        if (!refreshedSession) {
+          throw new Error(`Managed session ${session.codexThreadId} disappeared during resume`);
+        }
+
+        await updateStatusCard({
+          discord,
+          session: refreshedSession,
+          state: runtimeState,
+        });
+      },
+      syncTranscriptSnapshot: async (snapshot) => {
+        const refreshedSession = sessionRepo.getByCodexThreadId(session.codexThreadId);
+
+        if (!refreshedSession) {
+          throw new Error(`Managed session ${session.codexThreadId} disappeared during resume`);
+        }
+
+        await syncTranscriptSnapshotFromReadResult({
+          discord,
+          session: refreshedSession,
+          snapshot,
+          degradeOnUnexpectedItems: false,
+        });
+      },
+    });
+  };
+
+  const syncManagedSessionIntoDiscordThread = async (
+    session: NonNullable<ReturnType<typeof sessionRepo.getByCodexThreadId>>,
+  ) => {
+    const discord = requireDiscordClient(discordClient);
+    const runtime = ensureTranscriptRuntime(session.codexThreadId);
+    runtime.pendingDiscordInputs = [];
+
+    return syncManagedSession({
+      session,
+      readThread: async () =>
+        readThreadForSnapshotReconciliation({
+          codexClient,
+          threadId: session.codexThreadId,
+        }),
+      persistSessionState: async (runtimeState, degradationReason) => {
+        sessionRepo.syncState(
+          session.discordThreadId,
+          runtimeState,
+          degradationReason,
+        );
+      },
+      syncReadOnlySurface: async (outcome) => {
+        const content = outcome.kind === "error"
+          ? "Session synced, but Codex reports an error state. Discord remains read-only."
+          : renderDegradationBannerText({
+              type: "session.degraded",
+              params: {
+                reason: session.degradationReason,
+              },
+            });
+
+        await sendTextToChannel(
+          discord,
+          session.discordThreadId,
+          content,
+        );
+      },
+      updateStatusCard: async (runtimeState) => {
+        const refreshedSession = sessionRepo.getByCodexThreadId(session.codexThreadId);
+
+        if (!refreshedSession) {
+          throw new Error(`Managed session ${session.codexThreadId} disappeared during sync`);
+        }
+
+        await updateStatusCard({
+          discord,
+          session: refreshedSession,
+          state: runtimeState,
+        });
+      },
+      syncTranscriptSnapshot: async (snapshot) => {
+        const refreshedSession = sessionRepo.getByCodexThreadId(session.codexThreadId);
+
+        if (!refreshedSession) {
+          throw new Error(`Managed session ${session.codexThreadId} disappeared during sync`);
+        }
+
+        await syncTranscriptSnapshotFromReadResult({
+          discord,
+          session: refreshedSession,
+          snapshot,
+          degradeOnUnexpectedItems: false,
+        });
+      },
+    });
   };
 
   const services: DiscordCommandServices = {
@@ -816,6 +2834,11 @@ export const startCodeHelm = async (
             },
           }),
         });
+        await updateStatusCard({
+          discord,
+          session: sessionRepo.getByDiscordThreadId(thread.id)!,
+          state: "idle",
+        });
       } catch (error) {
         if (thread) {
           try {
@@ -862,9 +2885,9 @@ export const startCodeHelm = async (
         };
       }
 
-      const readResult = await codexClient.readThread({
+      const readResult = await readThreadForSnapshotReconciliation({
+        codexClient,
         threadId: sessionId,
-        includeTurns: true,
       });
 
       if (!canImportThreadIntoWorkdir(readResult.thread, workdir.absolutePath)) {
@@ -908,6 +2931,11 @@ export const startCodeHelm = async (
             },
           }),
         });
+        await updateStatusCard({
+          discord,
+          session: sessionRepo.getByDiscordThreadId(thread.id)!,
+          state: inferSessionStateFromThreadStatus(readResult.thread.status),
+        });
         await syncTranscriptSnapshot({
           discord,
           session: sessionRepo.getByDiscordThreadId(thread.id)!,
@@ -937,14 +2965,207 @@ export const startCodeHelm = async (
         return contextError;
       }
 
-      const supportedThreads = await listSupportedThreads(
-        codexClient,
-        config.workdirs,
-      );
+      return {
+        reply: {
+          content: formatManagedSessionList(sessionRepo.listAll()),
+        },
+      };
+    },
+    async closeSession({ actorId, guildId, channelId }) {
+      const guildError = requireConfiguredGuild(config, guildId);
+
+      if (guildError) {
+        return guildError;
+      }
+
+      const session = sessionRepo.getByDiscordThreadId(channelId);
+
+      if (!session) {
+        return resolveCloseSessionCommand({
+          actorId,
+          session: null,
+        });
+      }
+
+      if (!canControlSession({
+        viewerId: actorId,
+        ownerId: session.ownerDiscordUserId,
+      })) {
+        return resolveCloseSessionCommand({
+          actorId,
+          session,
+        });
+      }
+
+      const discord = requireDiscordClient(discordClient);
+
+      await closeManagedSession({
+        archiveThread: async () =>
+          setThreadArchivedState({
+            client: discord,
+            threadId: session.discordThreadId,
+            archived: true,
+            reason: "CodeHelm closed the managed session",
+          }),
+        unarchiveThread: async () =>
+          setThreadArchivedState({
+            client: discord,
+            threadId: session.discordThreadId,
+            archived: false,
+            reason: "CodeHelm restored the managed session after close persistence failed",
+          }),
+        persistLifecycleState: async (lifecycleState) => {
+          sessionRepo.updateLifecycleState(session.discordThreadId, lifecycleState);
+        },
+      });
 
       return {
         reply: {
-          content: formatThreadList(supportedThreads, config.workdirs),
+          content: `Archived session <#${session.discordThreadId}>.`,
+        },
+      };
+    },
+    async syncSession({ actorId, guildId, channelId }) {
+      const guildError = requireConfiguredGuild(config, guildId);
+
+      if (guildError) {
+        return guildError;
+      }
+
+      const session = sessionRepo.getByDiscordThreadId(channelId);
+      const validation = resolveSyncSessionCommand({
+        actorId,
+        session,
+      });
+
+      if (
+        !session
+        || !canControlSession({
+          viewerId: actorId,
+          ownerId: session.ownerDiscordUserId,
+        })
+        || session.lifecycleState !== "active"
+        || coercePersistedSessionRuntimeState(session.state) !== "degraded"
+      ) {
+        return validation;
+      }
+
+      let result: SessionResumeState;
+
+      try {
+        result = await syncManagedSessionIntoDiscordThread(session);
+      } catch (error) {
+        return {
+          reply: {
+            content:
+              error instanceof Error
+                ? `Sync failed for \`${session.codexThreadId}\`: ${error.message}.`
+                : `Sync failed for \`${session.codexThreadId}\`.`,
+            ephemeral: true,
+          },
+        };
+      }
+
+      if (result.kind === "untrusted") {
+        return {
+          reply: {
+            content:
+              `Sync aborted for \`${session.codexThreadId}\` because CodeHelm could not ` +
+              "establish a trustworthy synced session view.",
+            ephemeral: true,
+          },
+        };
+      }
+
+      const summary =
+        result.kind === "ready"
+          ? "Session is writable."
+          : result.kind === "busy"
+            ? `Session is now \`${result.session.runtimeState}\`.`
+            : result.kind === "error"
+              ? "Session remains read-only because Codex reports an error state."
+              : "Session remains read-only.";
+
+      return {
+        reply: {
+          content: `Synced session <#${session.discordThreadId}>. ${summary}`,
+        },
+      };
+    },
+    async resumeSession({ actorId, guildId, channelId, codexThreadId }) {
+      const contextError = requireConfiguredControlChannel(config, guildId, channelId);
+
+      if (contextError) {
+        return contextError;
+      }
+
+      const session = sessionRepo.getByCodexThreadId(codexThreadId);
+      const validation = resolveResumeSessionCommand({
+        actorId,
+        codexThreadId,
+        session,
+      });
+
+      if (
+        !session
+        || !canControlSession({
+          viewerId: actorId,
+          ownerId: session.ownerDiscordUserId,
+        })
+        || session.lifecycleState === "deleted"
+        || session.lifecycleState !== "archived"
+      ) {
+        return validation;
+      }
+
+      let result: SessionResumeState;
+
+      try {
+        result = await resumeManagedSessionIntoDiscordThread(session);
+      } catch (error) {
+        return {
+          reply: {
+            content:
+              error instanceof Error
+                ? `Resume failed for \`${codexThreadId}\`: ${error.message}.`
+                : `Resume failed for \`${codexThreadId}\`.`,
+            ephemeral: true,
+          },
+        };
+      }
+
+      if (result.kind === "untrusted") {
+        return {
+          reply: {
+            content:
+              `Resume aborted for \`${codexThreadId}\` because CodeHelm could not ` +
+              "establish a trustworthy synced session view.",
+            ephemeral: true,
+          },
+        };
+      }
+
+      if (result.kind === "error") {
+        const discord = requireDiscordClient(discordClient);
+        await sendTextToChannel(
+          discord,
+          session.discordThreadId,
+          "CodeHelm resumed this thread as an error surface. Review the latest Codex state before sending more input.",
+        );
+      }
+
+      const summary =
+        result.kind === "ready"
+          ? "Session is writable."
+          : result.kind === "busy"
+            ? `Session remains \`${result.session.runtimeState}\`.`
+            : result.kind === "read-only"
+              ? "Session remains read-only."
+              : "Session resumed as an error surface.";
+
+      return {
+        reply: {
+          content: `Resumed session <#${session.discordThreadId}>. ${summary}`,
         },
       };
     },
@@ -957,80 +3178,214 @@ export const startCodeHelm = async (
   });
   discordClient = bot.client;
 
-  const renderStreamingAgentMessage = (phase: string | null | undefined, text: string) => {
-    return renderTranscriptEntry({
-      itemId: "stream",
-      kind: "assistant",
-      text,
-      phase,
+  const syncTurnProcessMessage = async ({
+    discord,
+    session,
+    turnId,
+    deleteIfEmpty,
+  }: {
+    discord: Client;
+    session: NonNullable<ReturnType<typeof sessionRepo.getByCodexThreadId>>;
+    turnId: string;
+    deleteIfEmpty?: boolean;
+  }) => {
+    if (session.state === "degraded" || !shouldProjectManagedSessionDiscordSurface(session)) {
+      return;
+    }
+
+    const runtime = ensureTranscriptRuntime(session.codexThreadId);
+    const current = runtime.turnProcessMessages.get(turnId);
+
+    if (!current) {
+      return;
+    }
+
+    const rendered = renderLiveTurnProcessMessage({
+      turnId,
+      steps: current.steps,
+      liveCommentaryText: current.liveCommentaryText,
+      footer: current.footer,
     });
+    const processEntryId = getProcessTranscriptEntryId(turnId);
+
+    runtime.finalizingItemIds.add(processEntryId);
+
+    try {
+      if (isDiscordMessagePayloadEmpty(rendered)) {
+        if (deleteIfEmpty) {
+          await finalizeLiveTurnProcessMessage({
+            currentMessage: current.message,
+            currentMessagePromise: current.pendingCreate,
+            rendered,
+            sendRendered: async (payload) => {
+              await sendChannelMessage(discord, session.discordThreadId, payload);
+            },
+          });
+        }
+        return;
+      }
+
+      const payload = rendered as DiscordMessagePayload;
+
+      const message = await upsertStreamingTranscriptMessage({
+        state: current,
+        payload,
+        sendMessage: async (payload) =>
+          sendChannelMessage(discord, session.discordThreadId, payload),
+      });
+
+      if (message) {
+        current.message = message;
+      }
+      runtime.seenItemIds.add(processEntryId);
+    } finally {
+      runtime.finalizingItemIds.delete(processEntryId);
+    }
+  };
+
+  const finalizeTurnProcessState = async ({
+    discord,
+    session,
+    turnId,
+  }: {
+    discord: Client;
+    session: NonNullable<ReturnType<typeof sessionRepo.getByCodexThreadId>>;
+    turnId: string;
+  }) => {
+    const runtime = ensureTranscriptRuntime(session.codexThreadId);
+    const current = runtime.turnProcessMessages.get(turnId);
+
+    if (!current) {
+      return;
+    }
+
+    current.footer = undefined;
+    current.liveCommentaryItemId = undefined;
+    current.liveCommentaryText = undefined;
+    await syncTurnProcessMessage({
+      discord,
+      session,
+      turnId,
+      deleteIfEmpty: true,
+    });
+    runtime.turnProcessMessages.delete(turnId);
   };
 
   const publishAgentDelta = async ({
     discord,
     session,
+    turnId,
     itemId,
     delta,
   }: {
     discord: Client;
     session: NonNullable<ReturnType<typeof sessionRepo.getByCodexThreadId>>;
+    turnId?: string;
     itemId: string;
     delta: string;
   }) => {
-    if (session.state === "degraded") {
+    if (session.state === "degraded" || !shouldProjectManagedSessionDiscordSurface(session)) {
       return;
     }
 
     const runtime = ensureTranscriptRuntime(session.codexThreadId);
-    const current = runtime.streamingAgentMessages.get(itemId) ?? {
-      phase: undefined,
-      text: "",
-      message: undefined,
-    };
+    const resolvedTurnId = turnId ?? runtime.itemTurnIds.get(itemId);
 
-    current.text += delta;
-    runtime.streamingAgentMessages.set(itemId, current);
-
-    const content = renderStreamingAgentMessage(current.phase, current.text);
-
-    if (current.message) {
-      await current.message.edit({ content });
+    if (!resolvedTurnId) {
       return;
     }
 
-    const message = await sendTextToChannel(discord, session.discordThreadId, content);
+    const current = runtime.turnProcessMessages.get(resolvedTurnId);
 
-    if (message) {
-      current.message = message;
+    if (!current || current.liveCommentaryItemId !== itemId) {
+      return;
     }
+
+    current.liveCommentaryText = `${current.liveCommentaryText ?? ""}${delta}`;
+    await updateStatusCard({
+      discord,
+      session,
+      state: "running",
+      activity: summarizeStatusActivity(current.liveCommentaryText),
+    });
+    await syncTurnProcessMessage({
+      discord,
+      session,
+      turnId: resolvedTurnId,
+    });
   };
 
   const finalizeAgentTranscriptMessage = async ({
     discord,
     session,
+    turnId,
     item,
   }: {
     discord: Client;
     session: NonNullable<ReturnType<typeof sessionRepo.getByCodexThreadId>>;
+    turnId?: string;
     item: CodexAgentMessageItem;
   }) => {
     const runtime = ensureTranscriptRuntime(session.codexThreadId);
-    const current = runtime.streamingAgentMessages.get(item.id);
-    const rendered = renderTranscriptEntry({
-      itemId: item.id,
-      kind: "assistant",
-      text: item.text,
-      phase: item.phase,
-    });
+    const resolvedTurnId = turnId ?? runtime.itemTurnIds.get(item.id);
 
-    if (current?.message) {
-      await current.message.edit({ content: rendered });
-    } else {
-      await sendTextToChannel(discord, session.discordThreadId, rendered);
+    if (!shouldProjectManagedSessionDiscordSurface(session)) {
+      runtime.itemTurnIds.delete(item.id);
+      return;
     }
 
-    runtime.seenItemIds.add(item.id);
-    runtime.streamingAgentMessages.delete(item.id);
+    if (item.phase === "commentary") {
+      runtime.seenItemIds.add(item.id);
+      runtime.itemTurnIds.delete(item.id);
+
+      if (!resolvedTurnId) {
+        return;
+      }
+
+      const current = ensureTurnProcessMessageState(runtime, resolvedTurnId);
+      appendProcessStep(current.steps, item.text);
+
+      if (current.liveCommentaryItemId === item.id) {
+        current.liveCommentaryItemId = undefined;
+        current.liveCommentaryText = undefined;
+      }
+
+      await syncTurnProcessMessage({
+        discord,
+        session,
+        turnId: resolvedTurnId,
+      });
+      await updateStatusCard({
+        discord,
+        session,
+        state: "running",
+        activity: summarizeStatusActivity(item.text),
+        command: null,
+      });
+      return;
+    }
+
+    const rendered = renderTranscriptEntry({
+      itemId: resolvedTurnId
+        ? getAssistantTranscriptEntryId(resolvedTurnId)
+        : item.id,
+      kind: "assistant",
+      text: item.text,
+    });
+
+    const assistantEntryId = resolvedTurnId
+      ? getAssistantTranscriptEntryId(resolvedTurnId)
+      : item.id;
+
+    runtime.finalizingItemIds.add(assistantEntryId);
+
+    try {
+      await sendChannelMessage(discord, session.discordThreadId, rendered);
+      runtime.seenItemIds.add(assistantEntryId);
+    } finally {
+      runtime.finalizingItemIds.delete(assistantEntryId);
+      runtime.itemTurnIds.delete(item.id);
+    }
   };
 
   bot.client.on(Events.MessageCreate, (message) => {
@@ -1042,6 +3397,81 @@ export const startCodeHelm = async (
       const session = sessionRepo.getByDiscordThreadId(message.channelId);
 
       if (!session) {
+        return;
+      }
+
+      if (session.lifecycleState === "archived") {
+        const discord = requireDiscordClient(discordClient);
+        const outcome = await handleArchivedManagedSessionThreadMessage({
+          authorId: message.author.id,
+          ownerId: session.ownerDiscordUserId,
+          content: message.content,
+          codexThreadId: session.codexThreadId,
+          resumeSession: async () => resumeManagedSessionIntoDiscordThread(session),
+          forwardMessage: async (input) =>
+            startTurnFromDiscordInput({
+              session,
+              content: message.content,
+              request: {
+                threadId: session.codexThreadId,
+                input,
+              },
+            }),
+          rearchiveSession: async () => {
+            await closeManagedSession({
+              archiveThread: async () =>
+                setThreadArchivedState({
+                  client: discord,
+                  threadId: session.discordThreadId,
+                  archived: true,
+                  reason: "CodeHelm kept the managed session archived",
+                }),
+              unarchiveThread: async () =>
+                setThreadArchivedState({
+                  client: discord,
+                  threadId: session.discordThreadId,
+                  archived: false,
+                  reason: "CodeHelm restored the managed session after archive rollback",
+                }),
+              persistLifecycleState: async (lifecycleState) => {
+                sessionRepo.updateLifecycleState(
+                  session.discordThreadId,
+                  lifecycleState,
+                );
+              },
+            });
+          },
+        });
+
+        if (outcome.kind === "ready") {
+          await message.reply(
+            "Session resumed. Review the latest Codex state before sending more input.",
+          );
+        } else if (outcome.kind === "busy") {
+          await message.reply(
+            outcome.session.runtimeState === "waiting-approval"
+              ? "Session is waiting for approval."
+              : "Session is already running.",
+          );
+        } else if (outcome.kind === "read-only") {
+          await message.reply(
+            renderDegradationBannerText({
+              type: "session.degraded",
+              params: {
+                reason: session.degradationReason,
+              },
+            }),
+          );
+        } else if (outcome.kind === "error") {
+          await message.reply(
+            "Session resumed as an error surface. Review the latest Codex state before sending more input.",
+          );
+        }
+
+        return;
+      }
+
+      if (!canAcceptManagedSessionThreadInput(session)) {
         return;
       }
 
@@ -1078,21 +3508,39 @@ export const startCodeHelm = async (
         return;
       }
 
-      const runtime = ensureTranscriptRuntime(session.codexThreadId);
+      await startTurnFromDiscordInput({
+        session,
+        content: message.content,
+        request: decision.request,
+      });
+    })().catch(async (error) => {
+      const session = sessionRepo.getByDiscordThreadId(message.channelId);
 
-      runtime.pendingDiscordInputs.push(message.content);
-
-      try {
-        await codexClient.startTurn(decision.request);
-        updateSessionStateIfWritable(session, "running");
-      } catch (error) {
-        if (runtime.pendingDiscordInputs.at(-1) === message.content) {
-          runtime.pendingDiscordInputs.pop();
-        }
-        throw error;
+      if (session && isMissingCodexThreadError(error)) {
+        logger.warn(
+          `Managed Discord thread ${session.discordThreadId} points at missing Codex thread ${session.codexThreadId}; degrading to read-only.`,
+          error,
+        );
+        await degradeSessionToReadOnly({
+          discord: bot.client,
+          session,
+          reason: "thread_missing",
+        });
+        return;
       }
-    })().catch((error) => {
+
       logger.error("Failed to handle Discord thread message", error);
+    });
+  });
+
+  bot.client.on(Events.ThreadDelete, (thread) => {
+    void (async () => {
+      handleManagedThreadDeletion({
+        threadId: thread.id,
+        sessionRepo,
+      });
+    })().catch((error) => {
+      logger.error("Failed to detach deleted managed thread", error);
     });
   });
 
@@ -1106,7 +3554,7 @@ export const startCodeHelm = async (
       client: codexClient,
       sessionRepo,
       approvalRepo,
-      codexClient: bot.client,
+      inFlightRequestIds: approvalResolutionsInFlight,
     }).catch((error) => {
       logger.error("Approval interaction failed", error);
     });
@@ -1115,6 +3563,7 @@ export const startCodeHelm = async (
   codexClient.on("turn/started", (params) => {
     void (async () => {
       const codexThreadId = readThreadIdFromEvent(params);
+      const turnId = readTurnIdFromEvent(params);
 
       if (!codexThreadId) {
         return;
@@ -1126,17 +3575,22 @@ export const startCodeHelm = async (
         return;
       }
 
+      const runtime = ensureTranscriptRuntime(session.codexThreadId);
+      runtime.activeTurnId = turnId ?? runtime.activeTurnId;
+
+      if (turnId) {
+        const current = ensureTurnProcessMessageState(runtime, turnId);
+        current.footer = "Working...";
+      }
+
       updateSessionStateIfWritable(session, "running");
-      await sendTextToChannel(
-        bot.client,
-        session.discordThreadId,
-        renderRunningStatusText({
-          method: "turn/started",
-          params: {
-            turnId: readTurnIdFromEvent(params),
-          },
-        }),
-      );
+      await updateStatusCard({
+        discord: bot.client,
+        session,
+        state: "running",
+        activity: null,
+        command: null,
+      });
     })().catch((error) => {
       logger.error("Failed to process turn/started event", error);
     });
@@ -1165,16 +3619,39 @@ export const startCodeHelm = async (
         );
       }
 
-      await sendTextToChannel(
-        bot.client,
-        session.discordThreadId,
-        renderRunningStatusText({
-          method: "thread/status/changed",
-          params: {
-            status: status ? describeCodexThreadStatus(status) : readString(params, "status"),
-          },
-        }),
-      );
+      const runtime = ensureTranscriptRuntime(session.codexThreadId);
+      const activeTurnId = runtime.activeTurnId;
+
+      if (status && activeTurnId) {
+        const current = ensureTurnProcessMessageState(runtime, activeTurnId);
+        current.footer = getFooterForSessionState(
+          inferSessionStateFromThreadStatus(status),
+        );
+        const shouldSyncProcessMessage =
+          current.footer === "Waiting for approval"
+          || current.footer === undefined
+          || current.steps.length > 0
+          || !!current.liveCommentaryText
+          || !!current.message
+          || !!current.pendingCreate;
+
+        if (shouldSyncProcessMessage) {
+          await syncTurnProcessMessage({
+            discord: bot.client,
+            session,
+            turnId: activeTurnId,
+            deleteIfEmpty: current.footer === undefined,
+          });
+        }
+      }
+
+      await updateStatusCard({
+        discord: bot.client,
+        session,
+        state: status
+          ? inferSessionStateFromThreadStatus(status)
+          : coerceSessionRuntimeState(session.state),
+      });
     })().catch((error) => {
       logger.error("Failed to process thread/status/changed event", error);
     });
@@ -1195,14 +3672,42 @@ export const startCodeHelm = async (
       }
 
       const item = readEventItem(params);
+      const turnId = readTurnIdFromEvent(params);
 
       if (isAgentMessageItem(item)) {
         const runtime = ensureTranscriptRuntime(session.codexThreadId);
-        runtime.streamingAgentMessages.set(item.id, {
-          phase: item.phase,
-          text: item.text,
-          message: undefined,
-        });
+
+        if (turnId) {
+          runtime.itemTurnIds.set(item.id, turnId);
+        }
+
+        if (!shouldProjectManagedSessionDiscordSurface(session)) {
+          return;
+        }
+
+        if (item.phase === "commentary") {
+          const resolvedTurnId = turnId ?? runtime.activeTurnId;
+
+          if (!resolvedTurnId) {
+            return;
+          }
+
+          const current = ensureTurnProcessMessageState(runtime, resolvedTurnId);
+          current.footer ??= "Working...";
+          current.liveCommentaryItemId = item.id;
+          current.liveCommentaryText = item.text;
+          await updateStatusCard({
+            discord: bot.client,
+            session,
+            state: "running",
+            activity: summarizeStatusActivity(item.text),
+          });
+          await syncTurnProcessMessage({
+            discord: bot.client,
+            session,
+            turnId: resolvedTurnId,
+          });
+        }
         return;
       }
 
@@ -1210,16 +3715,31 @@ export const startCodeHelm = async (
         return;
       }
 
-      await sendTextToChannel(
-        bot.client,
-        session.discordThreadId,
-        renderToolProgressText({
-          method: "item/started",
-          params: {
-            itemId: item.id,
-          },
-        }),
-      );
+      if (!shouldProjectManagedSessionDiscordSurface(session)) {
+        return;
+      }
+
+      if (turnId) {
+        const runtime = ensureTranscriptRuntime(session.codexThreadId);
+        const current = ensureTurnProcessMessageState(runtime, turnId);
+        current.footer ??= getFooterForSessionState(
+          coerceSessionRuntimeState(session.state),
+        ) ?? "Working...";
+        appendProcessStep(current.steps, buildCommandProcessStep(item.command));
+        await syncTurnProcessMessage({
+          discord: bot.client,
+          session,
+          turnId,
+        });
+      }
+
+      await updateStatusCard({
+        discord: bot.client,
+        session,
+        state: "running",
+        activity: null,
+        command: item.command,
+      });
     })().catch((error) => {
       logger.error("Failed to process item/started event", error);
     });
@@ -1240,22 +3760,31 @@ export const startCodeHelm = async (
       }
 
       const item = readEventItem(params);
+      const turnId = readTurnIdFromEvent(params);
       const runtime = ensureTranscriptRuntime(session.codexThreadId);
 
       if (!item) {
         return;
       }
 
+      if (!shouldProjectManagedSessionDiscordSurface(session)) {
+        if (isAgentMessageItem(item)) {
+          runtime.itemTurnIds.delete(item.id);
+        }
+        return;
+      }
+
       if (isAgentMessageItem(item)) {
         if (session.state === "degraded") {
           runtime.seenItemIds.add(item.id);
-          runtime.streamingAgentMessages.delete(item.id);
+          runtime.itemTurnIds.delete(item.id);
           return;
         }
 
         await finalizeAgentTranscriptMessage({
           discord: bot.client,
           session,
+          turnId,
           item,
         });
         return;
@@ -1268,17 +3797,48 @@ export const startCodeHelm = async (
         return;
       }
 
-      await relayTranscriptEntries({
-        client: bot.client,
-        channelId: session.discordThreadId,
-        runtime,
-        turns: [
-          {
-            id: readTurnIdFromEvent(params) ?? "live",
-            items: [item],
-          },
-        ],
-      });
+      if (isCommandExecutionItem(item)) {
+        await updateStatusCard({
+          discord: bot.client,
+          session,
+          state: "running",
+          activity: isFailedCommandExecutionItem(item) ? "command failed" : null,
+          command: null,
+        });
+      }
+
+      if (!shouldRelayLiveCompletedItemToTranscript(item)) {
+        if (hasItemId(item)) {
+          runtime.seenItemIds.add(item.id);
+        }
+        return;
+      }
+
+      const shouldTrackAsFinalizing =
+        hasItemId(item) && shouldTrackLiveCompletedItemAsFinalizing(item);
+
+      if (shouldTrackAsFinalizing) {
+        runtime.finalizingItemIds.add(item.id);
+      }
+
+      try {
+        await relayTranscriptEntries({
+          client: bot.client,
+          channelId: session.discordThreadId,
+          runtime,
+          turns: [
+            {
+              id: turnId ?? "live",
+              items: [item],
+            },
+          ],
+          source: "live",
+        });
+      } finally {
+        if (shouldTrackAsFinalizing) {
+          runtime.finalizingItemIds.delete(item.id);
+        }
+      }
     })().catch((error) => {
       logger.error("Failed to process item/completed event", error);
     });
@@ -1287,6 +3847,7 @@ export const startCodeHelm = async (
   codexClient.on("item/agentMessage/delta", (params) => {
     void (async () => {
       const codexThreadId = readThreadIdFromEvent(params);
+      const turnId = readTurnIdFromEvent(params);
       const itemId = readString(params, "itemId");
       const delta = readString(params, "delta");
 
@@ -1303,6 +3864,7 @@ export const startCodeHelm = async (
       await publishAgentDelta({
         discord: bot.client,
         session,
+        turnId,
         itemId,
         delta,
       });
@@ -1314,6 +3876,7 @@ export const startCodeHelm = async (
   codexClient.on("turn/completed", (params) => {
     void (async () => {
       const codexThreadId = readThreadIdFromEvent(params);
+      const turnId = readTurnIdFromEvent(params);
 
       if (!codexThreadId) {
         return;
@@ -1325,11 +3888,38 @@ export const startCodeHelm = async (
         return;
       }
 
-      updateSessionStateIfWritable(session, "idle");
-      await syncTranscriptSnapshot({
-        discord: bot.client,
+      const runtime = ensureTranscriptRuntime(session.codexThreadId);
+
+      if (turnId) {
+        await finalizeTurnProcessState({
+          discord: bot.client,
+          session,
+          turnId,
+        });
+        if (runtime.activeTurnId === turnId) {
+          runtime.activeTurnId = undefined;
+        }
+      }
+
+      await applyManagedTurnCompletion({
         session,
-        degradeOnUnexpectedItems: false,
+        markIdle: () => {
+          updateSessionStateIfWritable(session, "idle");
+        },
+        updateStatusCard: async () => {
+          await updateStatusCard({
+            discord: bot.client,
+            session,
+            state: "idle",
+          });
+        },
+        syncTranscriptSnapshot: async () => {
+          await syncTranscriptSnapshot({
+            discord: bot.client,
+            session,
+            degradeOnUnexpectedItems: false,
+          });
+        },
       });
     })().catch((error) => {
       logger.error("Failed to process turn/completed event", error);
@@ -1345,11 +3935,13 @@ export const startCodeHelm = async (
       }
 
       if (session.state === "degraded") {
-        await sendTextToChannel(
-          bot.client,
-          session.discordThreadId,
-          `Approval pending for request \`${event.requestId}\`, but this session is already read-only in Discord.`,
-        );
+        if (shouldProjectManagedSessionDiscordSurface(session)) {
+          await sendTextToChannel(
+            bot.client,
+            session.discordThreadId,
+            `Approval pending for request \`${event.requestId}\`, but this session is already read-only in Discord.`,
+          );
+        }
         return;
       }
 
@@ -1359,16 +3951,65 @@ export const startCodeHelm = async (
         discordThreadId: session.discordThreadId,
         status: "pending",
       });
-      await sendTextToChannel(
-        bot.client,
-        session.discordThreadId,
-        `Approval pending for request \`${event.requestId}\`. Actionable controls are sent to the owner by DM.`,
-      );
+      if (!shouldProjectManagedSessionDiscordSurface(session)) {
+        return;
+      }
+
+      const runtime = ensureTranscriptRuntime(session.codexThreadId);
+      const approvalTurnId = event.turnId ?? runtime.activeTurnId;
+
+      if (approvalTurnId) {
+        runtime.activeTurnId = approvalTurnId;
+        const current = ensureTurnProcessMessageState(runtime, approvalTurnId);
+        current.footer = "Waiting for approval";
+        await syncTurnProcessMessage({
+          discord: bot.client,
+          session,
+          turnId: approvalTurnId,
+        });
+      }
+
+      await updateStatusCard({
+        discord: bot.client,
+        session,
+        state: "waiting-approval",
+      });
+      const requestId = String(event.requestId);
+      const lifecycleState = approvalThreadMessages.get(requestId) ?? {};
+      const pendingMessagePromise = upsertApprovalLifecycleMessage({
+        currentMessage: lifecycleState.message,
+        currentMessagePromise: lifecycleState.pendingMessage,
+        recoverMessage: async () =>
+          recoverApprovalLifecycleMessage(
+            bot.client,
+            session.discordThreadId,
+            requestId,
+          ),
+        payload: renderApprovalLifecyclePayload({
+          requestId,
+          status: "pending",
+        }),
+        sendMessage: async (payload) =>
+          sendTextToChannel(
+            bot.client,
+            session.discordThreadId,
+            payload,
+          ),
+      });
+      approvalThreadMessages.set(requestId, lifecycleState);
+      const threadMessage = await finalizeApprovalLifecycleMessageState({
+        state: lifecycleState,
+        operation: pendingMessagePromise,
+      });
+
+      if (threadMessage) {
+        lifecycleState.message = threadMessage;
+      }
 
       try {
         const dmMessage = await maybeSendApprovalDm({
           client: bot.client,
-          request: event,
+          requestId: String(event.requestId),
           ownerId: session.ownerDiscordUserId,
           threadId: session.discordThreadId,
         });
@@ -1413,61 +4054,151 @@ export const startCodeHelm = async (
         status: outcome.approval.status,
       });
 
-      if (outcome.closeActiveUi) {
-        const dmMessage = approvalDmMessages.get(requestId);
+      const session = sessionRepo.getByDiscordThreadId(approvalRecord.discordThreadId);
 
-        if (dmMessage) {
-          await dmMessage.edit({
-            content: `Approval resolved: \`${outcome.approval.status}\`.`,
-            components: [],
-          });
-          approvalDmMessages.delete(requestId);
+      if (session && shouldProjectManagedSessionDiscordSurface(session)) {
+        const runtime = ensureTranscriptRuntime(session.codexThreadId);
+        const activeTurnId = runtime.activeTurnId;
+
+        if (activeTurnId) {
+          const current = ensureTurnProcessMessageState(runtime, activeTurnId);
+          current.footer = "Working...";
+          if (
+            current.steps.length > 0
+            || !!current.liveCommentaryText
+            || !!current.message
+            || !!current.pendingCreate
+          ) {
+            await syncTurnProcessMessage({
+              discord: bot.client,
+              session,
+              turnId: activeTurnId,
+              deleteIfEmpty: current.steps.length === 0,
+            });
+          }
         }
       }
 
-      await sendTextToChannel(
-        bot.client,
-        approvalRecord.discordThreadId,
-        `Approval resolved: \`${outcome.approval.status}\`.`,
-      );
+      const dmMessage = outcome.closeActiveUi
+        ? approvalDmMessages.get(requestId)
+        : undefined;
+
+      const lifecycleState = approvalThreadMessages.get(requestId) ?? {};
+      const resolvedMessagePromise = reconcileApprovalResolutionSurface({
+        requestId,
+        status: outcome.approval.status,
+        session,
+        currentThreadMessage: lifecycleState.message,
+        currentThreadMessagePromise: lifecycleState.pendingMessage,
+        recoverThreadMessage: async () =>
+          recoverApprovalLifecycleMessage(
+            bot.client,
+            approvalRecord.discordThreadId,
+            requestId,
+          ),
+        sendThreadMessage: async (payload) =>
+          sendTextToChannel(
+            bot.client,
+            approvalRecord.discordThreadId,
+            payload,
+          ),
+        dmMessage,
+      });
+      approvalThreadMessages.set(requestId, lifecycleState);
+      const threadMessage = await finalizeApprovalLifecycleMessageState({
+        state: lifecycleState,
+        operation: resolvedMessagePromise,
+      });
+
+      if (threadMessage) {
+        lifecycleState.message = threadMessage;
+      }
+
+      if (dmMessage) {
+        approvalDmMessages.delete(requestId);
+      }
     })().catch((error) => {
       logger.error("Failed to process serverRequest/resolved event", error);
     });
   });
 
   await codexClient.initialize();
-  await registerGuildCommands(config, bot.commands);
+  await registerGuildCommands(
+    config,
+    buildControlChannelCommands(config.workdirs),
+  );
   await bot.start();
 
   for (const session of sessionRepo.listAll()) {
+    if (!shouldProjectManagedSessionDiscordSurface(session)) {
+      continue;
+    }
+
     try {
       await seedTranscriptRuntimeFromSnapshot(session);
     } catch (error) {
-      logger.warn(
-        `Failed to seed transcript runtime for mapped session ${session.codexThreadId}`,
-        error,
-      );
+      if (shouldLogSnapshotReconciliationWarning(error)) {
+        logger.warn(
+          `Failed to seed transcript runtime for mapped session ${session.codexThreadId}`,
+          error,
+        );
+      }
     }
   }
 
   const snapshotPoll = setInterval(() => {
     void (async () => {
       for (const session of sessionRepo.listAll()) {
-        if (session.state === "degraded") {
+        if (!shouldProjectManagedSessionDiscordSurface(session)) {
           continue;
         }
 
+        const sessionState = coerceSessionRuntimeState(session.state);
+
         try {
-          await syncTranscriptSnapshot({
-            discord: bot.client,
+          if (shouldPollSnapshotForSessionState(sessionState)) {
+            await syncTranscriptSnapshot({
+              discord: bot.client,
+              session,
+              degradeOnUnexpectedItems: true,
+            });
+            continue;
+          }
+
+          if (!shouldPollRecoveryProbeForSessionState(sessionState)) {
+            continue;
+          }
+
+          await pollSessionRecovery({
             session,
-            degradeOnUnexpectedItems: true,
+            sessionState,
+            readThread: async (threadId) =>
+              codexClient.readThread({
+                threadId,
+              }),
+            updateSessionState: async (nextState) => {
+              updateSessionStateIfWritable(session, nextState);
+            },
+            updateStatusCard: async (nextState) =>
+              updateStatusCard({
+                discord: bot.client,
+                session,
+                state: nextState,
+              }),
+            syncTranscriptSnapshot: async () =>
+              syncTranscriptSnapshot({
+                discord: bot.client,
+                session,
+                degradeOnUnexpectedItems: false,
+              }),
           });
         } catch (error) {
-          logger.warn(
-            `Failed to reconcile transcript snapshot for ${session.codexThreadId}`,
-            error,
-          );
+          if (shouldLogSnapshotReconciliationWarning(error)) {
+            logger.warn(
+              `Failed to reconcile transcript snapshot for ${session.codexThreadId}`,
+              error,
+            );
+          }
         }
       }
     })().catch((error) => {
