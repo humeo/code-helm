@@ -76,7 +76,7 @@ CodeHelm does not emit a duplicated bot transcript echo for the same Discord-ori
 
 Remote input is used for user input observed from Codex activity that is not native Discord thread input and has been explicitly synchronized into Discord.
 
-Current rendering:
+Current rendering for input-only remote turns:
 
 - panel/embed
 - title: `Remote Input`
@@ -98,6 +98,26 @@ Notes:
 
 - automatic external-activity detection no longer auto-inserts remote input into Discord
 - remote input appears only after explicit sync paths that intentionally import that transcript state
+
+When a synchronized remote turn includes both the remote user input and a final assistant reply, CodeHelm now renders that turn as one plain text Discord message instead of two separate messages.
+
+Current rendering for a completed remote turn:
+
+- plain text message
+- first section is the remote input label and exact input
+- second section is the final assistant output
+- one blank line separates the input block and the final output
+
+Example:
+
+```text
+Remote Input:
+\`\`\`text
+replay only "ok9"
+\`\`\`
+
+ok9
+```
 
 ### Codex Process Panel
 

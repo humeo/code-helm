@@ -78,6 +78,7 @@ import {
   type ProcessFooterText,
   normalizeProcessStepText,
   renderTranscriptEntry,
+  renderTranscriptMessages,
 } from "./discord/transcript";
 import {
   decideArchivedThreadResume,
@@ -1342,28 +1343,30 @@ const relayTranscriptEntries = async ({
   activeTurnId?: string;
   activeTurnFooter?: ProcessFooterText;
 }) => {
-  for (const entry of collectTranscriptEntries(turns, {
+  const entries = collectTranscriptEntries(turns, {
     source,
     pendingDiscordInputs: runtime.pendingDiscordInputs,
     activeTurnId,
     activeTurnFooter,
-  })) {
-    if (shouldSkipTranscriptRelayEntry({
+  }).filter((entry) =>
+    !shouldSkipTranscriptRelayEntry({
       runtime,
       itemId: entry.itemId,
       source,
-    })) {
-      continue;
-    }
+    })
+  );
 
-    const rendered = renderTranscriptEntry(entry);
-
+  for (const renderedMessage of renderTranscriptMessages(entries)) {
+    const rendered = renderedMessage.payload;
     if (!isDiscordMessagePayloadEmpty(rendered)) {
       await sendChannelMessage(client, channelId, rendered);
     }
 
-    runtime.seenItemIds.add(entry.itemId);
+    for (const itemId of renderedMessage.itemIds) {
+      runtime.seenItemIds.add(itemId);
+    }
   }
+
   markTranscriptItemsSeen({
     runtime,
     turns,

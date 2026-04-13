@@ -5,6 +5,7 @@ import {
   getUserTranscriptEntryId,
   collectTranscriptEntries,
   type ProcessFooterText,
+  renderTranscriptMessages,
   renderTranscriptEntry,
 } from "../../src/discord/transcript";
 import type { CodexTurn } from "../../src/codex/protocol-types";
@@ -135,6 +136,45 @@ test("remote input user entries use a stable turn-level id across live and snaps
 
   expect(liveEntries[0]?.itemId).toBe(getUserTranscriptEntryId("turn-1"));
   expect(snapshotEntries[0]?.itemId).toBe(getUserTranscriptEntryId("turn-1"));
+});
+
+test("renders synced remote input and final assistant output as one Discord message", () => {
+  const entries = collectTranscriptEntries(
+    [
+      {
+        id: "turn-1",
+        status: "completed",
+        items: [
+          {
+            type: "userMessage",
+            id: "user-1",
+            content: [{ type: "text", text: "replay only \"ok9\"" }],
+          },
+          {
+            type: "agentMessage",
+            id: "agent-1",
+            text: "ok9",
+            phase: "final",
+          },
+        ],
+      },
+    ],
+    {
+      source: "snapshot",
+    },
+  );
+
+  expect(renderTranscriptMessages(entries)).toEqual([
+    {
+      itemIds: [
+        getUserTranscriptEntryId("turn-1"),
+        getAssistantTranscriptEntryId("turn-1"),
+      ],
+      payload: {
+        content: "Remote Input:\n```text\nreplay only \"ok9\"\n```\n\nok9",
+      },
+    },
+  ]);
 });
 
 test("snapshot recovery clears stale pending Discord input before later live CLI input reuses the text", () => {
