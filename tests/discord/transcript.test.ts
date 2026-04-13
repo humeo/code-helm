@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import {
   getAssistantTranscriptEntryId,
   getProcessTranscriptEntryId,
+  getUserTranscriptEntryId,
   collectTranscriptEntries,
   type ProcessFooterText,
   renderTranscriptEntry,
@@ -61,7 +62,7 @@ test("renders non-Discord input as a weak remote-input card for live and recover
 
   expect(liveEntries).toEqual([
     {
-      itemId: "user-1",
+      itemId: getUserTranscriptEntryId("turn-1"),
       kind: "user",
       source: "codex-cli",
       text: "resume --remote",
@@ -80,7 +81,7 @@ test("renders non-Discord input as a weak remote-input card for live and recover
   );
   expect(snapshotEntries).toEqual([
     {
-      itemId: "user-1",
+      itemId: getUserTranscriptEntryId("turn-1"),
       kind: "user",
       source: "codex-cli",
       text: "resume --remote",
@@ -97,6 +98,43 @@ test("renders non-Discord input as a weak remote-input card for live and recover
       ],
     }),
   );
+});
+
+test("remote input user entries use a stable turn-level id across live and snapshot views", () => {
+  const liveEntries = collectTranscriptEntries([
+    {
+      id: "turn-1",
+      status: "completed",
+      items: [
+        {
+          type: "userMessage",
+          id: "live-user-id",
+          content: [{ type: "text", text: "resume --remote" }],
+        },
+      ],
+    },
+  ], {
+    source: "live",
+  });
+
+  const snapshotEntries = collectTranscriptEntries([
+    {
+      id: "turn-1",
+      status: "completed",
+      items: [
+        {
+          type: "userMessage",
+          id: "snapshot-user-id",
+          content: [{ type: "text", text: "resume --remote" }],
+        },
+      ],
+    },
+  ], {
+    source: "snapshot",
+  });
+
+  expect(liveEntries[0]?.itemId).toBe(getUserTranscriptEntryId("turn-1"));
+  expect(snapshotEntries[0]?.itemId).toBe(getUserTranscriptEntryId("turn-1"));
 });
 
 test("snapshot recovery clears stale pending Discord input before later live CLI input reuses the text", () => {
@@ -146,7 +184,7 @@ test("snapshot recovery clears stale pending Discord input before later live CLI
   expect(pendingDiscordInputs).toEqual([]);
   expect(liveEntries).toEqual([
     {
-      itemId: "user-2",
+      itemId: getUserTranscriptEntryId("turn-2"),
       kind: "user",
       source: "codex-cli",
       text: "resume --remote",

@@ -251,7 +251,7 @@ const collectTurnEntries = (
       entries.push({
         order,
         entry: {
-          itemId: user.id,
+          itemId: getUserTranscriptEntryId(turn.id),
           kind: "user",
           source: "codex-cli",
           text,
