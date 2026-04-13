@@ -248,10 +248,6 @@ const collectTurnEntries = (
         continue;
       }
 
-      if (source === "snapshot") {
-        continue;
-      }
-
       entries.push({
         order,
         entry: {

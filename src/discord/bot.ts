@@ -13,6 +13,7 @@ import {
   replyWithCommandError,
   type DiscordCommandServices,
 } from "./commands";
+import { buildDiscordRestOptions } from "./rest";
 
 export type DiscordBotLogger = {
   info(...args: unknown[]): void;
@@ -52,6 +53,7 @@ export const createDiscordBot = ({
   const client = new Client({
     ...clientOptions,
     intents: [...discordIntents],
+    rest: buildDiscordRestOptions(clientOptions?.rest),
   });
 
   client.once(Events.ClientReady, (readyClient) => {

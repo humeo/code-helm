@@ -66,8 +66,6 @@
   - successful command completion
 - [ ] Update the status card in place for:
   - `Running`
-  - short commentary activity
-  - current command summary
   - `Waiting for approval`
   - `Idle`
 - [ ] Keep degradation and session-start/import messages as explicit one-off `CodeHelm` system messages
@@ -130,4 +128,3 @@
   - `/session-new workdir:example`
   - send one Discord-originated prompt
   - verify one assistant reply, one status card, and no user echo duplication
-

@@ -225,11 +225,11 @@ test("degradation renderer explains read-only mode", () => {
     renderDegradationBannerText({
       type: "session.degraded",
       params: {
-        reason: "native_cli_write",
+        reason: "snapshot_mismatch",
       },
     }),
   ).toBe(
-    "Session is now read-only because it was modified outside the supported Discord/Codex flow (`native_cli_write`).",
+    "Session is now read-only because CodeHelm detected unsupported or offline activity it could not safely replay into Discord. Return to a supported control path and run `/session-sync` again.",
   );
 });
 

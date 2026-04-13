@@ -71,8 +71,8 @@ export const renderSessionStartedText = ({
 
 export const renderStatusCardText = ({
   state,
-  activity,
-  command,
+  activity: _activity,
+  command: _command,
 }: StatusCardState) => {
   if (state === "waiting-approval") {
     return "CodeHelm status: Waiting for approval.";
@@ -80,14 +80,6 @@ export const renderStatusCardText = ({
 
   if (state === "idle") {
     return "CodeHelm status: Idle.";
-  }
-
-  if (command && command.length > 0) {
-    return `CodeHelm status: Running: \`${command}\`.`;
-  }
-
-  if (activity && activity.length > 0) {
-    return `CodeHelm status: Running: ${activity}.`;
   }
 
   return "CodeHelm status: Running.";
@@ -130,6 +122,10 @@ export const renderDegradationBannerText = ({
 
   if (reason === "thread_missing") {
     return "Session is now read-only because the bound Codex session no longer exists. Create or import a new session.";
+  }
+
+  if (reason === "snapshot_mismatch") {
+    return "Session is now read-only because CodeHelm detected unsupported or offline activity it could not safely replay into Discord. Return to a supported control path and run `/session-sync` again.";
   }
 
   if (!reason) {

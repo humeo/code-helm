@@ -57,6 +57,7 @@ import {
   type DiscordCommandResult,
   type DiscordCommandServices,
 } from "./discord/commands";
+import { buildDiscordRestOptions } from "./discord/rest";
 import {
   renderDegradationBannerText,
   renderSessionStartedText,
@@ -334,7 +335,8 @@ export const isMissingCodexThreadError = (error: unknown) => {
 
   const normalizedMessage = error.message.toLowerCase();
 
-  return normalizedMessage.includes("thread not found");
+  return normalizedMessage.includes("thread not found")
+    || normalizedMessage.includes("no rollout found for thread id");
 };
 
 export const isNotLoadedCodexThreadError = (error: unknown) => {
@@ -343,6 +345,46 @@ export const isNotLoadedCodexThreadError = (error: unknown) => {
   }
 
   return error.message.toLowerCase().includes("thread not loaded");
+};
+
+export const getSnapshotReconciliationFailureDisposition = (error: unknown) => {
+  if (isMissingCodexThreadError(error)) {
+    return "degrade-thread-missing" as const;
+  }
+
+  if (!shouldLogSnapshotReconciliationWarning(error)) {
+    return "ignore" as const;
+  }
+
+  return "warn" as const;
+};
+
+const shouldRetryCodexThreadOperationAfterResume = (error: unknown) => {
+  return isNotLoadedCodexThreadError(error) || isMissingCodexThreadError(error);
+};
+
+const retryCodexThreadOperationAfterResume = async <TResult>({
+  threadId,
+  operation,
+  resumeThread,
+}: {
+  threadId: string;
+  operation: () => Promise<TResult>;
+  resumeThread: (params: { threadId: string }) => Promise<unknown>;
+}) => {
+  try {
+    return await operation();
+  } catch (error) {
+    if (!shouldRetryCodexThreadOperationAfterResume(error)) {
+      throw error;
+    }
+
+    await resumeThread({
+      threadId,
+    });
+
+    return operation();
+  }
 };
 
 export const startTurnWithThreadResumeRetry = async <TResult>({
@@ -354,19 +396,11 @@ export const startTurnWithThreadResumeRetry = async <TResult>({
   startTurn: (request: StartTurnParams) => Promise<TResult>;
   resumeThread: (params: { threadId: string }) => Promise<unknown>;
 }) => {
-  try {
-    return await startTurn(request);
-  } catch (error) {
-    if (!isNotLoadedCodexThreadError(error)) {
-      throw error;
-    }
-
-    await resumeThread({
-      threadId: request.threadId,
-    });
-
-    return startTurn(request);
-  }
+  return retryCodexThreadOperationAfterResume({
+    threadId: request.threadId,
+    operation: () => startTurn(request),
+    resumeThread,
+  });
 };
 
 const isRecoverableStaleStatusMessageError = (error: unknown) => {
@@ -641,13 +675,21 @@ export const readThreadForSnapshotReconciliation = async ({
   codexClient,
   threadId,
 }: {
-  codexClient: Pick<JsonRpcClient, "readThread">;
+  codexClient: Pick<JsonRpcClient, "readThread" | "resumeThread">;
   threadId: string;
 }): Promise<ThreadReadResult> => {
   try {
-    return await codexClient.readThread({
+    return await retryCodexThreadOperationAfterResume({
       threadId,
-      includeTurns: true,
+      operation: () =>
+        codexClient.readThread({
+          threadId,
+          includeTurns: true,
+        }),
+      resumeThread: ({ threadId: nextThreadId }) =>
+        codexClient.resumeThread({
+          threadId: nextThreadId,
+        }),
     });
   } catch (error) {
     if (!isExpectedPreMaterializationIncludeTurnsError(error)) {
@@ -1888,6 +1930,7 @@ export const resumeManagedSession = async ({
 export const syncManagedSession = async ({
   session,
   readThread,
+  detectReadOnlyReason,
   persistSessionState,
   syncReadOnlySurface,
   updateStatusCard,
@@ -1895,6 +1938,9 @@ export const syncManagedSession = async ({
 }: {
   session: Pick<SessionRecord, "state" | "lifecycleState" | "degradationReason">;
   readThread: () => Promise<ThreadReadResult>;
+  detectReadOnlyReason?: (
+    readResult: ThreadReadResult,
+  ) => Promise<string | null> | string | null;
   persistSessionState: (
     runtimeState: SessionPersistedRuntimeState,
     degradationReason: string | null,
@@ -1909,7 +1955,7 @@ export const syncManagedSession = async ({
 }): Promise<SessionResumeState> => {
   const readResult = await readThread();
   const syncedRuntimeState = inferSyncedSessionRuntimeState(readResult.thread);
-  const outcome = resolveSyncSessionState({
+  let outcome = resolveSyncSessionState({
     syncedRuntimeState,
   });
 
@@ -1917,7 +1963,33 @@ export const syncManagedSession = async ({
     return outcome;
   }
 
-  await persistSessionState(outcome.persistedRuntimeState, null);
+  const canReconcileWritableState = outcome.kind === "ready" || outcome.kind === "busy";
+
+  if (canReconcileWritableState) {
+    await syncTranscriptSnapshot(readResult);
+  }
+
+  const detectedReadOnlyReason = canReconcileWritableState
+    ? await detectReadOnlyReason?.(readResult) ?? null
+    : null;
+
+  if (detectedReadOnlyReason) {
+    outcome = {
+      kind: "read-only",
+      session: {
+        lifecycleState: "active",
+        runtimeState: outcome.session.runtimeState,
+        accessMode: "read-only",
+      },
+      persistedRuntimeState: "degraded",
+      statusCardState: undefined,
+    };
+  }
+
+  await persistSessionState(
+    outcome.persistedRuntimeState,
+    outcome.kind === "read-only" ? detectedReadOnlyReason : null,
+  );
 
   if (outcome.kind === "read-only" || outcome.kind === "error") {
     await syncReadOnlySurface?.(outcome);
@@ -1925,7 +1997,10 @@ export const syncManagedSession = async ({
     await updateStatusCard(outcome.statusCardState);
   }
 
-  await syncTranscriptSnapshot(readResult);
+  if (!canReconcileWritableState) {
+    await syncTranscriptSnapshot(readResult);
+  }
+
   return outcome;
 };
 
@@ -2006,7 +2081,10 @@ const registerGuildCommands = async (
   config: AppConfig,
   commands: RESTPostAPIChatInputApplicationCommandsJSONBody[],
 ) => {
-  const rest = new REST({ version: "10" }).setToken(config.discord.botToken);
+  const rest = new REST({
+    version: "10",
+    ...buildDiscordRestOptions(),
+  }).setToken(config.discord.botToken);
 
   await rest.put(
     Routes.applicationGuildCommands(
@@ -2717,6 +2795,16 @@ export const startCodeHelm = async (
           codexClient,
           threadId: session.codexThreadId,
         }),
+      detectReadOnlyReason: async (snapshot) => {
+        const runtime = ensureTranscriptRuntime(session.codexThreadId);
+
+        return shouldDegradeForSnapshotMismatch({
+            runtime,
+            turns: snapshot.thread.turns,
+          }) && shouldDegradeDiscordToReadOnly({ controlSurface: "unknown" })
+          ? "snapshot_mismatch"
+          : null;
+      },
       persistSessionState: async (runtimeState, degradationReason) => {
         sessionRepo.syncState(
           session.discordThreadId,
@@ -2725,12 +2813,13 @@ export const startCodeHelm = async (
         );
       },
       syncReadOnlySurface: async (outcome) => {
+        const refreshedSession = sessionRepo.getByCodexThreadId(session.codexThreadId);
         const content = outcome.kind === "error"
           ? "Session synced, but Codex reports an error state. Discord remains read-only."
           : renderDegradationBannerText({
               type: "session.degraded",
               params: {
-                reason: session.degradationReason,
+                reason: refreshedSession?.degradationReason ?? session.degradationReason,
               },
             });
 
@@ -4137,7 +4226,18 @@ export const startCodeHelm = async (
     try {
       await seedTranscriptRuntimeFromSnapshot(session);
     } catch (error) {
-      if (shouldLogSnapshotReconciliationWarning(error)) {
+      const disposition = getSnapshotReconciliationFailureDisposition(error);
+
+      if (disposition === "degrade-thread-missing") {
+        await degradeSessionToReadOnly({
+          discord: bot.client,
+          session,
+          reason: "thread_missing",
+        });
+        continue;
+      }
+
+      if (disposition === "warn") {
         logger.warn(
           `Failed to seed transcript runtime for mapped session ${session.codexThreadId}`,
           error,
@@ -4173,8 +4273,16 @@ export const startCodeHelm = async (
             session,
             sessionState,
             readThread: async (threadId) =>
-              codexClient.readThread({
+              retryCodexThreadOperationAfterResume({
                 threadId,
+                operation: () =>
+                  codexClient.readThread({
+                    threadId,
+                  }),
+                resumeThread: ({ threadId: nextThreadId }) =>
+                  codexClient.resumeThread({
+                    threadId: nextThreadId,
+                  }),
               }),
             updateSessionState: async (nextState) => {
               updateSessionStateIfWritable(session, nextState);
@@ -4193,7 +4301,18 @@ export const startCodeHelm = async (
               }),
           });
         } catch (error) {
-          if (shouldLogSnapshotReconciliationWarning(error)) {
+          const disposition = getSnapshotReconciliationFailureDisposition(error);
+
+          if (disposition === "degrade-thread-missing") {
+            await degradeSessionToReadOnly({
+              discord: bot.client,
+              session,
+              reason: "thread_missing",
+            });
+            continue;
+          }
+
+          if (disposition === "warn") {
             logger.warn(
               `Failed to reconcile transcript snapshot for ${session.codexThreadId}`,
               error,

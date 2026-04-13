@@ -235,6 +235,7 @@ export const handleControlChannelCommand = async (
 
   switch (interaction.commandName) {
     case "workdir-list": {
+      await safelyDeferReply(interaction);
       await safelyReply(interaction, await services.listWorkdirs(context));
       return true;
     }

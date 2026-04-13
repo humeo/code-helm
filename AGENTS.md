@@ -68,4 +68,6 @@ Treat `agent-browser` as operating on its own managed tab, not “whatever Chrom
 
 Use `snapshot` sparingly because large pages such as Discord can consume thousands of tokens per call. Prefer `get url`, `get title`, `click`, `press`, `wait`, and `screenshot`; use `snapshot -i` only when you need fresh element refs.
 
+Keep browser interaction pacing tight. Do not insert arbitrary fixed delays between typing a command, selecting a slash-command candidate, and sending it. Wait only at real async boundaries such as “the slash listbox appeared”, “the command token appeared”, or “the response content rendered”. In normal end-to-end runs, avoid debug-only screenshots, DOM evals, and extra verification steps after every micro-action unless the task is specifically debugging browser behavior.
+
 When restarting a browser test because recovery is necessary, first close the existing `agent-browser` daemon/session, then relaunch with the same rooted `HOME`, cache, `--profile`, `--session`, and `--session-name`. After relaunch, verify the Chrome `user-data-dir` is the fixed `.agent-browser-profile`, not a temporary directory under `/var/...`.

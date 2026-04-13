@@ -112,7 +112,7 @@ const createInteraction = ({
 
 test("/workdir-list delegates to listWorkdirs", async () => {
   const { calls, services } = createServices();
-  const { interaction, replies } = createInteraction({
+  const { interaction, replies, followsUps, defers } = createInteraction({
     commandName: "workdir-list",
   });
 
@@ -126,7 +126,9 @@ test("/workdir-list delegates to listWorkdirs", async () => {
       channelId: "c1",
     },
   ]);
-  expect(replies).toEqual([{ content: "workdirs" }]);
+  expect(defers).toEqual([null]);
+  expect(replies).toEqual([]);
+  expect(followsUps).toEqual([{ content: "workdirs" }]);
 });
 
 test("/session-new extracts the workdir option correctly", async () => {

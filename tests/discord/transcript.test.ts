@@ -39,7 +39,7 @@ test("does not duplicate Discord-originated user messages in the transcript", ()
   ]);
 });
 
-test("renders live-observed non-Discord input as a weak remote-input card", () => {
+test("renders non-Discord input as a weak remote-input card for live and recovered snapshots", () => {
   const turn: CodexTurn = {
     id: "turn-1",
     status: "completed",
@@ -78,7 +78,25 @@ test("renders live-observed non-Discord input as a weak remote-input card", () =
       ],
     }),
   );
-  expect(snapshotEntries).toEqual([]);
+  expect(snapshotEntries).toEqual([
+    {
+      itemId: "user-1",
+      kind: "user",
+      source: "codex-cli",
+      text: "resume --remote",
+    },
+  ]);
+  expect(renderTranscriptEntry(snapshotEntries[0])).toEqual(
+    expect.objectContaining({
+      content: "",
+      embeds: [
+        expect.objectContaining({
+          title: "Remote input",
+          description: "> resume --remote",
+        }),
+      ],
+    }),
+  );
 });
 
 test("snapshot recovery clears stale pending Discord input before later live CLI input reuses the text", () => {

@@ -138,15 +138,10 @@ Each session thread should maintain at most one active editable status message a
 It represents ephemeral runtime state only:
 
 - `Running`
-- `Running: <short current activity>`
 - `Waiting for approval`
 - `Idle`
 
-The status card may also include compact operational detail while a turn is active:
-
-- current command summary such as `Running: \`npm test\``
-- short commentary-derived activity such as `Running: reasoning`
-- compact failure state such as `Running: command failed`
+The status card stays fixed to operational state only. Commentary and command detail belong on the process/progress surface instead.
 
 The status card is operational, not conversational.
 

@@ -89,6 +89,10 @@ bun run dev
 
 `bun run dev` starts the full CodeHelm daemon entrypoint in `src/index.ts`. That path parses config, applies migrations, seeds the configured workspace/workdirs, initializes the Codex App Server client, registers guild commands, starts the Discord bot, subscribes to Codex events, and installs shutdown hooks.
 
+## Regression Baseline
+
+The current product baseline and executable end-to-end regression checklist live in [`docs/baselines/e2e-baseline.md`](/Users/koltenluca/code-github/code-helm/docs/baselines/e2e-baseline.md).
+
 ## Session Flow
 
 Use the control channel for session management, not for normal conversation.
@@ -123,7 +127,7 @@ CodeHelm renders one shared conversation, not separate Discord and Codex logs.
 
 - Discord-originated user messages are recorded once and are not echoed back as a second `User:` line
 - live non-Discord input observed on the daemon host is labeled `Codex CLI`
-- assistant commentary feeds the status card when a final reply is also present, instead of becoming durable transcript noise
+- assistant commentary stays in the process card instead of becoming durable transcript noise
 - active turns use a status-only recovery probe; periodic `includeTurns=true` snapshot polling is idle-only and resumes after recovery
 
 This keeps the thread readable as a conversation while still preserving the durable items that matter.

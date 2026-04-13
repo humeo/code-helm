@@ -28,6 +28,7 @@ import {
   recoverApprovalLifecycleMessageFromHistory,
   isExpectedPreMaterializationIncludeTurnsError,
   isMissingCodexThreadError,
+  getSnapshotReconciliationFailureDisposition,
   isNotLoadedCodexThreadError,
   shouldProjectManagedSessionDiscordSurface,
   renderApprovalLifecycleMessage,
@@ -2393,7 +2394,7 @@ test("status card renderer stays operational and compact", () => {
       state: "running",
       activity: "reasoning",
     }),
-  ).toBe("CodeHelm status: Running: reasoning.");
+  ).toBe("CodeHelm status: Running.");
 
   expect(
     renderStatusCardText({
@@ -2401,7 +2402,7 @@ test("status card renderer stays operational and compact", () => {
       command: "bun test tests/index.test.ts",
       activity: "reasoning",
     }),
-  ).toBe("CodeHelm status: Running: `bun test tests/index.test.ts`.");
+  ).toBe("CodeHelm status: Running.");
 
   expect(
     renderStatusCardText({
@@ -2417,13 +2418,13 @@ test("running updates stay on the status card and out of the transcript", () => 
       state: "running",
       activity: "reasoning",
     }),
-  ).toBe("CodeHelm status: Running: reasoning.");
+  ).toBe("CodeHelm status: Running.");
   expect(
     renderStatusCardText({
       state: "running",
       command: "bun test tests/index.test.ts",
     }),
-  ).toBe("CodeHelm status: Running: `bun test tests/index.test.ts`.");
+  ).toBe("CodeHelm status: Running.");
   expect(
     renderLiveTurnProcessMessage({
       turnId: "turn-1",
@@ -2569,6 +2570,9 @@ test("snapshot reconciliation reader falls back to plain thread/read before firs
           },
         };
       },
+      async resumeThread() {
+        throw new Error("resumeThread should not be called for pre-materialization fallback");
+      },
     },
     threadId: "thread-1",
   });
@@ -2578,6 +2582,104 @@ test("snapshot reconciliation reader falls back to plain thread/read before firs
     { threadId: "thread-1" },
   ]);
   expect(result.thread.turns).toEqual([]);
+});
+
+test("snapshot reconciliation reader resumes not-loaded threads before retrying", async () => {
+  const calls: string[] = [];
+  let attempts = 0;
+
+  const result = await readThreadForSnapshotReconciliation({
+    codexClient: {
+      async readThread(params) {
+        calls.push(`read:${params.threadId}:${params.includeTurns ? "includeTurns" : "plain"}`);
+        attempts += 1;
+
+        if (attempts === 1) {
+          throw new Error("thread not loaded: thread-1");
+        }
+
+        return {
+          thread: {
+            id: "thread-1",
+            cwd: "/tmp/workspace/api",
+            preview: "",
+            status: { type: "notLoaded" },
+            turns: [],
+          },
+        };
+      },
+      async resumeThread({ threadId }) {
+        calls.push(`resume:${threadId}`);
+        return {
+          thread: {
+            id: threadId,
+            cwd: "/tmp/workspace/api",
+            preview: "",
+            status: { type: "notLoaded" },
+          },
+          cwd: "/tmp/workspace/api",
+        };
+      },
+    },
+    threadId: "thread-1",
+  });
+
+  expect(calls).toEqual([
+    "read:thread-1:includeTurns",
+    "resume:thread-1",
+    "read:thread-1:includeTurns",
+  ]);
+  expect(result.thread.turns).toEqual([]);
+  expect(result.thread.status).toEqual({ type: "notLoaded" });
+});
+
+test("snapshot reconciliation reader resumes thread-not-found threads before retrying", async () => {
+  const calls: string[] = [];
+  let attempts = 0;
+
+  const result = await readThreadForSnapshotReconciliation({
+    codexClient: {
+      async readThread(params) {
+        calls.push(`read:${params.threadId}:${params.includeTurns ? "includeTurns" : "plain"}`);
+        attempts += 1;
+
+        if (attempts === 1) {
+          throw new Error("thread not found: thread-1");
+        }
+
+        return {
+          thread: {
+            id: "thread-1",
+            cwd: "/tmp/workspace/api",
+            preview: "",
+            status: { type: "idle" },
+            turns: [],
+          },
+        };
+      },
+      async resumeThread({ threadId }) {
+        calls.push(`resume:${threadId}`);
+        return {
+          thread: {
+            id: threadId,
+            cwd: "/tmp/workspace/api",
+            preview: "",
+            status: { type: "idle" },
+          },
+          cwd: "/tmp/workspace/api",
+        };
+      },
+    },
+    threadId: "thread-1",
+  });
+
+  expect(calls).toEqual([
+    "read:thread-1:includeTurns",
+    "resume:thread-1",
+    "read:thread-1:includeTurns",
+  ]);
+  expect(result.thread.turns).toEqual([]);
+  expect(result.thread.status).toEqual({ type: "idle" });
 });
 
 test("snapshot reconciliation warning policy suppresses expected pre-materialization failures", () => {
@@ -2598,8 +2700,27 @@ test("snapshot reconciliation warning policy suppresses expected pre-materializa
   ).toBe(true);
 });
 
+test("snapshot reconciliation failure disposition degrades missing threads and ignores expected pre-materialization reads", () => {
+  expect(
+    getSnapshotReconciliationFailureDisposition(
+      new Error("no rollout found for thread id abc"),
+    ),
+  ).toBe("degrade-thread-missing");
+  expect(
+    getSnapshotReconciliationFailureDisposition(
+      new Error("includeTurns unavailable before first user message"),
+    ),
+  ).toBe("ignore");
+  expect(
+    getSnapshotReconciliationFailureDisposition(
+      new Error("unexpected rpc failure"),
+    ),
+  ).toBe("warn");
+});
+
 test("missing Codex thread errors are classified for read-only recovery", () => {
   expect(isMissingCodexThreadError(new Error("thread not found: abc"))).toBe(true);
+  expect(isMissingCodexThreadError(new Error("no rollout found for thread id abc"))).toBe(true);
   expect(isMissingCodexThreadError(new Error("thread not loaded: abc"))).toBe(false);
   expect(isMissingCodexThreadError(new Error("unexpected rpc failure"))).toBe(false);
   expect(isMissingCodexThreadError("thread not found")).toBe(false);
@@ -2652,7 +2773,47 @@ test("start-turn recovery resumes not-loaded threads and retries once", async ()
   ]);
 });
 
-test("start-turn recovery does not retry thread-not-found failures", async () => {
+test("start-turn recovery resumes thread-not-found failures and retries once", async () => {
+  const calls: string[] = [];
+  let attempts = 0;
+
+  const result = await startTurnWithThreadResumeRetry({
+    request: {
+      threadId: "codex-thread-1",
+      input: { kind: "discord-message", content: "有哪些文件" },
+    },
+    startTurn: async (request) => {
+      calls.push(`start:${request.threadId}`);
+      attempts += 1;
+
+      if (attempts === 1) {
+        throw new Error("thread not found: codex-thread-1");
+      }
+
+      return { ok: true, threadId: request.threadId };
+    },
+    resumeThread: async ({ threadId }) => {
+      calls.push(`resume:${threadId}`);
+      return {
+        thread: {
+          id: threadId,
+        },
+      };
+    },
+  });
+
+  expect(result).toEqual({
+    ok: true,
+    threadId: "codex-thread-1",
+  });
+  expect(calls).toEqual([
+    "start:codex-thread-1",
+    "resume:codex-thread-1",
+    "start:codex-thread-1",
+  ]);
+});
+
+test("start-turn recovery still fails when thread-not-found persists after resume", async () => {
   const calls: string[] = [];
 
   await expect(
@@ -2678,6 +2839,8 @@ test("start-turn recovery does not retry thread-not-found failures", async () =>
 
   expect(calls).toEqual([
     "start:codex-thread-1",
+    "resume:codex-thread-1",
+    "start:codex-thread-1",
   ]);
 });
 
@@ -2701,7 +2864,7 @@ test("status card reuse only matches clear operational status messages", () => {
       messages: [
         {
           id: "m2",
-          content: "CodeHelm status: Running: reasoning.",
+          content: "CodeHelm status: Running.",
           editable: false,
           author: { bot: true, id: "bot-1" },
         },
@@ -3073,9 +3236,54 @@ test("manual sync clears snapshot-mismatch read-only once the session view is tr
     statusCardState: "idle",
   });
   expect(calls).toEqual([
+    "snapshot",
     "persist:idle:null",
     "status:idle",
+  ]);
+});
+
+test("manual sync absorbs snapshot mismatch and restores writable control in one pass", async () => {
+  const calls: string[] = [];
+  let transcriptTrusted = false;
+
+  const result = await syncManagedSession({
+    session: createSessionRecord({
+      state: "degraded",
+      degradationReason: "snapshot_mismatch",
+    }),
+    readThread: async () => createThreadReadResult({
+      status: { type: "idle" },
+    }),
+    detectReadOnlyReason: async () => transcriptTrusted ? null : "snapshot_mismatch",
+    persistSessionState: async (runtimeState, degradationReason) => {
+      calls.push(`persist:${runtimeState}:${degradationReason ?? "null"}`);
+    },
+    syncReadOnlySurface: async () => {
+      calls.push("read-only");
+    },
+    updateStatusCard: async () => {
+      calls.push("status");
+    },
+    syncTranscriptSnapshot: async () => {
+      calls.push("snapshot");
+      transcriptTrusted = true;
+    },
+  });
+
+  expect(result).toEqual({
+    kind: "ready",
+    session: {
+      lifecycleState: "active",
+      runtimeState: "idle",
+      accessMode: "writable",
+    },
+    persistedRuntimeState: "idle",
+    statusCardState: "idle",
+  });
+  expect(calls).toEqual([
     "snapshot",
+    "persist:idle:null",
+    "status",
   ]);
 });
 
