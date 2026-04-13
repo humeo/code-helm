@@ -138,7 +138,7 @@ test("remote input user entries use a stable turn-level id across live and snaps
   expect(snapshotEntries[0]?.itemId).toBe(getUserTranscriptEntryId("turn-1"));
 });
 
-test("renders synced remote input and final assistant output as one Discord message", () => {
+test("renders synced remote input as a panel followed by a separate final assistant message", () => {
   const entries = collectTranscriptEntries(
     [
       {
@@ -166,12 +166,21 @@ test("renders synced remote input and final assistant output as one Discord mess
 
   expect(renderTranscriptMessages(entries)).toEqual([
     {
-      itemIds: [
-        getUserTranscriptEntryId("turn-1"),
-        getAssistantTranscriptEntryId("turn-1"),
-      ],
+      itemIds: [getUserTranscriptEntryId("turn-1")],
       payload: {
-        content: "Remote Input:\n```text\nreplay only \"ok9\"\n```\n\nok9",
+        embeds: [
+          {
+            title: "Remote Input",
+            description: "```text\nreplay only \"ok9\"\n```",
+            color: 0x2563eb,
+          },
+        ],
+      },
+    },
+    {
+      itemIds: [getAssistantTranscriptEntryId("turn-1")],
+      payload: {
+        content: "ok9",
       },
     },
   ]);

@@ -130,57 +130,6 @@ const renderRemoteInputDescription = (text: string) => {
   return `\`\`\`text\n${escapeCodeFenceContent(text)}\n\`\`\``;
 };
 
-const renderCombinedRemoteTurnText = ({
-  input,
-  output,
-}: {
-  input: string;
-  output: string;
-}) => {
-  return `Remote Input:\n${renderRemoteInputDescription(input)}\n\n${output}`;
-};
-
-const readTurnIdFromTranscriptEntryId = ({
-  itemId,
-  prefix,
-}: {
-  itemId: string;
-  prefix: "assistant" | "user";
-}) => {
-  const expectedPrefix = `${prefix}:`;
-
-  if (!itemId.startsWith(expectedPrefix)) {
-    return undefined;
-  }
-
-  return itemId.slice(expectedPrefix.length);
-};
-
-const canCombineRemoteTurnEntries = (
-  current: TranscriptEntry,
-  next: TranscriptEntry | undefined,
-) => {
-  if (
-    current.kind !== "user"
-    || current.source !== "codex-cli"
-    || !next
-    || next.kind !== "assistant"
-  ) {
-    return false;
-  }
-
-  const currentTurnId = readTurnIdFromTranscriptEntryId({
-    itemId: current.itemId,
-    prefix: "user",
-  });
-  const nextTurnId = readTurnIdFromTranscriptEntryId({
-    itemId: next.itemId,
-    prefix: "assistant",
-  });
-
-  return typeof currentTurnId === "string" && currentTurnId === nextTurnId;
-};
-
 export const isDiscordMessagePayloadEmpty = (
   payload: DiscordMessagePayload | undefined,
 ) => {
@@ -494,35 +443,10 @@ export const renderTranscriptEntry = (entry: TranscriptEntry) => {
 };
 
 export const renderTranscriptMessages = (entries: TranscriptEntry[]) => {
-  const messages: RenderedTranscriptMessage[] = [];
-
-  for (let index = 0; index < entries.length; index += 1) {
-    const entry = entries[index];
-    const nextEntry = entries[index + 1];
-
-    if (
-      entry.kind === "user"
-      && entry.source === "codex-cli"
-      && nextEntry
-      && nextEntry.kind === "assistant"
-      && canCombineRemoteTurnEntries(entry, nextEntry)
-    ) {
-      messages.push({
-        itemIds: [entry.itemId, nextEntry.itemId],
-        payload: buildTextPayload(renderCombinedRemoteTurnText({
-          input: entry.text,
-          output: nextEntry.text,
-        })),
-      });
-      index += 1;
-      continue;
-    }
-
-    messages.push({
+  return entries.map((entry) => {
+    return {
       itemIds: [entry.itemId],
       payload: renderTranscriptEntry(entry),
-    });
-  }
-
-  return messages;
+    };
+  });
 };

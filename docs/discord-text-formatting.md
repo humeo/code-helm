@@ -76,7 +76,7 @@ CodeHelm does not emit a duplicated bot transcript echo for the same Discord-ori
 
 Remote input is used for user input observed from Codex activity that is not native Discord thread input and has been explicitly synchronized into Discord.
 
-Current rendering for input-only remote turns:
+Current rendering:
 
 - panel/embed
 - title: `Remote Input`
@@ -98,26 +98,6 @@ Notes:
 
 - automatic external-activity detection no longer auto-inserts remote input into Discord
 - remote input appears only after explicit sync paths that intentionally import that transcript state
-
-When a synchronized remote turn includes both the remote user input and a final assistant reply, CodeHelm now renders that turn as one plain text Discord message instead of two separate messages.
-
-Current rendering for a completed remote turn:
-
-- plain text message
-- first section is the remote input label and exact input
-- second section is the final assistant output
-- one blank line separates the input block and the final output
-
-Example:
-
-```text
-Remote Input:
-\`\`\`text
-replay only "ok9"
-\`\`\`
-
-ok9
-```
 
 ### Codex Process Panel
 
@@ -274,8 +254,8 @@ Validation and error replies are also plain text, typically one sentence with in
 
 Current display behavior for external Codex activity is:
 
-- if automatic snapshot/recovery detects unsupported external activity, CodeHelm degrades Discord to read-only
-- that automatic path does not immediately relay recovered remote-input transcript entries into Discord
-- recovered remote input and related transcript items appear only after an explicit manual sync path that reconciles the session
+- if CodeHelm observes an external turn live through the routed event stream, it mirrors that remote input and result into Discord without forcing manual sync
+- if automatic snapshot/recovery detects external activity that was not observed live, CodeHelm degrades Discord to read-only
+- transcript items from that unobserved/offline path appear only after an explicit manual sync path that reconciles the session
 
-This rule exists to keep the Discord thread readable and to avoid mixing a read-only warning with automatically injected external transcript panels.
+This split keeps live remote control usable while still failing closed for offline or otherwise untrusted transcript divergence.

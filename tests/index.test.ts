@@ -59,6 +59,7 @@ import {
   finalizeLiveTurnProcessMessage,
   renderLiveTurnProcessMessage,
   seedTranscriptRuntimeSeenItemsFromSnapshot,
+  noteTrustedLiveExternalTurnStart,
 } from "../src/index";
 import { renderStatusCardText } from "../src/discord/renderers";
 import {
@@ -1868,6 +1869,57 @@ test("snapshot mismatch still degrades when unseen items do not match pending Di
       turns,
     }),
   ).toBe(true);
+});
+
+test("snapshot mismatch does not degrade for a live-observed external turn", () => {
+  const runtime = {
+    seenItemIds: new Set<string>(),
+    finalizingItemIds: new Set<string>(),
+    pendingDiscordInputs: [],
+    trustedExternalTurnIds: new Set<string>(["turn-1"]),
+  };
+  const turns: CodexTurn[] = [
+    {
+      id: "turn-1",
+      status: "completed",
+      items: [
+        {
+          type: "userMessage",
+          id: "user-1",
+          content: [{ type: "text", text: "replay only ok10" }],
+        },
+      ],
+    },
+  ];
+
+  expect(
+    shouldDegradeForSnapshotMismatch({
+      runtime,
+      turns,
+    }),
+  ).toBe(false);
+});
+
+test("live turn start trusts only external turns that did not originate from Discord", () => {
+  const runtime = {
+    seenItemIds: new Set<string>(),
+    finalizingItemIds: new Set<string>(),
+    pendingDiscordInputs: [] as string[],
+    trustedExternalTurnIds: new Set<string>(),
+  };
+
+  noteTrustedLiveExternalTurnStart({
+    runtime,
+    turnId: "external-turn",
+  });
+  expect(runtime.trustedExternalTurnIds.has("external-turn")).toBe(true);
+
+  runtime.pendingDiscordInputs.push("reply exactly OK");
+  noteTrustedLiveExternalTurnStart({
+    runtime,
+    turnId: "discord-turn",
+  });
+  expect(runtime.trustedExternalTurnIds.has("discord-turn")).toBe(false);
 });
 
 test("automatic snapshot mismatch holds transcript relay until manual sync", () => {

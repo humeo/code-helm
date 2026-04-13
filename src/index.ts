@@ -141,6 +141,7 @@ type TranscriptRuntime = {
   seenItemIds: Set<string>;
   finalizingItemIds: Set<string>;
   pendingDiscordInputs: string[];
+  trustedExternalTurnIds: Set<string>;
   closedTurnIds: Set<string>;
   typingActive: boolean;
   typingTimeout?: ReturnType<typeof setTimeout>;
@@ -464,14 +465,18 @@ export const shouldDegradeForSnapshotMismatch = ({
     seenItemIds: Set<string>;
     finalizingItemIds: Set<string>;
     pendingDiscordInputs: string[];
+    trustedExternalTurnIds?: Set<string>;
   };
   turns: CodexTurn[] | undefined;
 }) => {
   const pendingDiscordInputsProbe = [...runtime.pendingDiscordInputs];
+  const trustedExternalTurnIds = runtime.trustedExternalTurnIds ?? new Set<string>();
   const unseenItemIds = collectComparableTranscriptItemIds(turns, {
     pendingDiscordInputs: pendingDiscordInputsProbe,
   }).filter(
-    (itemId) => !shouldSkipTranscriptSnapshotItem(runtime, itemId),
+    (itemId) =>
+      !shouldSkipTranscriptSnapshotItem(runtime, itemId)
+      && !trustedExternalTurnIds.has(readTurnIdFromTranscriptEntryId(itemId) ?? ""),
   );
 
   if (unseenItemIds.length === 0) {
@@ -494,6 +499,7 @@ export const shouldHoldSnapshotTranscriptForManualSync = ({
     seenItemIds: Set<string>;
     finalizingItemIds: Set<string>;
     pendingDiscordInputs: string[];
+    trustedExternalTurnIds?: Set<string>;
   };
   turns: CodexTurn[] | undefined;
   degradeOnUnexpectedItems: boolean;
@@ -1276,6 +1282,7 @@ const buildTranscriptRuntime = (): TranscriptRuntime => {
     seenItemIds: new Set<string>(),
     finalizingItemIds: new Set<string>(),
     pendingDiscordInputs: [],
+    trustedExternalTurnIds: new Set<string>(),
     closedTurnIds: new Set<string>(),
     typingActive: false,
     typingTimeout: undefined,
@@ -1288,6 +1295,30 @@ const buildTranscriptRuntime = (): TranscriptRuntime => {
     attemptedStatusRecovery: false,
     pendingStatusUpdate: undefined,
   };
+};
+
+const readTurnIdFromTranscriptEntryId = (itemId: string) => {
+  const separatorIndex = itemId.indexOf(":");
+
+  if (separatorIndex < 0 || separatorIndex === itemId.length - 1) {
+    return undefined;
+  }
+
+  return itemId.slice(separatorIndex + 1);
+};
+
+export const noteTrustedLiveExternalTurnStart = ({
+  runtime,
+  turnId,
+}: {
+  runtime: Pick<TranscriptRuntime, "pendingDiscordInputs" | "trustedExternalTurnIds">;
+  turnId?: string;
+}) => {
+  if (!turnId || runtime.pendingDiscordInputs.length > 0) {
+    return;
+  }
+
+  runtime.trustedExternalTurnIds.add(turnId);
 };
 
 export const markTranscriptItemsSeen = ({
@@ -3876,6 +3907,11 @@ export const startCodeHelm = async (
         runtime.closedTurnIds.delete(turnId);
       }
 
+      noteTrustedLiveExternalTurnStart({
+        runtime,
+        turnId,
+      });
+
       updateSessionStateIfWritable(session, "running");
       await updateStatusCard({
         discord: bot.client,
@@ -4098,6 +4134,13 @@ export const startCodeHelm = async (
           runtime.seenItemIds.add(item.id);
         }
         return;
+      }
+
+      if (isUserMessageItem(item)) {
+        noteTrustedLiveExternalTurnStart({
+          runtime,
+          turnId,
+        });
       }
 
       if (isCommandExecutionItem(item)) {
