@@ -9,7 +9,7 @@ import {
 } from "../../src/discord/transcript";
 import type { CodexTurn } from "../../src/codex/protocol-types";
 
-test("does not duplicate Discord-originated user messages in the transcript", () => {
+test("does not duplicate Discord-originated user messages or surface commentary-only process output", () => {
   const turns: CodexTurn[] = [
     {
       id: "turn-1",
@@ -35,12 +35,10 @@ test("does not duplicate Discord-originated user messages in the transcript", ()
     pendingDiscordInputs: ["Inspect the repo."],
   });
 
-  expect(entries.map((entry) => entry.itemId)).toEqual([
-    getProcessTranscriptEntryId("turn-1"),
-  ]);
+  expect(entries).toEqual([]);
 });
 
-test("renders non-Discord input as a weak remote-input card for live and recovered snapshots", () => {
+test("renders non-Discord input as a remote input card with explicit reply instructions", () => {
   const turn: CodexTurn = {
     id: "turn-1",
     status: "completed",
@@ -68,13 +66,14 @@ test("renders non-Discord input as a weak remote-input card for live and recover
       text: "resume --remote",
     },
   ]);
-  expect(renderTranscriptEntry(liveEntries[0])).toEqual(
+  const livePayload = renderTranscriptEntry(liveEntries[0]);
+  expect(livePayload).not.toHaveProperty("content");
+  expect(livePayload).toEqual(
     expect.objectContaining({
-      content: "",
       embeds: [
         expect.objectContaining({
-          title: "Remote input",
-          description: "> resume --remote",
+          title: "Remote Input",
+          description: "```text\nresume --remote\n```",
         }),
       ],
     }),
@@ -87,13 +86,14 @@ test("renders non-Discord input as a weak remote-input card for live and recover
       text: "resume --remote",
     },
   ]);
-  expect(renderTranscriptEntry(snapshotEntries[0])).toEqual(
+  const snapshotPayload = renderTranscriptEntry(snapshotEntries[0]);
+  expect(snapshotPayload).not.toHaveProperty("content");
+  expect(snapshotPayload).toEqual(
     expect.objectContaining({
-      content: "",
       embeds: [
         expect.objectContaining({
-          title: "Remote input",
-          description: "> resume --remote",
+          title: "Remote Input",
+          description: "```text\nresume --remote\n```",
         }),
       ],
     }),
@@ -228,37 +228,17 @@ test("builds one Codex process message and one final reply for a completed turn"
 
   expect(entries).toEqual([
     {
-      itemId: getProcessTranscriptEntryId("turn-1"),
-      kind: "process",
-      turnId: "turn-1",
-      steps: [
-        "reading SKILL.md",
-        "RUN `bun test`",
-      ],
-    },
-    {
       itemId: getAssistantTranscriptEntryId("turn-1"),
       kind: "assistant",
       text: "OK",
     },
   ]);
-  expect(renderTranscriptEntry(entries[0])).toEqual(
-    expect.objectContaining({
-      content: "",
-      embeds: [
-        expect.objectContaining({
-          title: "Codex",
-          description: "reading SKILL.md\nRUN `bun test`",
-        }),
-      ],
-    }),
-  );
-  expect(renderTranscriptEntry(entries[1])).toEqual({
+  expect(renderTranscriptEntry(entries[0])).toEqual({
     content: "OK",
   });
 });
 
-test("commentary-only turns preserve process history without fabricating a final reply", () => {
+test("commentary-only turns do not create a process transcript entry", () => {
   const entries = collectTranscriptEntries(
     [
       {
@@ -279,25 +259,7 @@ test("commentary-only turns preserve process history without fabricating a final
     },
   );
 
-  expect(entries).toEqual([
-    {
-      itemId: getProcessTranscriptEntryId("turn-1"),
-      kind: "process",
-      turnId: "turn-1",
-      steps: ["reading README.md"],
-    },
-  ]);
-  expect(renderTranscriptEntry(entries[0])).toEqual(
-    expect.objectContaining({
-      content: "",
-      embeds: [
-        expect.objectContaining({
-          title: "Codex",
-          description: "reading README.md",
-        }),
-      ],
-    }),
-  );
+  expect(entries).toEqual([]);
 });
 
 test("active turn process footers stay on the last line", () => {
@@ -331,32 +293,7 @@ test("active turn process footers stay on the last line", () => {
     },
   );
 
-  expect(entries).toEqual([
-    {
-      itemId: getProcessTranscriptEntryId("turn-1"),
-      kind: "process",
-      turnId: "turn-1",
-      steps: [
-        "reading README.md",
-        "RUN `touch /tmp/README.md`",
-      ],
-      footer: "Waiting for approval",
-    },
-  ]);
-  expect(renderTranscriptEntry(entries[0])).toEqual(
-    expect.objectContaining({
-      content: "",
-      embeds: [
-        expect.objectContaining({
-          title: "Codex",
-          description: "reading README.md\nRUN `touch /tmp/README.md`",
-          footer: {
-            text: "Waiting for approval",
-          },
-        }),
-      ],
-    }),
-  );
+  expect(entries).toEqual([]);
 });
 
 test("failed command execution stays in the process card without a separate error bubble", () => {
@@ -383,15 +320,7 @@ test("failed command execution stays in the process card without a separate erro
     },
   );
 
-  expect(entries).toEqual([
-    {
-      itemId: getProcessTranscriptEntryId("turn-1"),
-      kind: "process",
-      turnId: "turn-1",
-      steps: ["RUN `npm test`"],
-      footer: "Command failed",
-    },
-  ]);
+  expect(entries).toEqual([]);
 });
 
 test("preserves process-before-final order without a separate failed-command bubble", () => {
@@ -431,18 +360,9 @@ test("preserves process-before-final order without a separate failed-command bub
   );
 
   expect(entries.map((entry) => entry.itemId)).toEqual([
-    getProcessTranscriptEntryId("turn-1"),
     getAssistantTranscriptEntryId("turn-1"),
   ]);
   expect(entries[0]).toMatchObject({
-    kind: "process",
-    steps: [
-      "reading package.json",
-      "RUN `npm test`",
-    ],
-    footer: "Command failed",
-  });
-  expect(entries[1]).toMatchObject({
     kind: "assistant",
     text: "Tests failed.",
   });
@@ -472,12 +392,5 @@ test("successful command execution contributes only to the process message", () 
     },
   );
 
-  expect(entries).toEqual([
-    {
-      itemId: getProcessTranscriptEntryId("turn-1"),
-      kind: "process",
-      turnId: "turn-1",
-      steps: ["RUN `ls`"],
-    },
-  ]);
+  expect(entries).toEqual([]);
 });

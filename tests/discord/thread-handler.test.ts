@@ -5,9 +5,12 @@ import {
   normalizeOwnerThreadMessage,
 } from "../../src/discord/thread-handler";
 import {
+  renderDegradationActionText,
+  renderDegradationBannerPayload,
   renderDegradationBannerText,
   renderFinalAnswerText,
   renderRunningStatusText,
+  renderSessionStartedPayload,
   renderSessionStartedText,
   renderToolProgressText,
 } from "../../src/discord/renderers";
@@ -178,6 +181,27 @@ test("session started renderer returns stable Discord text", () => {
   ).toBe("Session started for `api`.\nCodex thread: `codex-thread-1`.");
 });
 
+test("session started renderer returns a structured system card payload", () => {
+  const payload = renderSessionStartedPayload({
+    type: "session.started",
+    params: {
+      workdirLabel: "api",
+      codexThreadId: "codex-thread-1",
+    },
+  });
+
+  expect(payload).not.toHaveProperty("content");
+  expect(payload).toEqual({
+    embeds: [
+      {
+        title: "Session started",
+        description: "Session: `api`\n\nCodex thread: `codex-thread-1`",
+        color: 0x2563eb,
+      },
+    ],
+  });
+});
+
 test("running status helper renders turn and thread status text", () => {
   expect(
     renderRunningStatusText({
@@ -229,7 +253,7 @@ test("degradation renderer explains read-only mode", () => {
       },
     }),
   ).toBe(
-    "Session is now read-only because CodeHelm detected unsupported or offline activity it could not safely replay into Discord. Return to a supported control path and run `/session-sync` again.",
+    "Session is read-only.\n\nCodeHelm detected Codex activity that was not mirrored into this Discord thread.\n\nRun `/session-sync` to resync this thread and restore write access.",
   );
 });
 
@@ -242,6 +266,67 @@ test("degradation renderer explains when the bound Codex thread is gone", () => 
       },
     }),
   ).toBe(
-    "Session is now read-only because the bound Codex session no longer exists. Create or import a new session.",
+    "Session is read-only.\n\nThe bound Codex session no longer exists.\n\nCreate or import a new session to continue in Discord.",
   );
+});
+
+test("degradation renderer returns a compact warning card payload", () => {
+  const payload = renderDegradationBannerPayload({
+    type: "session.degraded",
+    params: {
+      reason: "snapshot_mismatch",
+    },
+  });
+
+  expect(payload).not.toHaveProperty("content");
+  expect(payload).toEqual({
+    embeds: [
+      {
+        title: "Session is read-only",
+        description:
+          "CodeHelm detected Codex activity that was not mirrored into this Discord thread.",
+        color: 0xf59e0b,
+      },
+    ],
+  });
+});
+
+test("degradation renderer returns a missing-thread warning card payload", () => {
+  const payload = renderDegradationBannerPayload({
+    type: "session.degraded",
+    params: {
+      reason: "thread_missing",
+    },
+  });
+
+  expect(payload).not.toHaveProperty("content");
+  expect(payload).toEqual({
+    embeds: [
+      {
+        title: "Session is read-only",
+        description: "The bound Codex session no longer exists.",
+        color: 0xf59e0b,
+      },
+    ],
+  });
+});
+
+test("degradation renderer returns the standalone action text", () => {
+  expect(
+    renderDegradationActionText({
+      type: "session.degraded",
+      params: {
+        reason: "snapshot_mismatch",
+      },
+    }),
+  ).toBe("Run `/session-sync` to resync this thread and restore write access.");
+
+  expect(
+    renderDegradationActionText({
+      type: "session.degraded",
+      params: {
+        reason: "thread_missing",
+      },
+    }),
+  ).toBe("Create or import a new session to continue in Discord.");
 });

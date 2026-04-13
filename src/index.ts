@@ -59,8 +59,9 @@ import {
 } from "./discord/commands";
 import { buildDiscordRestOptions } from "./discord/rest";
 import {
-  renderDegradationBannerText,
-  renderSessionStartedText,
+  renderDegradationActionText,
+  renderDegradationBannerPayload,
+  renderSessionStartedPayload,
   renderStatusCardText,
 } from "./discord/renderers";
 import {
@@ -139,6 +140,9 @@ type TranscriptRuntime = {
   seenItemIds: Set<string>;
   finalizingItemIds: Set<string>;
   pendingDiscordInputs: string[];
+  closedTurnIds: Set<string>;
+  typingActive: boolean;
+  typingTimeout?: ReturnType<typeof setTimeout>;
   turnProcessMessages: Map<
     string,
     {
@@ -148,6 +152,8 @@ type TranscriptRuntime = {
       footer?: ProcessFooterText;
       message?: StreamingTranscriptMessage;
       pendingCreate?: Promise<StreamingTranscriptMessage | undefined>;
+      pendingUpdate?: Promise<void>;
+      nextPayload?: DiscordMessagePayload;
     }
   >;
   itemTurnIds: Map<string, string>;
@@ -160,6 +166,7 @@ type TranscriptRuntime = {
 };
 
 const sessionSnapshotPollIntervalMs = 15_000;
+const discordTypingPulseIntervalMs = 8_000;
 
 export const shouldRenderLiveAssistantTranscriptBubble = (
   phase: string | null | undefined,
@@ -171,6 +178,12 @@ export const shouldRenderCommandExecutionStartMessage = () => {
   return false;
 };
 
+export const shouldShowDiscordTypingIndicator = (
+  state: SessionRuntimeState,
+) => {
+  return state === "running";
+};
+
 const createTurnProcessMessageState = () => {
   return {
     steps: [] as string[],
@@ -179,7 +192,35 @@ const createTurnProcessMessageState = () => {
     footer: undefined as ProcessFooterText | undefined,
     message: undefined as StreamingTranscriptMessage | undefined,
     pendingCreate: undefined as Promise<StreamingTranscriptMessage | undefined> | undefined,
+    pendingUpdate: undefined as Promise<void> | undefined,
+    nextPayload: undefined as DiscordMessagePayload | undefined,
   };
+};
+
+export const shouldSkipStaleLiveTurnProcessUpdate = ({
+  activeTurnId,
+  closedTurnIds,
+  turnId,
+  deleteIfEmpty,
+}: {
+  activeTurnId?: string;
+  closedTurnIds?: Set<string>;
+  turnId?: string;
+  deleteIfEmpty?: boolean;
+}) => {
+  if (deleteIfEmpty || !turnId) {
+    return false;
+  }
+
+  if (closedTurnIds?.has(turnId)) {
+    return true;
+  }
+
+  if (activeTurnId === undefined) {
+    return false;
+  }
+
+  return activeTurnId !== turnId;
 };
 
 const ensureTurnProcessMessageState = (
@@ -204,62 +245,21 @@ const getFooterForSessionState = (
     return "Waiting for approval";
   }
 
-  if (state === "running") {
-    return "Working...";
-  }
-
   return undefined;
 };
 
-const collectVisibleTurnProcessSteps = ({
-  steps,
-  liveCommentaryText,
-}: {
-  steps: string[];
-  liveCommentaryText?: string;
-}) => {
-  const visibleSteps = [...steps];
-  const normalizedLiveCommentary = liveCommentaryText
-    ? normalizeProcessStepText(liveCommentaryText)
-    : "";
-
-  if (
-    normalizedLiveCommentary.length > 0
-    && visibleSteps.at(-1) !== normalizedLiveCommentary
-  ) {
-    visibleSteps.push(normalizedLiveCommentary);
-  }
-
-  return visibleSteps;
-};
-
 export const renderLiveTurnProcessMessage = ({
-  turnId,
-  steps,
-  liveCommentaryText,
-  footer,
+  turnId: _turnId,
+  steps: _steps,
+  liveCommentaryText: _liveCommentaryText,
+  footer: _footer,
 }: {
   turnId: string;
   steps: string[];
   liveCommentaryText?: string;
   footer?: ProcessFooterText;
 }) => {
-  const visibleSteps = collectVisibleTurnProcessSteps({
-    steps,
-    liveCommentaryText,
-  });
-
-  if (visibleSteps.length === 0 && !footer) {
-    return undefined;
-  }
-
-  return renderTranscriptEntry({
-    itemId: getProcessTranscriptEntryId(turnId),
-    kind: "process",
-    turnId,
-    steps: visibleSteps,
-    footer,
-  });
+  return undefined;
 };
 
 export const finalizeLiveTurnProcessMessage = async ({
@@ -482,6 +482,25 @@ export const shouldDegradeForSnapshotMismatch = ({
   }
 
   return pendingDiscordInputsProbe.length === runtime.pendingDiscordInputs.length;
+};
+
+export const shouldHoldSnapshotTranscriptForManualSync = ({
+  runtime,
+  turns,
+  degradeOnUnexpectedItems,
+}: {
+  runtime: {
+    seenItemIds: Set<string>;
+    finalizingItemIds: Set<string>;
+    pendingDiscordInputs: string[];
+  };
+  turns: CodexTurn[] | undefined;
+  degradeOnUnexpectedItems: boolean;
+}) => {
+  return degradeOnUnexpectedItems && shouldDegradeForSnapshotMismatch({
+    runtime,
+    turns,
+  });
 };
 
 export const canReuseStatusCardMessage = ({
@@ -873,13 +892,44 @@ export const upsertStreamingTranscriptMessage = async <T extends {
   state: {
     message?: T;
     pendingCreate?: Promise<T | undefined>;
+    pendingUpdate?: Promise<void>;
+    nextPayload?: DiscordMessagePayload;
   };
   payload: DiscordMessagePayload;
   sendMessage: (payload: DiscordMessagePayload) => Promise<T | undefined>;
 }) => {
+  const queueEdit = async (message: T, nextPayload: DiscordMessagePayload) => {
+    if (state.pendingUpdate) {
+      state.nextPayload = nextPayload;
+      await state.pendingUpdate;
+      return message;
+    }
+
+    const updatePromise = (async () => {
+      let payloadToApply: DiscordMessagePayload | undefined = nextPayload;
+
+      while (payloadToApply) {
+        await message.edit(payloadToApply);
+        payloadToApply = state.nextPayload;
+        state.nextPayload = undefined;
+      }
+    })();
+
+    state.pendingUpdate = updatePromise;
+
+    try {
+      await updatePromise;
+      return message;
+    } finally {
+      if (state.pendingUpdate === updatePromise) {
+        state.pendingUpdate = undefined;
+        state.nextPayload = undefined;
+      }
+    }
+  };
+
   if (state.message) {
-    await state.message.edit(payload);
-    return state.message;
+    return queueEdit(state.message, payload);
   }
 
   if (state.pendingCreate) {
@@ -887,7 +937,7 @@ export const upsertStreamingTranscriptMessage = async <T extends {
 
     if (message) {
       state.message = message;
-      await message.edit(payload);
+      return queueEdit(message, payload);
     }
 
     return message;
@@ -1225,6 +1275,9 @@ const buildTranscriptRuntime = (): TranscriptRuntime => {
     seenItemIds: new Set<string>(),
     finalizingItemIds: new Set<string>(),
     pendingDiscordInputs: [],
+    closedTurnIds: new Set<string>(),
+    typingActive: false,
+    typingTimeout: undefined,
     turnProcessMessages: new Map(),
     itemTurnIds: new Map(),
     activeTurnId: undefined,
@@ -2414,6 +2467,64 @@ export const startCodeHelm = async (
     return runtime;
   };
 
+  const stopDiscordTypingPulse = (runtime: TranscriptRuntime) => {
+    runtime.typingActive = false;
+
+    if (runtime.typingTimeout) {
+      clearTimeout(runtime.typingTimeout);
+      runtime.typingTimeout = undefined;
+    }
+  };
+
+  const sendTypingToChannel = async (client: Client, channelId: string) => {
+    const channel = await client.channels.fetch(channelId);
+
+    if (
+      channel
+      && typeof channel === "object"
+      && "sendTyping" in channel
+      && typeof channel.sendTyping === "function"
+    ) {
+      await channel.sendTyping();
+    }
+  };
+
+  const ensureDiscordTypingPulse = ({
+    client,
+    channelId,
+    runtime,
+  }: {
+    client: Client;
+    channelId: string;
+    runtime: TranscriptRuntime;
+  }) => {
+    if (runtime.typingActive) {
+      return;
+    }
+
+    runtime.typingActive = true;
+
+    const pulse = async () => {
+      if (!runtime.typingActive || shuttingDown) {
+        return;
+      }
+
+      try {
+        await sendTypingToChannel(client, channelId);
+      } catch {}
+
+      if (!runtime.typingActive || shuttingDown) {
+        return;
+      }
+
+      runtime.typingTimeout = setTimeout(() => {
+        void pulse();
+      }, discordTypingPulseIntervalMs);
+    };
+
+    void pulse();
+  };
+
   const updateSessionStateIfWritable = (
     session: ReturnType<typeof sessionRepo.getByCodexThreadId>,
     nextState: SessionRuntimeState,
@@ -2452,7 +2563,10 @@ export const startCodeHelm = async (
     activity?: string | null;
     command?: string | null;
   }) => {
+    const runtime = ensureTranscriptRuntime(session.codexThreadId);
+
     if (!shouldProjectManagedSessionDiscordSurface(session)) {
+      stopDiscordTypingPulse(runtime);
       return;
     }
 
@@ -2460,10 +2574,9 @@ export const startCodeHelm = async (
     const nextState = state ?? currentSessionState;
 
     if (currentSessionState === "degraded" || nextState === "degraded") {
+      stopDiscordTypingPulse(runtime);
       return;
     }
-
-    const runtime = ensureTranscriptRuntime(session.codexThreadId);
 
     if (activity !== undefined) {
       runtime.statusActivity = activity ?? undefined;
@@ -2476,6 +2589,16 @@ export const startCodeHelm = async (
     if (nextState !== "running") {
       runtime.statusActivity = undefined;
       runtime.statusCommand = undefined;
+    }
+
+    if (shouldShowDiscordTypingIndicator(nextState)) {
+      ensureDiscordTypingPulse({
+        client: discord,
+        channelId: session.discordThreadId,
+        runtime,
+      });
+    } else {
+      stopDiscordTypingPulse(runtime);
     }
 
     const content = renderSessionStatusCard({
@@ -2505,6 +2628,8 @@ export const startCodeHelm = async (
     session: NonNullable<ReturnType<typeof sessionRepo.getByCodexThreadId>>;
     reason: string;
   }) => {
+    stopDiscordTypingPulse(ensureTranscriptRuntime(session.codexThreadId));
+
     if (session.state === "degraded") {
       return;
     }
@@ -2513,7 +2638,15 @@ export const startCodeHelm = async (
     await sendTextToChannel(
       discord,
       session.discordThreadId,
-      renderDegradationBannerText({
+      renderDegradationActionText({
+        type: "session.degraded",
+        params: { reason },
+      }),
+    );
+    await sendTextToChannel(
+      discord,
+      session.discordThreadId,
+      renderDegradationBannerPayload({
         type: "session.degraded",
         params: { reason },
       }),
@@ -2535,10 +2668,10 @@ export const startCodeHelm = async (
     const turns = snapshot.thread.turns;
 
     if (
-      degradeOnUnexpectedItems
-      && shouldDegradeForSnapshotMismatch({
+      shouldHoldSnapshotTranscriptForManualSync({
         runtime,
         turns,
+        degradeOnUnexpectedItems,
       })
       && shouldDegradeDiscordToReadOnly({ controlSurface: "unknown" })
     ) {
@@ -2547,6 +2680,7 @@ export const startCodeHelm = async (
         session,
         reason: "snapshot_mismatch",
       });
+      return;
     }
 
     const activeRuntimeState = inferSessionStateFromThreadStatus(snapshot.thread.status);
@@ -2743,7 +2877,17 @@ export const startCodeHelm = async (
         await sendTextToChannel(
           discord,
           session.discordThreadId,
-          renderDegradationBannerText({
+          renderDegradationActionText({
+            type: "session.degraded",
+            params: {
+              reason: session.degradationReason,
+            },
+          }),
+        );
+        await sendTextToChannel(
+          discord,
+          session.discordThreadId,
+          renderDegradationBannerPayload({
             type: "session.degraded",
             params: {
               reason: session.degradationReason,
@@ -2814,19 +2958,36 @@ export const startCodeHelm = async (
       },
       syncReadOnlySurface: async (outcome) => {
         const refreshedSession = sessionRepo.getByCodexThreadId(session.codexThreadId);
-        const content = outcome.kind === "error"
-          ? "Session synced, but Codex reports an error state. Discord remains read-only."
-          : renderDegradationBannerText({
-              type: "session.degraded",
-              params: {
-                reason: refreshedSession?.degradationReason ?? session.degradationReason,
-              },
-            });
+        const reason = refreshedSession?.degradationReason ?? session.degradationReason;
+
+        if (outcome.kind === "error") {
+          await sendTextToChannel(
+            discord,
+            session.discordThreadId,
+            "Session synced, but Codex reports an error state. Discord remains read-only.",
+          );
+          return;
+        }
 
         await sendTextToChannel(
           discord,
           session.discordThreadId,
-          content,
+          renderDegradationActionText({
+            type: "session.degraded",
+            params: {
+              reason,
+            },
+          }),
+        );
+        await sendTextToChannel(
+          discord,
+          session.discordThreadId,
+          renderDegradationBannerPayload({
+            type: "session.degraded",
+            params: {
+              reason,
+            },
+          }),
         );
       },
       updateStatusCard: async (runtimeState) => {
@@ -2915,7 +3076,7 @@ export const startCodeHelm = async (
         });
         ensureTranscriptRuntime(codexThreadId);
         await thread.send({
-          content: renderSessionStartedText({
+          ...renderSessionStartedPayload({
             type: "session.started",
             params: {
               workdirLabel: workdir.label,
@@ -3012,7 +3173,7 @@ export const startCodeHelm = async (
           state: inferSessionStateFromThreadStatus(readResult.thread.status),
         });
         await thread.send({
-          content: renderSessionStartedText({
+          ...renderSessionStartedPayload({
             type: "session.started",
             params: {
               workdirLabel: workdir.label,
@@ -3283,6 +3444,16 @@ export const startCodeHelm = async (
     }
 
     const runtime = ensureTranscriptRuntime(session.codexThreadId);
+
+    if (shouldSkipStaleLiveTurnProcessUpdate({
+      activeTurnId: runtime.activeTurnId,
+      closedTurnIds: runtime.closedTurnIds,
+      turnId,
+      deleteIfEmpty,
+    })) {
+      return;
+    }
+
     const current = runtime.turnProcessMessages.get(turnId);
 
     if (!current) {
@@ -3314,7 +3485,11 @@ export const startCodeHelm = async (
         return;
       }
 
-      const payload = rendered as DiscordMessagePayload;
+      const payload = rendered;
+
+      if (!payload) {
+        return;
+      }
 
       const message = await upsertStreamingTranscriptMessage({
         state: current,
@@ -3384,6 +3559,14 @@ export const startCodeHelm = async (
       return;
     }
 
+    if (shouldSkipStaleLiveTurnProcessUpdate({
+      activeTurnId: runtime.activeTurnId,
+      closedTurnIds: runtime.closedTurnIds,
+      turnId: resolvedTurnId,
+    })) {
+      return;
+    }
+
     const current = runtime.turnProcessMessages.get(resolvedTurnId);
 
     if (!current || current.liveCommentaryItemId !== itemId) {
@@ -3431,26 +3614,21 @@ export const startCodeHelm = async (
         return;
       }
 
+      if (shouldSkipStaleLiveTurnProcessUpdate({
+        activeTurnId: runtime.activeTurnId,
+        closedTurnIds: runtime.closedTurnIds,
+        turnId: resolvedTurnId,
+      })) {
+        return;
+      }
+
       const current = ensureTurnProcessMessageState(runtime, resolvedTurnId);
-      appendProcessStep(current.steps, item.text);
 
       if (current.liveCommentaryItemId === item.id) {
         current.liveCommentaryItemId = undefined;
         current.liveCommentaryText = undefined;
       }
 
-      await syncTurnProcessMessage({
-        discord,
-        session,
-        turnId: resolvedTurnId,
-      });
-      await updateStatusCard({
-        discord,
-        session,
-        state: "running",
-        activity: summarizeStatusActivity(item.text),
-        command: null,
-      });
       return;
     }
 
@@ -3543,8 +3721,20 @@ export const startCodeHelm = async (
               : "Session is already running.",
           );
         } else if (outcome.kind === "read-only") {
-          await message.reply(
-            renderDegradationBannerText({
+          await sendTextToChannel(
+            bot.client,
+            message.channelId,
+            renderDegradationActionText({
+              type: "session.degraded",
+              params: {
+                reason: session.degradationReason,
+              },
+            }),
+          );
+          await sendTextToChannel(
+            bot.client,
+            message.channelId,
+            renderDegradationBannerPayload({
               type: "session.degraded",
               params: {
                 reason: session.degradationReason,
@@ -3586,8 +3776,20 @@ export const startCodeHelm = async (
       }
 
       if (decision.kind === "read-only") {
-        await message.reply(
-          renderDegradationBannerText({
+        await sendTextToChannel(
+          bot.client,
+          message.channelId,
+          renderDegradationActionText({
+            type: "session.degraded",
+            params: {
+              reason: session.degradationReason,
+            },
+          }),
+        );
+        await sendTextToChannel(
+          bot.client,
+          message.channelId,
+          renderDegradationBannerPayload({
             type: "session.degraded",
             params: {
               reason: session.degradationReason,
@@ -3668,8 +3870,7 @@ export const startCodeHelm = async (
       runtime.activeTurnId = turnId ?? runtime.activeTurnId;
 
       if (turnId) {
-        const current = ensureTurnProcessMessageState(runtime, turnId);
-        current.footer = "Working...";
+        runtime.closedTurnIds.delete(turnId);
       }
 
       updateSessionStateIfWritable(session, "running");
@@ -3781,21 +3982,22 @@ export const startCodeHelm = async (
             return;
           }
 
-          const current = ensureTurnProcessMessageState(runtime, resolvedTurnId);
-          current.footer ??= "Working...";
-          current.liveCommentaryItemId = item.id;
-          current.liveCommentaryText = item.text;
-          await updateStatusCard({
-            discord: bot.client,
-            session,
-            state: "running",
-            activity: summarizeStatusActivity(item.text),
-          });
-          await syncTurnProcessMessage({
-            discord: bot.client,
-            session,
+          if (shouldSkipStaleLiveTurnProcessUpdate({
+            activeTurnId: runtime.activeTurnId,
+            closedTurnIds: runtime.closedTurnIds,
             turnId: resolvedTurnId,
-          });
+          })) {
+            return;
+          }
+
+          const current = ensureTurnProcessMessageState(runtime, resolvedTurnId);
+          if (current.steps.length > 0 || current.message || current.pendingCreate) {
+            await syncTurnProcessMessage({
+              discord: bot.client,
+              session,
+              turnId: resolvedTurnId,
+            });
+          }
         }
         return;
       }
@@ -3810,10 +4012,19 @@ export const startCodeHelm = async (
 
       if (turnId) {
         const runtime = ensureTranscriptRuntime(session.codexThreadId);
+
+        if (shouldSkipStaleLiveTurnProcessUpdate({
+          activeTurnId: runtime.activeTurnId,
+          closedTurnIds: runtime.closedTurnIds,
+          turnId,
+        })) {
+          return;
+        }
+
         const current = ensureTurnProcessMessageState(runtime, turnId);
         current.footer ??= getFooterForSessionState(
           coerceSessionRuntimeState(session.state),
-        ) ?? "Working...";
+        );
         appendProcessStep(current.steps, buildCommandProcessStep(item.command));
         await syncTurnProcessMessage({
           discord: bot.client,
@@ -3980,14 +4191,17 @@ export const startCodeHelm = async (
       const runtime = ensureTranscriptRuntime(session.codexThreadId);
 
       if (turnId) {
+        runtime.closedTurnIds.add(turnId);
+
+        if (runtime.activeTurnId === turnId) {
+          runtime.activeTurnId = undefined;
+        }
+
         await finalizeTurnProcessState({
           discord: bot.client,
           session,
           turnId,
         });
-        if (runtime.activeTurnId === turnId) {
-          runtime.activeTurnId = undefined;
-        }
       }
 
       await applyManagedTurnCompletion({
@@ -4151,7 +4365,7 @@ export const startCodeHelm = async (
 
         if (activeTurnId) {
           const current = ensureTurnProcessMessageState(runtime, activeTurnId);
-          current.footer = "Working...";
+          current.footer = undefined;
           if (
             current.steps.length > 0
             || !!current.liveCommentaryText
@@ -4297,7 +4511,7 @@ export const startCodeHelm = async (
               syncTranscriptSnapshot({
                 discord: bot.client,
                 session,
-                degradeOnUnexpectedItems: false,
+                degradeOnUnexpectedItems: true,
               }),
           });
         } catch (error) {

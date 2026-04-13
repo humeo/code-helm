@@ -47,8 +47,11 @@ import {
   recoverStatusCardMessageFromHistory,
   shouldPollSnapshotForSessionState,
   shouldDegradeForSnapshotMismatch,
+  shouldHoldSnapshotTranscriptForManualSync,
   shouldRelayLiveCompletedItemToTranscript,
   shouldRenderCommandExecutionStartMessage,
+  shouldShowDiscordTypingIndicator,
+  shouldSkipStaleLiveTurnProcessUpdate,
   summarizeStatusActivity,
   tryRecoverStatusCardMessage,
   upsertStatusCardMessage,
@@ -1702,49 +1705,22 @@ test("approval interaction rejects concurrent resolution attempts for the same r
   expect(inFlightRequestIds.size).toBe(0);
 });
 
-test("live turn process rendering keeps the dynamic footer on the last line", () => {
-  expect(
-    renderLiveTurnProcessMessage({
-      turnId: "turn-1",
-      steps: ["reading SKILL.md"],
-      liveCommentaryText: "running `bun test`",
-      footer: "Working...",
-    }),
-  ).toEqual(
-    expect.objectContaining({
-      content: "",
-      embeds: [
-        expect.objectContaining({
-          title: "Codex",
-          description: "reading SKILL.md\nrunning `bun test`",
-          footer: {
-            text: "Working...",
-          },
-        }),
-      ],
-    }),
-  );
-  expect(
-    renderLiveTurnProcessMessage({
-      turnId: "turn-1",
-      steps: ["reading SKILL.md"],
-      liveCommentaryText: "reading SKILL.md",
-      footer: "Working...",
-    }),
-  ).toEqual(
-    expect.objectContaining({
-      content: "",
-      embeds: [
-        expect.objectContaining({
-          title: "Codex",
-          description: "reading SKILL.md",
-          footer: {
-            text: "Working...",
-          },
-        }),
-      ],
-    }),
-  );
+test("live turn process rendering does not produce a Codex panel", () => {
+  const liveCommentaryPayload = renderLiveTurnProcessMessage({
+    turnId: "turn-1",
+    steps: ["reading SKILL.md"],
+    liveCommentaryText: "running `bun test`",
+  });
+
+  expect(liveCommentaryPayload).toBeUndefined();
+
+  const dedupedPayload = renderLiveTurnProcessMessage({
+    turnId: "turn-1",
+    steps: [],
+    liveCommentaryText: "reading SKILL.md",
+  });
+
+  expect(dedupedPayload).toBeUndefined();
   expect(shouldRenderCommandExecutionStartMessage()).toBe(false);
 });
 
@@ -1892,6 +1868,42 @@ test("snapshot mismatch still degrades when unseen items do not match pending Di
       turns,
     }),
   ).toBe(true);
+});
+
+test("automatic snapshot mismatch holds transcript relay until manual sync", () => {
+  const runtime = {
+    seenItemIds: new Set<string>(),
+    finalizingItemIds: new Set<string>(),
+    pendingDiscordInputs: [],
+  };
+  const turns: CodexTurn[] = [
+    {
+      id: "turn-1",
+      status: "completed",
+      items: [
+        {
+          type: "userMessage",
+          id: "user-1",
+          content: [{ type: "text", text: "replay only ok9" }],
+        },
+      ],
+    },
+  ];
+
+  expect(
+    shouldHoldSnapshotTranscriptForManualSync({
+      runtime,
+      turns,
+      degradeOnUnexpectedItems: true,
+    }),
+  ).toBe(true);
+  expect(
+    shouldHoldSnapshotTranscriptForManualSync({
+      runtime,
+      turns,
+      degradeOnUnexpectedItems: false,
+    }),
+  ).toBe(false);
 });
 
 test("snapshot mismatch ignores live-vs-snapshot id remapping when the same turn was already observed live", () => {
@@ -2214,6 +2226,71 @@ test("streaming transcript message creation is serialized per item", async () =>
   expect(edits).toBe(1);
 });
 
+test("streaming transcript message edits coalesce to the latest payload", async () => {
+  let resolveFirstEdit: (() => void) | undefined;
+  const editDescriptions: string[] = [];
+  let editCalls = 0;
+
+  const state: {
+    message?: {
+      edit(payload: { content?: string; embeds?: Array<{ description?: string }> }): Promise<void>;
+    };
+    pendingCreate?: Promise<{
+      edit(payload: { content?: string; embeds?: Array<{ description?: string }> }): Promise<void>;
+    } | undefined>;
+  } = {
+    message: {
+      edit(payload) {
+        editDescriptions.push(payload.embeds?.[0]?.description ?? "");
+        editCalls += 1;
+
+        if (editCalls === 1) {
+          return new Promise<void>((resolve) => {
+            resolveFirstEdit = resolve;
+          });
+        }
+
+        return Promise.resolve();
+      },
+    },
+  };
+
+  const first = upsertStreamingTranscriptMessage({
+    state,
+    payload: {
+      embeds: [{ title: "Codex", description: "first" }],
+    },
+    sendMessage: async () => {
+      throw new Error("sendMessage should not be called");
+    },
+  });
+  const second = upsertStreamingTranscriptMessage({
+    state,
+    payload: {
+      embeds: [{ title: "Codex", description: "second" }],
+    },
+    sendMessage: async () => {
+      throw new Error("sendMessage should not be called");
+    },
+  });
+  const third = upsertStreamingTranscriptMessage({
+    state,
+    payload: {
+      embeds: [{ title: "Codex", description: "third" }],
+    },
+    sendMessage: async () => {
+      throw new Error("sendMessage should not be called");
+    },
+  });
+
+  expect(editDescriptions).toEqual(["first"]);
+
+  resolveFirstEdit?.();
+  await Promise.all([first, second, third]);
+
+  expect(editDescriptions).toEqual(["first", "third"]);
+});
+
 test("approval lifecycle thread message is compact and request-scoped", () => {
   expect(
     renderApprovalLifecycleMessage({
@@ -2428,24 +2505,47 @@ test("running updates stay on the status card and out of the transcript", () => 
   expect(
     renderLiveTurnProcessMessage({
       turnId: "turn-1",
-      steps: ["reasoning"],
-      footer: "Working...",
+      steps: [],
+      liveCommentaryText: "reasoning",
     }),
-  ).toEqual(
-    expect.objectContaining({
-      content: "",
-      embeds: [
-        expect.objectContaining({
-          title: "Codex",
-          description: "reasoning",
-          footer: {
-            text: "Working...",
-          },
-        }),
-      ],
-    }),
-  );
+  ).toBeUndefined();
   expect(shouldRenderCommandExecutionStartMessage()).toBe(false);
+});
+
+test("Discord typing indicator is used only while the session is running", () => {
+  expect(shouldShowDiscordTypingIndicator("running")).toBe(true);
+  expect(shouldShowDiscordTypingIndicator("idle")).toBe(false);
+  expect(shouldShowDiscordTypingIndicator("waiting-approval")).toBe(false);
+  expect(shouldShowDiscordTypingIndicator("degraded")).toBe(false);
+});
+
+test("stale live turn process updates are ignored once the active turn changes", () => {
+  expect(
+    shouldSkipStaleLiveTurnProcessUpdate({
+      activeTurnId: "turn-2",
+      turnId: "turn-1",
+    }),
+  ).toBe(true);
+  expect(
+    shouldSkipStaleLiveTurnProcessUpdate({
+      activeTurnId: undefined,
+      closedTurnIds: new Set<string>(["turn-1"]),
+      turnId: "turn-1",
+    }),
+  ).toBe(true);
+  expect(
+    shouldSkipStaleLiveTurnProcessUpdate({
+      activeTurnId: "turn-1",
+      turnId: "turn-1",
+    }),
+  ).toBe(false);
+  expect(
+    shouldSkipStaleLiveTurnProcessUpdate({
+      activeTurnId: undefined,
+      turnId: "turn-1",
+      deleteIfEmpty: true,
+    }),
+  ).toBe(false);
 });
 
 test("commentary activity summaries are normalized for status hints", () => {

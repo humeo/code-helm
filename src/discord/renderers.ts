@@ -1,4 +1,5 @@
 import type { RoutedEventMap } from "../codex/protocol-types";
+import type { DiscordMessagePayload } from "./transcript";
 
 export type StatusCardState = {
   state: "idle" | "running" | "waiting-approval";
@@ -46,6 +47,12 @@ export type DegradationBannerEvent = {
   };
 };
 
+const maxDiscordEmbedTitleLength = 256;
+const maxDiscordEmbedDescriptionLength = 4_000;
+const maxDiscordEmbedFooterTextLength = 256;
+const startedNoticeColor = 0x2563eb;
+const warningNoticeColor = 0xf59e0b;
+
 const readStringField = (value: unknown, key: string) => {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return undefined;
@@ -61,12 +68,82 @@ const readStringField = (value: unknown, key: string) => {
   return undefined;
 };
 
+const truncate = (value: string, maxLength: number) => {
+  return value.length > maxLength
+    ? `${value.slice(0, Math.max(0, maxLength - 3))}...`
+    : value;
+};
+
+const buildEmbedPayload = ({
+  title,
+  description,
+  footer,
+  color,
+}: {
+  title: string;
+  description: string;
+  footer?: string;
+  color: number;
+}): DiscordMessagePayload => {
+  const embed: NonNullable<DiscordMessagePayload["embeds"]>[number] = {
+    title: truncate(title, maxDiscordEmbedTitleLength),
+    description: truncate(description, maxDiscordEmbedDescriptionLength),
+    color,
+  };
+
+  if (footer) {
+    embed.footer = {
+      text: truncate(footer, maxDiscordEmbedFooterTextLength),
+    };
+  }
+
+  return {
+    embeds: [embed],
+  };
+};
+
+const renderReadOnlyDescription = (reason: string | null) => {
+  if (reason === "thread_missing") {
+    return "The bound Codex session no longer exists.";
+  }
+
+  if (reason === "snapshot_mismatch") {
+    return "CodeHelm detected Codex activity that was not mirrored into this Discord thread.";
+  }
+
+  if (!reason) {
+    return "CodeHelm detected Codex activity outside the supported Discord control flow.";
+  }
+
+  return `CodeHelm detected unsupported Codex activity (\`${reason}\`).`;
+};
+
+export const renderDegradationActionText = ({
+  params,
+}: DegradationBannerEvent) => {
+  return params.reason === "thread_missing"
+    ? "Create or import a new session to continue in Discord."
+    : "Run `/session-sync` to resync this thread and restore write access.";
+};
+
 export const renderSessionStartedText = ({
   params,
 }: SessionStartedEvent) => {
   const { workdirLabel, codexThreadId } = params;
 
   return `Session started for \`${workdirLabel}\`.\nCodex thread: \`${codexThreadId}\`.`;
+};
+
+export const renderSessionStartedPayload = ({
+  params,
+}: SessionStartedEvent): DiscordMessagePayload => {
+  const { workdirLabel, codexThreadId } = params;
+
+  return buildEmbedPayload({
+    title: "Session started",
+    description: `Session: \`${workdirLabel}\`\n\nCodex thread: \`${codexThreadId}\``,
+    color: startedNoticeColor,
+  });
 };
 
 export const renderStatusCardText = ({
@@ -118,19 +195,29 @@ export const renderFinalAnswerText = ({ params }: FinalAnswerEvent) => {
 export const renderDegradationBannerText = ({
   params,
 }: DegradationBannerEvent) => {
-  const { reason } = params;
-
-  if (reason === "thread_missing") {
-    return "Session is now read-only because the bound Codex session no longer exists. Create or import a new session.";
+  if (params.reason === "thread_missing") {
+    return "Session is read-only.\n\nThe bound Codex session no longer exists.\n\nCreate or import a new session to continue in Discord.";
   }
 
-  if (reason === "snapshot_mismatch") {
-    return "Session is now read-only because CodeHelm detected unsupported or offline activity it could not safely replay into Discord. Return to a supported control path and run `/session-sync` again.";
+  if (params.reason === "snapshot_mismatch") {
+    return "Session is read-only.\n\nCodeHelm detected Codex activity that was not mirrored into this Discord thread.\n\nRun `/session-sync` to resync this thread and restore write access.";
   }
 
-  if (!reason) {
-    return "Session is now read-only because it was modified outside the supported Discord/Codex flow.";
+  if (!params.reason) {
+    return "Session is read-only.\n\nCodeHelm detected Codex activity outside the supported Discord control flow.\n\nRun `/session-sync` to resync this thread and restore write access.";
   }
 
-  return `Session is now read-only because it was modified outside the supported Discord/Codex flow (\`${reason}\`).`;
+  return `Session is read-only.\n\nCodeHelm detected unsupported Codex activity (\`${params.reason}\`).\n\nRun \`/session-sync\` to resync this thread and restore write access.`;
+};
+
+export const renderDegradationBannerPayload = ({
+  params,
+}: DegradationBannerEvent): DiscordMessagePayload => {
+  const description = renderReadOnlyDescription(params.reason);
+
+  return buildEmbedPayload({
+    title: "Session is read-only",
+    description,
+    color: warningNoticeColor,
+  });
 };

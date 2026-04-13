@@ -22,7 +22,6 @@ export type DiscordMessagePayload = {
 };
 
 export type ProcessFooterText =
-  | "Working..."
   | "Waiting for approval"
   | "Command failed";
 
@@ -70,7 +69,7 @@ const maxDiscordEmbedTitleLength = 256;
 const maxDiscordEmbedDescriptionLength = 4_000;
 const maxDiscordEmbedFooterTextLength = 256;
 const codexProcessEmbedColor = 0x64748b;
-const remoteInputEmbedColor = 0x94a3b8;
+const remoteInputEmbedColor = 0x2563eb;
 
 const truncate = (value: string, maxLength: number) => {
   return value.length > maxLength
@@ -95,33 +94,35 @@ const buildEmbedPayload = ({
   footer?: string;
   color?: number;
 }): DiscordMessagePayload => {
+  const embed: DiscordMessageEmbed = {
+    color,
+  };
+
+  if (title) {
+    embed.title = truncate(title, maxDiscordEmbedTitleLength);
+  }
+
+  if (description) {
+    embed.description = truncate(description, maxDiscordEmbedDescriptionLength);
+  }
+
+  if (footer) {
+    embed.footer = {
+      text: truncate(footer, maxDiscordEmbedFooterTextLength),
+    };
+  }
+
   return {
-    content: "",
-    embeds: [
-      {
-        title: title ? truncate(title, maxDiscordEmbedTitleLength) : undefined,
-        description: description
-          ? truncate(description, maxDiscordEmbedDescriptionLength)
-          : undefined,
-        footer: footer
-          ? {
-              text: truncate(footer, maxDiscordEmbedFooterTextLength),
-            }
-          : undefined,
-        color,
-      },
-    ],
+    embeds: [embed],
   };
 };
 
-const renderQuotedText = (text: string) => {
-  return text
-    .split("\n")
-    .map((line) => {
-      const normalized = line.trimEnd();
-      return normalized.length > 0 ? `> ${normalized}` : ">";
-    })
-    .join("\n");
+const escapeCodeFenceContent = (text: string) => {
+  return text.replaceAll("```", "``\u200b`");
+};
+
+const renderRemoteInputDescription = (text: string) => {
+  return `\`\`\`text\n${escapeCodeFenceContent(text)}\n\`\`\``;
 };
 
 export const isDiscordMessagePayloadEmpty = (
@@ -269,8 +270,6 @@ const collectTurnEntries = (
       }
 
       if (isCommentaryPhase(assistant.phase)) {
-        appendProcessStep(processSteps, text);
-        processOrder = Math.min(processOrder ?? Number.POSITIVE_INFINITY, order - 0.5);
         continue;
       }
 
@@ -298,21 +297,6 @@ const collectTurnEntries = (
   const footer = (
     options.activeTurnId === turn.id ? options.activeTurnFooter : undefined
   ) ?? (hasFailedCommand ? "Command failed" : undefined);
-
-  if (processSteps.length > 0 || footer) {
-    entries.push({
-      order:
-        processOrder
-        ?? (finalAssistant ? finalAssistant.order - 0.5 : (turn.items?.length ?? 0)),
-      entry: {
-        itemId: getProcessTranscriptEntryId(turn.id),
-        kind: "process",
-        turnId: turn.id,
-        steps: processSteps,
-        footer,
-      },
-    });
-  }
 
   if (finalAssistant) {
     entries.push({
@@ -411,10 +395,6 @@ export const collectComparableTranscriptItemIds = (
       }
     }
 
-    if (processSteps.length > 0) {
-      comparableIds.push(getProcessTranscriptEntryId(turn.id));
-    }
-
     if (hasFinalAssistant) {
       comparableIds.push(getAssistantTranscriptEntryId(turn.id));
     }
@@ -426,11 +406,15 @@ export const collectComparableTranscriptItemIds = (
 export const renderTranscriptEntry = (entry: TranscriptEntry) => {
   if (entry.kind === "user") {
     if (entry.source === "codex-cli") {
-      return buildEmbedPayload({
-        title: "Remote input",
-        description: renderQuotedText(entry.text),
+      const payload = buildEmbedPayload({
+        title: "Remote Input",
+        description: renderRemoteInputDescription(entry.text),
         color: remoteInputEmbedColor,
       });
+
+      return {
+        ...payload,
+      };
     }
 
     return buildTextPayload(entry.text);
