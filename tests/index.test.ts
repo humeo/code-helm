@@ -59,6 +59,7 @@ import {
   shouldDegradeForSnapshotMismatch,
   shouldHoldSnapshotTranscriptForManualSync,
   shouldRelayLiveCompletedItemToTranscript,
+  shouldRenderCompletedAssistantReplyImmediately,
   shouldRenderCommandExecutionStartMessage,
   shouldShowDiscordTypingIndicator,
   shouldSkipStaleLiveTurnProcessUpdate,
@@ -1961,32 +1962,34 @@ test("approval reconciliation only rehydrates pending approval state", async () 
   await reconcileResumedApprovalState({
     runtimeState: "waiting-approval",
     pendingApprovals: [
-      { requestId: "req-2", status: "pending" },
-      { requestId: "req-1", status: "pending" },
+      { approvalKey: "turn-2:item-1", requestId: "req-2", status: "pending" },
+      { approvalKey: "turn-1:item-1", requestId: "req-1", status: "pending" },
     ],
-    upsertApprovalMessage: async (requestId, status) => {
-      calls.push(`message:${requestId}:${status}`);
+    upsertApprovalMessage: async (approvalKey, requestId, status) => {
+      calls.push(`message:${approvalKey}:${requestId}:${status}`);
     },
-    ensureOwnerControls: async (requestId, status) => {
-      calls.push(`dm:${requestId}:${status}`);
+    ensureOwnerControls: async (approvalKey, requestId, status) => {
+      calls.push(`dm:${approvalKey}:${requestId}:${status}`);
     },
   });
 
   expect(calls).toEqual([
-    "message:req-2:pending",
-    "dm:req-2:pending",
+    "message:turn-2:item-1:req-2:pending",
+    "dm:turn-2:item-1:req-2:pending",
   ]);
 
   calls.length = 0;
 
   await reconcileResumedApprovalState({
     runtimeState: "running",
-    pendingApprovals: [{ requestId: "req-2", status: "pending" }],
-    upsertApprovalMessage: async (requestId, status) => {
-      calls.push(`message:${requestId}:${status}`);
+    pendingApprovals: [
+      { approvalKey: "turn-2:item-1", requestId: "req-2", status: "pending" },
+    ],
+    upsertApprovalMessage: async (approvalKey, requestId, status) => {
+      calls.push(`message:${approvalKey}:${requestId}:${status}`);
     },
-    ensureOwnerControls: async (requestId, status) => {
-      calls.push(`dm:${requestId}:${status}`);
+    ensureOwnerControls: async (approvalKey, requestId, status) => {
+      calls.push(`dm:${approvalKey}:${requestId}:${status}`);
     },
   });
 
@@ -2012,14 +2015,15 @@ test("approval reconciliation tolerates a locally answered approval that is stil
     runtimeState: "waiting-approval",
     pendingApprovals: [],
     latestApproval: {
+      approvalKey: "turn-9:item-1",
       requestId: "req-9",
       status: "approved",
     },
-    upsertApprovalMessage: async (requestId, status) => {
-      calls.push(`message:${requestId}:${status}`);
+    upsertApprovalMessage: async (approvalKey, requestId, status) => {
+      calls.push(`message:${approvalKey}:${requestId}:${status}`);
     },
-    ensureOwnerControls: async (requestId, status) => {
-      calls.push(`dm:${requestId}:${status}`);
+    ensureOwnerControls: async (approvalKey, requestId, status) => {
+      calls.push(`dm:${approvalKey}:${requestId}:${status}`);
     },
   });
 
@@ -2492,10 +2496,11 @@ test("managed thread deletion detaches the Discord container without touching un
 
 test("approval interaction replies to Codex before persisting a terminal local decision", async () => {
   const calls: string[] = [];
+  const approvalKey = "turn-1:item-1";
 
   const handled = await handleApprovalInteraction({
     interaction: {
-      customId: "approval|req-1|approve",
+      customId: "approval|turn-1%3Aitem-1|approve",
       user: { id: "owner-1" },
       deferUpdate: async () => {
         calls.push("defer");
@@ -2517,8 +2522,10 @@ test("approval interaction replies to Codex before persisting a terminal local d
         }),
     } as never,
     approvalRepo: {
-      getByRequestId: () => ({
+      getByApprovalKey: () => ({
+        approvalKey,
         requestId: "req-1",
+        codexThreadId: "codex-thread-1",
         discordThreadId: "discord-thread-1",
         status: "pending",
       }),
@@ -2538,10 +2545,11 @@ test("approval interaction replies to Codex before persisting a terminal local d
 
 test("approval interaction still resolves pending approvals for degraded sessions", async () => {
   const calls: string[] = [];
+  const approvalKey = "turn-1:item-1";
 
   const handled = await handleApprovalInteraction({
     interaction: {
-      customId: "approval|req-1|approve",
+      customId: "approval|turn-1%3Aitem-1|approve",
       user: { id: "owner-1" },
       deferUpdate: async () => {
         calls.push("defer");
@@ -2564,8 +2572,10 @@ test("approval interaction still resolves pending approvals for degraded session
         }),
     } as never,
     approvalRepo: {
-      getByRequestId: () => ({
+      getByApprovalKey: () => ({
+        approvalKey,
         requestId: "req-1",
+        codexThreadId: "codex-thread-1",
         discordThreadId: "discord-thread-1",
         status: "pending",
       }),
@@ -2586,11 +2596,12 @@ test("approval interaction still resolves pending approvals for degraded session
 test("approval interaction does not persist a terminal local decision when the Codex reply fails", async () => {
   const calls: string[] = [];
   const failure = new Error("rpc failed");
+  const approvalKey = "turn-1:item-1";
 
   await expect(
     handleApprovalInteraction({
       interaction: {
-        customId: "approval|req-1|approve",
+        customId: "approval|turn-1%3Aitem-1|approve",
         user: { id: "owner-1" },
         deferUpdate: async () => {
           calls.push("defer");
@@ -2613,8 +2624,10 @@ test("approval interaction does not persist a terminal local decision when the C
           }),
       } as never,
       approvalRepo: {
-        getByRequestId: () => ({
+        getByApprovalKey: () => ({
+          approvalKey,
           requestId: "req-1",
+          codexThreadId: "codex-thread-1",
           discordThreadId: "discord-thread-1",
           status: "pending",
         }),
@@ -2637,10 +2650,11 @@ test("approval interaction rejects concurrent resolution attempts for the same r
   const rpcGate = new Promise<void>((resolve) => {
     releaseRpc = resolve;
   });
-  const inFlightRequestIds = new Set<string>();
+  const inFlightApprovalKeys = new Set<string>();
+  const approvalKey = "turn-1:item-1";
 
   const firstInteraction = {
-    customId: "approval|req-1|approve",
+    customId: "approval|turn-1%3Aitem-1|approve",
     user: { id: "owner-1" },
     deferUpdate: async () => {
       calls.push("defer:first");
@@ -2650,7 +2664,7 @@ test("approval interaction rejects concurrent resolution attempts for the same r
     },
   } as never;
   const secondInteraction = {
-    customId: "approval|req-1|decline",
+    customId: "approval|turn-1%3Aitem-1|decline",
     user: { id: "owner-1" },
     deferUpdate: async () => {
       calls.push("defer:second");
@@ -2676,8 +2690,10 @@ test("approval interaction rejects concurrent resolution attempts for the same r
         }),
     } as never,
     approvalRepo: {
-      getByRequestId: () => ({
+      getByApprovalKey: () => ({
+        approvalKey,
         requestId: "req-1",
+        codexThreadId: "codex-thread-1",
         discordThreadId: "discord-thread-1",
         status: "pending",
       }),
@@ -2685,7 +2701,7 @@ test("approval interaction rejects concurrent resolution attempts for the same r
         calls.push("insert:first");
       },
     } as never,
-    inFlightRequestIds,
+    inFlightApprovalKeys,
   });
 
   await Promise.resolve();
@@ -2705,8 +2721,10 @@ test("approval interaction rejects concurrent resolution attempts for the same r
         }),
     } as never,
     approvalRepo: {
-      getByRequestId: () => ({
+      getByApprovalKey: () => ({
+        approvalKey,
         requestId: "req-1",
+        codexThreadId: "codex-thread-1",
         discordThreadId: "discord-thread-1",
         status: "pending",
       }),
@@ -2714,7 +2732,7 @@ test("approval interaction rejects concurrent resolution attempts for the same r
         calls.push("insert:second");
       },
     } as never,
-    inFlightRequestIds,
+    inFlightApprovalKeys,
   });
 
   expect(second).toBe(true);
@@ -2733,7 +2751,7 @@ test("approval interaction rejects concurrent resolution attempts for the same r
     "reply:second",
     "insert:first",
   ]);
-  expect(inFlightRequestIds.size).toBe(0);
+  expect(inFlightApprovalKeys.size).toBe(0);
 });
 
 test("live turn process rendering keeps commentary deduped and the footer on the last line", () => {
@@ -3557,22 +3575,37 @@ test("approval lifecycle state clears pending promise after rejection", async ()
   expect(state.message).toBeUndefined();
 });
 
-test("approval lifecycle recovery finds the request-scoped thread message", async () => {
+test("approval lifecycle recovery prefers the approval-key-scoped thread message", async () => {
   const recovered = await recoverApprovalLifecycleMessageFromHistory({
+    approvalKey: "turn-1:item-2",
     requestId: "req-7",
     botUserId: "bot-1",
     fetchPage: async () => [
       {
         id: "m1",
-        content: "CodeHelm status: Idle.",
+        content: "Approval `req-7`: pending.",
         editable: true,
         author: { bot: true, id: "bot-1" },
+        components: [
+          {
+            components: [
+              { customId: "approval|turn-1%3Aitem-1|approve" },
+            ],
+          },
+        ],
       },
       {
         id: "m2",
         content: "Approval `req-7`: pending.",
         editable: true,
         author: { bot: true, id: "bot-1" },
+        components: [
+          {
+            components: [
+              { customId: "approval|turn-1%3Aitem-2|approve" },
+            ],
+          },
+        ],
       },
     ],
   });
@@ -3721,6 +3754,21 @@ test("live completed items only relay transcript entries when needed", () => {
       content: [{ type: "text", text: "run it" }],
     }),
   ).toBe(true);
+});
+
+test("completed assistant replies are projected immediately only for final_answer", () => {
+  expect(
+    shouldRenderCompletedAssistantReplyImmediately("final_answer"),
+  ).toBe(true);
+  expect(
+    shouldRenderCompletedAssistantReplyImmediately("commentary"),
+  ).toBe(false);
+  expect(
+    shouldRenderCompletedAssistantReplyImmediately(null),
+  ).toBe(false);
+  expect(
+    shouldRenderCompletedAssistantReplyImmediately(undefined),
+  ).toBe(false);
 });
 
 test("periodic snapshot polling skips active sessions", () => {

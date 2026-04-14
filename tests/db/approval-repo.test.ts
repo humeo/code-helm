@@ -58,7 +58,9 @@ test("repo upsert preserves terminal status and resolution metadata on resolved 
   });
 
   expect(repo.getByRequestId(9)).toEqual({
+    approvalKey: "9",
     requestId: "9",
+    codexThreadId: "codex-1",
     discordThreadId: "123",
     status: "approved",
     resolvedByDiscordUserId: "u1",
@@ -151,16 +153,40 @@ test("repo ignores stale terminal overwrites after a terminal approval", () => {
 test("numeric approval request ids round-trip through persistence", () => {
   const db = createMigratedDb();
   seedWorkspaceGraph(db);
+  const sessionRepo = createSessionRepo(db);
   const repo = createApprovalRepo(db);
 
+  sessionRepo.insert({
+    discordThreadId: "456",
+    codexThreadId: "codex-2",
+    ownerDiscordUserId: "u2",
+    workdirId: "wd1",
+    state: "idle",
+  });
+
   repo.insert({
+    approvalKey: "turn-1:item-1",
     requestId: 9,
+    codexThreadId: "codex-1",
     discordThreadId: "123",
     status: "pending",
   });
+  repo.insert({
+    approvalKey: "turn-2:item-1",
+    requestId: 9,
+    codexThreadId: "codex-2",
+    discordThreadId: "456",
+    status: "pending",
+  });
 
-  expect(repo.getByRequestId("9")?.requestId).toBe("9");
-  expect(repo.getByRequestId(9)?.requestId).toBe("9");
+  expect(repo.getByApprovalKey("turn-1:item-1")?.requestId).toBe("9");
+  expect(repo.getByApprovalKey("turn-2:item-1")?.requestId).toBe("9");
+  expect(
+    repo.getLatestByCodexThreadIdAndRequestId("codex-1", "9")?.approvalKey,
+  ).toBe("turn-1:item-1");
+  expect(
+    repo.getLatestByCodexThreadIdAndRequestId("codex-2", 9)?.approvalKey,
+  ).toBe("turn-2:item-1");
 
   db.close();
 });
@@ -202,7 +228,9 @@ test("repo can list pending approvals for a Discord thread newest first", () => 
 
   expect(repo.listPendingByDiscordThreadId("123")).toEqual([
     {
+      approvalKey: "req-3",
       requestId: "req-3",
+      codexThreadId: "codex-1",
       discordThreadId: "123",
       status: "pending",
       resolvedByDiscordUserId: null,
@@ -211,7 +239,9 @@ test("repo can list pending approvals for a Discord thread newest first", () => 
       updatedAt: expect.any(String),
     },
     {
+      approvalKey: "req-1",
       requestId: "req-1",
+      codexThreadId: "codex-1",
       discordThreadId: "123",
       status: "pending",
       resolvedByDiscordUserId: null,
@@ -221,7 +251,9 @@ test("repo can list pending approvals for a Discord thread newest first", () => 
     },
   ]);
   expect(repo.getLatestByDiscordThreadId("123")).toMatchObject({
+    approvalKey: "req-3",
     requestId: "req-3",
+    codexThreadId: "codex-1",
     status: "pending",
   });
 
@@ -253,7 +285,9 @@ test("approval rows follow a rebound Discord thread for the managed session", ()
   expect(approvalRepo.listPendingByDiscordThreadId("123")).toHaveLength(0);
   expect(approvalRepo.listPendingByDiscordThreadId("replacement-thread")).toEqual([
     {
+      approvalKey: "req-1",
       requestId: "req-1",
+      codexThreadId: "codex-1",
       discordThreadId: "replacement-thread",
       status: "pending",
       resolvedByDiscordUserId: null,
@@ -379,7 +413,9 @@ test("migrations rebuild legacy approvals so rebinds cascade to the replacement 
   expect(approvalRepo.listPendingByDiscordThreadId("legacy-thread")).toHaveLength(0);
   expect(approvalRepo.listPendingByDiscordThreadId("replacement-thread")).toEqual([
     {
+      approvalKey: "legacy:legacy-approval",
       requestId: "legacy-approval",
+      codexThreadId: "legacy-codex",
       discordThreadId: "replacement-thread",
       status: "pending",
       resolvedByDiscordUserId: null,

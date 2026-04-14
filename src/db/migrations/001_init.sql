@@ -30,7 +30,9 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 
 CREATE TABLE IF NOT EXISTS approvals (
-  request_id TEXT PRIMARY KEY,
+  approval_key TEXT PRIMARY KEY,
+  request_id TEXT NOT NULL,
+  codex_thread_id TEXT NOT NULL,
   discord_thread_id TEXT NOT NULL,
   status TEXT NOT NULL,
   resolved_by_discord_user_id TEXT,

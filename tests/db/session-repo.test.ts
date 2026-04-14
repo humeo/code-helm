@@ -530,7 +530,9 @@ test("keeps non-session repository surfaces narrow", () => {
     "insert",
   ]);
   expect(Object.keys(createApprovalRepo(db)).sort()).toEqual([
+    "getByApprovalKey",
     "getByRequestId",
+    "getLatestByCodexThreadIdAndRequestId",
     "getLatestByDiscordThreadId",
     "insert",
     "listPendingByDiscordThreadId",

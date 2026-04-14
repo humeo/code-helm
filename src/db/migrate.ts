@@ -50,6 +50,11 @@ const approvalsTableHasCascadeUpdate = (db: Database) => {
   return row?.sql.includes("ON UPDATE CASCADE") ?? false;
 };
 
+const approvalsTableHasStableIdentityColumns = (db: Database) => {
+  return hasColumn(db, "approvals", "approval_key")
+    && hasColumn(db, "approvals", "codex_thread_id");
+};
+
 const assertNoForeignKeyViolations = (db: Database, tableName: string) => {
   const violations = db
     .prepare(`PRAGMA foreign_key_check(${tableName})`)
@@ -137,13 +142,48 @@ const upgradeSessionsLifecycleState = (db: Database) => {
   `);
 };
 
-const rebuildApprovalsTableWithCascadeUpdate = (db: Database) => {
+const assertLegacyApprovalsSessionRefsExist = (db: Database) => {
+  const orphan = db.prepare(
+    `SELECT approvals.rowid
+      FROM approvals
+      LEFT JOIN sessions
+        ON approvals.discord_thread_id = sessions.discord_thread_id
+      WHERE sessions.discord_thread_id IS NULL
+      LIMIT 1`,
+  ).get();
+
+  if (orphan) {
+    throw new Error("approvals rebuild produced foreign key violations");
+  }
+};
+
+const rebuildApprovalsTableWithStableIdentity = (db: Database) => {
+  const hasApprovalKeyColumn = hasColumn(db, "approvals", "approval_key");
+  const hasCodexThreadIdColumn = hasColumn(db, "approvals", "codex_thread_id");
+  const approvalKeySelect = hasApprovalKeyColumn
+    ? "approval_key"
+    : "printf('legacy:%s', approvals.request_id)";
+  const codexThreadIdSelect = hasCodexThreadIdColumn
+    ? "approvals.codex_thread_id"
+    : "sessions.codex_thread_id";
+  const approvalsSource = hasCodexThreadIdColumn
+    ? "FROM approvals"
+    : `FROM approvals
+        JOIN sessions
+          ON approvals.discord_thread_id = sessions.discord_thread_id`;
+
+  if (!hasCodexThreadIdColumn) {
+    assertLegacyApprovalsSessionRefsExist(db);
+  }
+
   db.exec("PRAGMA foreign_keys = OFF");
   db.exec("BEGIN");
   try {
     db.exec(`
       CREATE TABLE approvals_next (
-        request_id TEXT PRIMARY KEY,
+        approval_key TEXT PRIMARY KEY,
+        request_id TEXT NOT NULL,
+        codex_thread_id TEXT NOT NULL,
         discord_thread_id TEXT NOT NULL,
         status TEXT NOT NULL,
         resolved_by_discord_user_id TEXT,
@@ -157,7 +197,9 @@ const rebuildApprovalsTableWithCascadeUpdate = (db: Database) => {
     `);
     db.exec(`
       INSERT INTO approvals_next (
+        approval_key,
         request_id,
+        codex_thread_id,
         discord_thread_id,
         status,
         resolved_by_discord_user_id,
@@ -166,14 +208,16 @@ const rebuildApprovalsTableWithCascadeUpdate = (db: Database) => {
         updated_at
       )
       SELECT
-        request_id,
-        discord_thread_id,
-        status,
-        resolved_by_discord_user_id,
-        resolution,
-        created_at,
-        updated_at
-      FROM approvals
+        ${approvalKeySelect},
+        approvals.request_id,
+        ${codexThreadIdSelect},
+        approvals.discord_thread_id,
+        approvals.status,
+        approvals.resolved_by_discord_user_id,
+        approvals.resolution,
+        approvals.created_at,
+        approvals.updated_at
+      ${approvalsSource}
     `);
     assertNoForeignKeyViolations(db, "approvals_next");
     db.exec("DROP TABLE approvals");
@@ -187,16 +231,19 @@ const rebuildApprovalsTableWithCascadeUpdate = (db: Database) => {
   }
 };
 
-const upgradeApprovalsCascadeUpdate = (db: Database) => {
-  if (!approvalsTableHasCascadeUpdate(db)) {
-    rebuildApprovalsTableWithCascadeUpdate(db);
+const upgradeApprovalsSchema = (db: Database) => {
+  if (
+    !approvalsTableHasCascadeUpdate(db)
+    || !approvalsTableHasStableIdentityColumns(db)
+  ) {
+    rebuildApprovalsTableWithStableIdentity(db);
   }
 };
 
 export const applyMigrations = (db: Database) => {
   db.exec(initMigration);
   upgradeSessionsLifecycleState(db);
-  upgradeApprovalsCascadeUpdate(db);
+  upgradeApprovalsSchema(db);
 };
 
 if (import.meta.main) {
