@@ -30,8 +30,13 @@ export type ProcessFooterText =
   | "Waiting for approval"
   | "Command failed";
 
-export const getProcessTranscriptEntryId = (turnId: string) => {
-  return `process:${turnId}`;
+export const getProcessTranscriptEntryId = (
+  turnId: string,
+  processIndex?: number,
+) => {
+  return processIndex === undefined
+    ? `process:${turnId}`
+    : `process:${turnId}:${processIndex}`;
 };
 
 export const getAssistantTranscriptEntryId = (turnId: string) => {
@@ -53,7 +58,7 @@ export type TranscriptEntry =
       itemId: string;
       kind: "process";
       turnId: string;
-      steps: string[];
+      text: string;
       footer?: ProcessFooterText;
     }
   | {
@@ -160,14 +165,6 @@ const isCommentaryPhase = (phase: string | null | undefined) => {
   return phase === "commentary";
 };
 
-const isFailedCommandExecution = (command: CodexCommandExecutionItem) => {
-  if (typeof command.exitCode === "number") {
-    return command.exitCode !== 0;
-  }
-
-  return command.status === "failed" || command.status === "error";
-};
-
 export const normalizeProcessStepText = (value: string) => {
   return value
     .split("\n")
@@ -225,11 +222,7 @@ const collectTurnEntries = (
     order: number;
     entry: TranscriptEntry;
   }> = [];
-  const source = options.source ?? "snapshot";
   const pendingDiscordInputs = options.pendingDiscordInputs;
-  const processSteps: string[] = [];
-  let hasFailedCommand = false;
-  let processOrder: number | undefined;
   let finalAssistant:
     | {
         order: number;
@@ -275,8 +268,6 @@ const collectTurnEntries = (
       }
 
       if (isCommentaryPhase(assistant.phase)) {
-        appendProcessStep(processSteps, text);
-        processOrder = Math.min(processOrder ?? Number.POSITIVE_INFINITY, order - 0.5);
         continue;
       }
 
@@ -289,35 +280,8 @@ const collectTurnEntries = (
     }
 
     if (item.type === "commandExecution") {
-      const command = item as CodexCommandExecutionItem;
-
-      if (!command.id) {
-        continue;
-      }
-
-      appendProcessStep(processSteps, buildCommandProcessStep(command.command));
-      processOrder = Math.min(processOrder ?? Number.POSITIVE_INFINITY, order - 0.5);
-      hasFailedCommand = hasFailedCommand || isFailedCommandExecution(command);
+      continue;
     }
-  }
-
-  const footer = (
-    options.activeTurnId === turn.id ? options.activeTurnFooter : undefined
-  ) ?? (hasFailedCommand ? "Command failed" : undefined);
-
-  if (processSteps.length > 0 || footer) {
-    entries.push({
-      order:
-        processOrder
-        ?? (finalAssistant ? finalAssistant.order - 0.5 : (turn.items?.length ?? 0)),
-      entry: {
-        itemId: getProcessTranscriptEntryId(turn.id),
-        kind: "process",
-        turnId: turn.id,
-        steps: processSteps,
-        footer,
-      },
-    });
   }
 
   if (finalAssistant) {
@@ -369,7 +333,6 @@ export const collectComparableTranscriptItemIds = (
   const comparableIds: string[] = [];
 
   for (const turn of turns) {
-    const processSteps: string[] = [];
     let hasFinalAssistant = false;
 
     for (const item of turn.items ?? []) {
@@ -401,7 +364,6 @@ export const collectComparableTranscriptItemIds = (
         }
 
         if (isCommentaryPhase(assistant.phase)) {
-          appendProcessStep(processSteps, text);
           continue;
         }
 
@@ -410,10 +372,7 @@ export const collectComparableTranscriptItemIds = (
       }
 
       if (item.type === "commandExecution") {
-        const command = item as CodexCommandExecutionItem;
-
-        appendProcessStep(processSteps, buildCommandProcessStep(command.command));
-
+        continue;
       }
     }
 
@@ -421,9 +380,6 @@ export const collectComparableTranscriptItemIds = (
       comparableIds.push(getAssistantTranscriptEntryId(turn.id));
     }
 
-    if (processSteps.length > 0) {
-      comparableIds.push(getProcessTranscriptEntryId(turn.id));
-    }
   }
 
   return comparableIds;
@@ -449,7 +405,7 @@ export const renderTranscriptEntry = (entry: TranscriptEntry) => {
   if (entry.kind === "process") {
     return buildEmbedPayload({
       title: "Codex",
-      description: entry.steps.join("\n"),
+      description: entry.text,
       footer: entry.footer,
       color: codexProcessEmbedColor,
     });

@@ -46,7 +46,7 @@ const createTransportStub = () => {
   };
 };
 
-test("routes requestApproval and resolved events to subscribers", async () => {
+test("routes command requestApproval and resolved events to subscribers", async () => {
   const client = new JsonRpcClient("ws://example.test");
   const seenApproval: Array<number | string> = [];
   const seenResolved: Array<number | string> = [];
@@ -81,6 +81,44 @@ test("routes requestApproval and resolved events to subscribers", async () => {
 
   unsubscribeApproval();
   unsubscribe();
+});
+
+test("routes file and permissions approval requests to subscribers", () => {
+  const client = new JsonRpcClient("ws://example.test");
+  const seenFileApproval: Array<number | string> = [];
+  const seenPermissionsApproval: Array<number | string> = [];
+
+  const unsubscribeFileApproval = client.on(
+    "item/fileChange/requestApproval",
+    (event) => {
+      seenFileApproval.push(event.requestId);
+    },
+  );
+  const unsubscribePermissionsApproval = client.on(
+    "item/permissions/requestApproval",
+    (event) => {
+      seenPermissionsApproval.push(event.requestId);
+    },
+  );
+
+  client.handleMessage({
+    method: "item/fileChange/requestApproval",
+    id: 8,
+    params: { threadId: "t1", turnId: "turn1", itemId: "file1" },
+  });
+  client.handleMessage({
+    method: "item/permissions/requestApproval",
+    id: 9,
+    params: { threadId: "t1", turnId: "turn1", itemId: "perm1" },
+  });
+
+  expect(seenFileApproval).toEqual([8]);
+  expect(seenPermissionsApproval).toEqual([9]);
+  expect(client.getPendingApprovalRequest(8)?.itemId).toBe("file1");
+  expect(client.getPendingApprovalRequest(9)?.itemId).toBe("perm1");
+
+  unsubscribeFileApproval();
+  unsubscribePermissionsApproval();
 });
 
 test("routes agentMessage delta events to subscribers", () => {

@@ -88,6 +88,14 @@ export type ApprovalRequestEvent = ApprovalRequestParams & {
   requestId: JsonRpcId;
 };
 
+export const approvalRequestMethods = [
+  "item/commandExecution/requestApproval",
+  "item/fileChange/requestApproval",
+  "item/permissions/requestApproval",
+] as const;
+
+export type ApprovalRequestMethod = (typeof approvalRequestMethods)[number];
+
 export type ServerRequestResolvedEvent = {
   threadId?: string;
   requestId: JsonRpcId;
@@ -222,6 +230,8 @@ export type RoutedEventMap = {
     delta?: string;
   } & Record<string, unknown>;
   "item/commandExecution/requestApproval": ApprovalRequestEvent;
+  "item/fileChange/requestApproval": ApprovalRequestEvent;
+  "item/permissions/requestApproval": ApprovalRequestEvent;
   "serverRequest/resolved": ServerRequestResolvedEvent;
 };
 
@@ -233,6 +243,8 @@ export const routedEventMethods = [
   "item/completed",
   "item/agentMessage/delta",
   "item/commandExecution/requestApproval",
+  "item/fileChange/requestApproval",
+  "item/permissions/requestApproval",
   "serverRequest/resolved",
 ] as const;
 
@@ -242,4 +254,10 @@ export const isRoutedEventMethod = (
   method: string,
 ): method is RoutedEventMethod => {
   return routedEventMethods.includes(method as RoutedEventMethod);
+};
+
+export const isApprovalRequestMethod = (
+  method: string,
+): method is ApprovalRequestMethod => {
+  return approvalRequestMethods.includes(method as ApprovalRequestMethod);
 };

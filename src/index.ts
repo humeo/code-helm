@@ -14,6 +14,9 @@ import {
   type RESTPostAPIChatInputApplicationCommandsJSONBody,
 } from "discord.js";
 import { JsonRpcClient } from "./codex/jsonrpc-client";
+import {
+  approvalRequestMethods,
+} from "./codex/protocol-types";
 import type {
   CodexAgentMessageItem,
   CodexCommandExecutionItem,
@@ -62,7 +65,6 @@ import {
   renderDegradationActionText,
   renderDegradationBannerPayload,
   renderSessionStartedPayload,
-  renderStatusCardText,
 } from "./discord/renderers";
 import {
   appendProcessStep,
@@ -296,7 +298,7 @@ export const renderLiveTurnProcessMessage = ({
     itemId: getProcessTranscriptEntryId(turnId),
     kind: "process",
     turnId,
-    steps: visibleSteps,
+    text: visibleSteps.join("\n"),
     footer,
   });
 };
@@ -1035,6 +1037,45 @@ export const renderApprovalLifecyclePayload = ({
   };
 };
 
+export type ThreadLanguage = "en" | "zh";
+
+const containsHanText = (value: string) => {
+  return /[\p{Script=Han}]/u.test(value);
+};
+
+export const detectThreadLanguageFromTexts = (
+  texts: string[],
+): ThreadLanguage => {
+  let zhSignal = 0;
+  let enSignal = 0;
+
+  for (const text of texts) {
+    if (containsHanText(text)) {
+      zhSignal += 1;
+    }
+
+    if (/[A-Za-z]/.test(text)) {
+      enSignal += 1;
+    }
+  }
+
+  if (zhSignal > 0 && zhSignal >= enSignal) {
+    return "zh";
+  }
+
+  return "en";
+};
+
+export const renderApprovalDeliveryFailureText = (
+  language: ThreadLanguage,
+) => {
+  if (language === "zh") {
+    return "审批卡片发送失败，当前操作仍在等待审批。";
+  }
+
+  return "Approval card delivery failed. The action is still waiting for approval.";
+};
+
 export const shouldAcceptApprovalInteraction = (
   status: ApprovalStatus,
 ) => {
@@ -1330,7 +1371,14 @@ const readTurnIdFromTranscriptEntryId = (itemId: string) => {
     return undefined;
   }
 
-  return itemId.slice(separatorIndex + 1);
+  const remainder = itemId.slice(separatorIndex + 1);
+  const nextSeparatorIndex = remainder.indexOf(":");
+
+  if (nextSeparatorIndex < 0) {
+    return remainder;
+  }
+
+  return remainder.slice(0, nextSeparatorIndex);
 };
 
 export const noteTrustedLiveExternalTurnStart = ({
@@ -2916,6 +2964,100 @@ const sendChannelMessage = async (
   return channel.send(payload);
 };
 
+const collectMessageTextSignals = (message: unknown) => {
+  if (!message || typeof message !== "object") {
+    return [] as string[];
+  }
+
+  const record = message as {
+    content?: unknown;
+    embeds?: Array<{
+      title?: unknown;
+      description?: unknown;
+      footer?: {
+        text?: unknown;
+      };
+    }>;
+  };
+  const texts: string[] = [];
+
+  if (typeof record.content === "string" && record.content.trim().length > 0) {
+    texts.push(record.content);
+  }
+
+  for (const embed of record.embeds ?? []) {
+    if (typeof embed.title === "string" && embed.title.trim().length > 0) {
+      texts.push(embed.title);
+    }
+
+    if (
+      typeof embed.description === "string" &&
+      embed.description.trim().length > 0
+    ) {
+      texts.push(embed.description);
+    }
+
+    if (
+      typeof embed.footer?.text === "string" &&
+      embed.footer.text.trim().length > 0
+    ) {
+      texts.push(embed.footer.text);
+    }
+  }
+
+  return texts;
+};
+
+const inferThreadLanguage = async ({
+  client,
+  channelId,
+  fallbackTexts = [],
+}: {
+  client: Client;
+  channelId: string;
+  fallbackTexts?: string[];
+}): Promise<ThreadLanguage> => {
+  const texts = [...fallbackTexts];
+
+  try {
+    const channel = await client.channels.fetch(channelId);
+
+    if (isStatusCardRecoverableChannel(channel)) {
+      const messages = await channel.messages.fetch({ limit: 10 });
+      const history = messages instanceof Map
+        ? [...messages.values()]
+        : [...messages];
+
+      for (const message of history) {
+        texts.push(...collectMessageTextSignals(message));
+      }
+    }
+  } catch {
+    return detectThreadLanguageFromTexts(texts);
+  }
+
+  return detectThreadLanguageFromTexts(texts);
+};
+
+const sendApprovalDeliveryFailureNotice = async ({
+  client,
+  channelId,
+}: {
+  client: Client;
+  channelId: string;
+}) => {
+  const language = await inferThreadLanguage({
+    client,
+    channelId,
+  });
+
+  await sendTextToChannel(
+    client,
+    channelId,
+    renderApprovalDeliveryFailureText(language),
+  );
+};
+
 const setThreadArchivedState = async ({
   client,
   threadId,
@@ -3246,20 +3388,6 @@ export const startCodeHelm = async (
     sessionRepo.updateState(session.discordThreadId, nextState);
   };
 
-  const renderSessionStatusCard = ({
-    state,
-    runtime,
-  }: {
-    state: SessionRuntimeState;
-    runtime: TranscriptRuntime;
-  }) => {
-    return renderStatusCardText({
-      state: state === "waiting-approval" ? "waiting-approval" : state === "idle" ? "idle" : "running",
-      activity: runtime.statusActivity,
-      command: runtime.statusCommand,
-    });
-  };
-
   const updateStatusCard = async ({
     discord,
     session,
@@ -3310,23 +3438,6 @@ export const startCodeHelm = async (
     } else {
       stopDiscordTypingPulse(runtime);
     }
-
-    const content = renderSessionStatusCard({
-      state: nextState,
-      runtime,
-    });
-
-    await applyStatusCardUpdate({
-      runtime,
-      content,
-      recoverMessage: async () =>
-        recoverStatusCardMessage(
-          discord,
-          session.discordThreadId,
-        ),
-      sendMessage: async (nextContent) =>
-        sendTextToChannel(discord, session.discordThreadId, nextContent),
-    });
   };
 
   const degradeSessionToReadOnly = async ({
@@ -3518,34 +3629,45 @@ export const startCodeHelm = async (
           ),
           upsertApprovalMessage: async (requestId) => {
             const lifecycleState = approvalThreadMessages.get(requestId) ?? {};
-            const pendingMessagePromise = upsertApprovalLifecycleMessage({
-              currentMessage: lifecycleState.message,
-              currentMessagePromise: lifecycleState.pendingMessage,
-              recoverMessage: async () =>
-                recoverApprovalLifecycleMessage(
-                  discord,
-                  session.discordThreadId,
+            try {
+              const pendingMessagePromise = upsertApprovalLifecycleMessage({
+                currentMessage: lifecycleState.message,
+                currentMessagePromise: lifecycleState.pendingMessage,
+                recoverMessage: async () =>
+                  recoverApprovalLifecycleMessage(
+                    discord,
+                    session.discordThreadId,
+                    requestId,
+                  ),
+                payload: renderApprovalLifecyclePayload({
                   requestId,
-                ),
-              payload: renderApprovalLifecyclePayload({
-                requestId,
-                status: "pending",
-              }),
-              sendMessage: async (payload) =>
-                sendTextToChannel(
-                  discord,
-                  session.discordThreadId,
-                  payload,
-                ),
-            });
-            approvalThreadMessages.set(requestId, lifecycleState);
-            const threadMessage = await finalizeApprovalLifecycleMessageState({
-              state: lifecycleState,
-              operation: pendingMessagePromise,
-            });
+                  status: "pending",
+                }),
+                sendMessage: async (payload) =>
+                  sendTextToChannel(
+                    discord,
+                    session.discordThreadId,
+                    payload,
+                  ),
+              });
+              approvalThreadMessages.set(requestId, lifecycleState);
+              const threadMessage = await finalizeApprovalLifecycleMessageState({
+                state: lifecycleState,
+                operation: pendingMessagePromise,
+              });
 
-            if (threadMessage) {
-              lifecycleState.message = threadMessage;
+              if (threadMessage) {
+                lifecycleState.message = threadMessage;
+              }
+            } catch (error) {
+              try {
+                await sendApprovalDeliveryFailureNotice({
+                  client: discord,
+                  channelId: session.discordThreadId,
+                });
+              } catch {}
+
+              throw error;
             }
           },
           ensureOwnerControls: async (requestId) => {
@@ -3872,69 +3994,28 @@ export const startCodeHelm = async (
       return;
     }
 
-    current.footer = undefined;
-    current.liveCommentaryItemId = undefined;
-    current.liveCommentaryText = undefined;
-    await syncTurnProcessMessage({
-      discord,
-      session,
-      turnId,
-      deleteIfEmpty: true,
+    await finalizeLiveTurnProcessMessage({
+      currentMessage: current.message,
+      currentMessagePromise: current.pendingCreate,
+      rendered: undefined,
+      sendRendered: async (payload) => {
+        await sendChannelMessage(discord, session.discordThreadId, payload);
+      },
     });
     runtime.seenItemIds.delete(getProcessTranscriptEntryId(turnId));
     runtime.turnProcessMessages.delete(turnId);
   };
 
   const publishAgentDelta = async ({
-    discord,
     session,
-    turnId,
     itemId,
-    delta,
   }: {
-    discord: Client;
     session: NonNullable<ReturnType<typeof sessionRepo.getByCodexThreadId>>;
-    turnId?: string;
     itemId: string;
-    delta: string;
   }) => {
     if (session.state === "degraded" || !shouldProjectManagedSessionDiscordSurface(session)) {
       return;
     }
-
-    const runtime = ensureTranscriptRuntime(session.codexThreadId);
-    const resolvedTurnId = turnId ?? runtime.itemTurnIds.get(itemId);
-
-    if (!resolvedTurnId) {
-      return;
-    }
-
-    if (shouldSkipStaleLiveTurnProcessUpdate({
-      activeTurnId: runtime.activeTurnId,
-      closedTurnIds: runtime.closedTurnIds,
-      turnId: resolvedTurnId,
-    })) {
-      return;
-    }
-
-    const current = runtime.turnProcessMessages.get(resolvedTurnId);
-
-    if (!current || current.liveCommentaryItemId !== itemId) {
-      return;
-    }
-
-    current.liveCommentaryText = `${current.liveCommentaryText ?? ""}${delta}`;
-    await updateStatusCard({
-      discord,
-      session,
-      state: "running",
-      activity: summarizeStatusActivity(current.liveCommentaryText),
-    });
-    await syncTurnProcessMessage({
-      discord,
-      session,
-      turnId: resolvedTurnId,
-    });
   };
 
   const finalizeAgentTranscriptMessage = async ({
@@ -3957,37 +4038,7 @@ export const startCodeHelm = async (
     }
 
     if (item.phase === "commentary") {
-      runtime.seenItemIds.add(item.id);
       runtime.itemTurnIds.delete(item.id);
-
-      if (!resolvedTurnId) {
-        return;
-      }
-
-      if (shouldSkipStaleLiveTurnProcessUpdate({
-        activeTurnId: runtime.activeTurnId,
-        closedTurnIds: runtime.closedTurnIds,
-        turnId: resolvedTurnId,
-      })) {
-        return;
-      }
-
-      const current = ensureTurnProcessMessageState(runtime, resolvedTurnId);
-
-      if (current.liveCommentaryItemId === item.id) {
-        appendProcessStep(current.steps, current.liveCommentaryText ?? item.text);
-        current.liveCommentaryItemId = undefined;
-        current.liveCommentaryText = undefined;
-
-        if (current.steps.length > 0 || current.message || current.pendingCreate) {
-          await syncTurnProcessMessage({
-            discord,
-            session,
-            turnId: resolvedTurnId,
-          });
-        }
-      }
-
       return;
     }
 
@@ -4276,29 +4327,6 @@ export const startCodeHelm = async (
       const runtime = ensureTranscriptRuntime(session.codexThreadId);
       const activeTurnId = runtime.activeTurnId;
 
-      if (status && activeTurnId) {
-        const current = ensureTurnProcessMessageState(runtime, activeTurnId);
-        current.footer = getFooterForSessionState(
-          inferSessionStateFromThreadStatus(status),
-        );
-        const shouldSyncProcessMessage =
-          current.footer === "Waiting for approval"
-          || current.footer === undefined
-          || current.steps.length > 0
-          || !!current.liveCommentaryText
-          || !!current.message
-          || !!current.pendingCreate;
-
-        if (shouldSyncProcessMessage) {
-          await syncTurnProcessMessage({
-            discord: bot.client,
-            session,
-            turnId: activeTurnId,
-            deleteIfEmpty: current.footer === undefined,
-          });
-        }
-      }
-
       await updateStatusCard({
         discord: bot.client,
         session,
@@ -4340,34 +4368,7 @@ export const startCodeHelm = async (
         }
 
         if (item.phase === "commentary") {
-          const resolvedTurnId = turnId ?? runtime.activeTurnId;
-
-          if (!resolvedTurnId) {
-            return;
-          }
-
-          if (shouldSkipStaleLiveTurnProcessUpdate({
-            activeTurnId: runtime.activeTurnId,
-            closedTurnIds: runtime.closedTurnIds,
-            turnId: resolvedTurnId,
-          })) {
-            return;
-          }
-
-          const current = ensureTurnProcessMessageState(runtime, resolvedTurnId);
-          current.liveCommentaryItemId = item.id;
-          current.liveCommentaryText = item.text;
-          await updateStatusCard({
-            discord: bot.client,
-            session,
-            state: "running",
-            activity: summarizeStatusActivity(item.text),
-          });
-          await syncTurnProcessMessage({
-            discord: bot.client,
-            session,
-            turnId: resolvedTurnId,
-          });
+          return;
         }
         return;
       }
@@ -4379,37 +4380,6 @@ export const startCodeHelm = async (
       if (!shouldProjectManagedSessionDiscordSurface(session)) {
         return;
       }
-
-      if (turnId) {
-        const runtime = ensureTranscriptRuntime(session.codexThreadId);
-
-        if (shouldSkipStaleLiveTurnProcessUpdate({
-          activeTurnId: runtime.activeTurnId,
-          closedTurnIds: runtime.closedTurnIds,
-          turnId,
-        })) {
-          return;
-        }
-
-        const current = ensureTurnProcessMessageState(runtime, turnId);
-        current.footer ??= getFooterForSessionState(
-          coerceSessionRuntimeState(session.state),
-        );
-        appendProcessStep(current.steps, buildCommandProcessStep(item.command));
-        await syncTurnProcessMessage({
-          discord: bot.client,
-          session,
-          turnId,
-        });
-      }
-
-      await updateStatusCard({
-        discord: bot.client,
-        session,
-        state: "running",
-        activity: null,
-        command: item.command,
-      });
     })().catch((error) => {
       logger.error("Failed to process item/started event", error);
     });
@@ -4474,20 +4444,7 @@ export const startCodeHelm = async (
         });
       }
 
-      if (isCommandExecutionItem(item)) {
-        await updateStatusCard({
-          discord: bot.client,
-          session,
-          state: "running",
-          activity: isFailedCommandExecutionItem(item) ? "command failed" : null,
-          command: null,
-        });
-      }
-
       if (!shouldRelayLiveCompletedItemToTranscript(item)) {
-        if (hasItemId(item)) {
-          runtime.seenItemIds.add(item.id);
-        }
         return;
       }
 
@@ -4524,7 +4481,6 @@ export const startCodeHelm = async (
   codexClient.on("item/agentMessage/delta", (params) => {
     void (async () => {
       const codexThreadId = readThreadIdFromEvent(params);
-      const turnId = readTurnIdFromEvent(params);
       const itemId = readString(params, "itemId");
       const delta = readString(params, "delta");
 
@@ -4539,11 +4495,8 @@ export const startCodeHelm = async (
       }
 
       await publishAgentDelta({
-        discord: bot.client,
         session,
-        turnId,
         itemId,
-        delta,
       });
     })().catch((error) => {
       logger.error("Failed to process item/agentMessage/delta event", error);
@@ -4606,7 +4559,7 @@ export const startCodeHelm = async (
     });
   });
 
-  codexClient.on("item/commandExecution/requestApproval", (event) => {
+  const handleApprovalRequestEvent = (event: ApprovalRequestEvent) => {
     void (async () => {
       const session = sessionRepo.getByCodexThreadId(event.threadId);
 
@@ -4631,15 +4584,8 @@ export const startCodeHelm = async (
       const runtime = ensureTranscriptRuntime(session.codexThreadId);
       const approvalTurnId = event.turnId ?? runtime.activeTurnId;
 
-      if (!isReadOnlySession && approvalTurnId) {
+      if (approvalTurnId) {
         runtime.activeTurnId = approvalTurnId;
-        const current = ensureTurnProcessMessageState(runtime, approvalTurnId);
-        current.footer = "Waiting for approval";
-        await syncTurnProcessMessage({
-          discord: bot.client,
-          session,
-          turnId: approvalTurnId,
-        });
       }
 
       if (!isReadOnlySession) {
@@ -4651,34 +4597,47 @@ export const startCodeHelm = async (
       }
       const requestId = String(event.requestId);
       const lifecycleState = approvalThreadMessages.get(requestId) ?? {};
-      const pendingMessagePromise = upsertApprovalLifecycleMessage({
-        currentMessage: lifecycleState.message,
-        currentMessagePromise: lifecycleState.pendingMessage,
-        recoverMessage: async () =>
-          recoverApprovalLifecycleMessage(
-            bot.client,
-            session.discordThreadId,
+      try {
+        const pendingMessagePromise = upsertApprovalLifecycleMessage({
+          currentMessage: lifecycleState.message,
+          currentMessagePromise: lifecycleState.pendingMessage,
+          recoverMessage: async () =>
+            recoverApprovalLifecycleMessage(
+              bot.client,
+              session.discordThreadId,
+              requestId,
+            ),
+          payload: renderApprovalLifecyclePayload({
             requestId,
-          ),
-        payload: renderApprovalLifecyclePayload({
-          requestId,
-          status: "pending",
-        }),
-        sendMessage: async (payload) =>
-          sendTextToChannel(
-            bot.client,
-            session.discordThreadId,
-            payload,
-          ),
-      });
-      approvalThreadMessages.set(requestId, lifecycleState);
-      const threadMessage = await finalizeApprovalLifecycleMessageState({
-        state: lifecycleState,
-        operation: pendingMessagePromise,
-      });
+            status: "pending",
+          }),
+          sendMessage: async (payload) =>
+            sendTextToChannel(
+              bot.client,
+              session.discordThreadId,
+              payload,
+            ),
+        });
+        approvalThreadMessages.set(requestId, lifecycleState);
+        const threadMessage = await finalizeApprovalLifecycleMessageState({
+          state: lifecycleState,
+          operation: pendingMessagePromise,
+        });
 
-      if (threadMessage) {
-        lifecycleState.message = threadMessage;
+        if (threadMessage) {
+          lifecycleState.message = threadMessage;
+        }
+      } catch (error) {
+        stopDiscordTypingPulse(runtime);
+
+        try {
+          await sendApprovalDeliveryFailureNotice({
+            client: bot.client,
+            channelId: session.discordThreadId,
+          });
+        } catch {}
+
+        throw error;
       }
 
       try {
@@ -4701,7 +4660,11 @@ export const startCodeHelm = async (
     })().catch((error) => {
       logger.error("Failed to process approval request event", error);
     });
-  });
+  };
+
+  for (const method of approvalRequestMethods) {
+    codexClient.on(method, handleApprovalRequestEvent);
+  }
 
   codexClient.on("serverRequest/resolved", (event) => {
     void (async () => {
@@ -4730,29 +4693,6 @@ export const startCodeHelm = async (
       });
 
       const session = sessionRepo.getByDiscordThreadId(approvalRecord.discordThreadId);
-
-      if (session && shouldProjectManagedSessionDiscordSurface(session)) {
-        const runtime = ensureTranscriptRuntime(session.codexThreadId);
-        const activeTurnId = runtime.activeTurnId;
-
-        if (activeTurnId) {
-          const current = ensureTurnProcessMessageState(runtime, activeTurnId);
-          current.footer = undefined;
-          if (
-            current.steps.length > 0
-            || !!current.liveCommentaryText
-            || !!current.message
-            || !!current.pendingCreate
-          ) {
-            await syncTurnProcessMessage({
-              discord: bot.client,
-              session,
-              turnId: activeTurnId,
-              deleteIfEmpty: current.steps.length === 0,
-            });
-          }
-        }
-      }
 
       const dmMessage = outcome.closeActiveUi
         ? approvalDmMessages.get(requestId)

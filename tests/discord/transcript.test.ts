@@ -1,16 +1,15 @@
 import { expect, test } from "bun:test";
 import {
   getAssistantTranscriptEntryId,
-  getProcessTranscriptEntryId,
   getUserTranscriptEntryId,
+  collectComparableTranscriptItemIds,
   collectTranscriptEntries,
-  type ProcessFooterText,
   renderTranscriptMessages,
   renderTranscriptEntry,
 } from "../../src/discord/transcript";
 import type { CodexTurn } from "../../src/codex/protocol-types";
 
-test("does not duplicate Discord-originated user messages and preserves commentary in the process transcript", () => {
+test("does not duplicate Discord-originated user messages and drops commentary from the minimal transcript surface", () => {
   const turns: CodexTurn[] = [
     {
       id: "turn-1",
@@ -36,14 +35,7 @@ test("does not duplicate Discord-originated user messages and preserves commenta
     pendingDiscordInputs: ["Inspect the repo."],
   });
 
-  expect(entries).toEqual([
-    {
-      itemId: getProcessTranscriptEntryId("turn-1"),
-      kind: "process",
-      turnId: "turn-1",
-      steps: ["Reading the repository structure now."],
-    },
-  ]);
+  expect(entries).toEqual([]);
 });
 
 test("renders non-Discord input as a remote input card with explicit reply instructions", () => {
@@ -248,7 +240,7 @@ test("snapshot recovery clears stale pending Discord input before later live CLI
   ]);
 });
 
-test("builds one Codex process message and one final reply for a completed turn", () => {
+test("builds only the final reply for a completed turn", () => {
   const turns: CodexTurn[] = [
     {
       id: "turn-1",
@@ -284,35 +276,17 @@ test("builds one Codex process message and one final reply for a completed turn"
 
   expect(entries).toEqual([
     {
-      itemId: getProcessTranscriptEntryId("turn-1"),
-      kind: "process",
-      turnId: "turn-1",
-      steps: [
-        "reading SKILL.md",
-        "RUN `bun test`",
-      ],
-    },
-    {
       itemId: getAssistantTranscriptEntryId("turn-1"),
       kind: "assistant",
       text: "OK",
     },
   ]);
   expect(renderTranscriptEntry(entries[0])).toEqual({
-    embeds: [
-      {
-        title: "Codex",
-        description: "reading SKILL.md\nRUN `bun test`",
-        color: 0x64748b,
-      },
-    ],
-  });
-  expect(renderTranscriptEntry(entries[1])).toEqual({
     content: "OK",
   });
 });
 
-test("commentary-only turns preserve process history without fabricating a final reply", () => {
+test("commentary-only turns emit no transcript entries", () => {
   const entries = collectTranscriptEntries(
     [
       {
@@ -333,18 +307,10 @@ test("commentary-only turns preserve process history without fabricating a final
     },
   );
 
-  expect(entries).toEqual([
-    {
-      itemId: getProcessTranscriptEntryId("turn-1"),
-      kind: "process",
-      turnId: "turn-1",
-      steps: ["reading README.md"],
-    },
-  ]);
+  expect(entries).toEqual([]);
 });
 
-test("active turn process footers stay on the last line", () => {
-  const waitingFooter: ProcessFooterText = "Waiting for approval";
+test("active turn approval footers do not fabricate transcript entries", () => {
   const entries = collectTranscriptEntries(
     [
       {
@@ -370,25 +336,14 @@ test("active turn process footers stay on the last line", () => {
     {
       source: "snapshot",
       activeTurnId: "turn-1",
-      activeTurnFooter: waitingFooter,
+      activeTurnFooter: "Waiting for approval",
     },
   );
 
-  expect(entries).toEqual([
-    {
-      itemId: getProcessTranscriptEntryId("turn-1"),
-      kind: "process",
-      turnId: "turn-1",
-      steps: [
-        "reading README.md",
-        "RUN `touch /tmp/README.md`",
-      ],
-      footer: waitingFooter,
-    },
-  ]);
+  expect(entries).toEqual([]);
 });
 
-test("failed command execution stays in the process card without a separate error bubble", () => {
+test("failed command execution without a final reply emits no transcript entries", () => {
   const entries = collectTranscriptEntries(
     [
       {
@@ -412,18 +367,10 @@ test("failed command execution stays in the process card without a separate erro
     },
   );
 
-  expect(entries).toEqual([
-    {
-      itemId: getProcessTranscriptEntryId("turn-1"),
-      kind: "process",
-      turnId: "turn-1",
-      steps: ["RUN `npm test`"],
-      footer: "Command failed",
-    },
-  ]);
+  expect(entries).toEqual([]);
 });
 
-test("preserves process-before-final order without a separate failed-command bubble", () => {
+test("preserves only the final reply when earlier process work failed", () => {
   const entries = collectTranscriptEntries(
     [
       {
@@ -459,25 +406,20 @@ test("preserves process-before-final order without a separate failed-command bub
     },
   );
 
-  expect(entries.map((entry) => entry.itemId)).toEqual([
-    getProcessTranscriptEntryId("turn-1"),
-    getAssistantTranscriptEntryId("turn-1"),
+  expect(entries).toEqual([
+    {
+      itemId: getAssistantTranscriptEntryId("turn-1"),
+      kind: "assistant",
+      text: "Tests failed.",
+    },
   ]);
   expect(entries[0]).toMatchObject({
-    kind: "process",
-    steps: [
-      "reading package.json",
-      "RUN `npm test`",
-    ],
-    footer: "Command failed",
-  });
-  expect(entries[1]).toMatchObject({
     kind: "assistant",
     text: "Tests failed.",
   });
 });
 
-test("successful command execution contributes only to the process message", () => {
+test("successful command execution emits no transcript entries", () => {
   const entries = collectTranscriptEntries(
     [
       {
@@ -501,12 +443,49 @@ test("successful command execution contributes only to the process message", () 
     },
   );
 
-  expect(entries).toEqual([
-    {
-      itemId: getProcessTranscriptEntryId("turn-1"),
-      kind: "process",
-      turnId: "turn-1",
-      steps: ["RUN `ls`"],
-    },
+  expect(entries).toEqual([]);
+});
+
+test("comparable transcript ids ignore commentary and command items", () => {
+  const ids = collectComparableTranscriptItemIds(
+    [
+      {
+        id: "turn-1",
+        status: "completed",
+        items: [
+          {
+            type: "userMessage",
+            id: "user-1",
+            content: [{ type: "text", text: "resume --remote" }],
+          },
+          {
+            type: "agentMessage",
+            id: "agent-1",
+            text: "reading package.json",
+            phase: "commentary",
+          },
+          {
+            type: "commandExecution",
+            id: "cmd-1",
+            command: "bun test",
+            cwd: "/tmp/project",
+            status: "failed",
+            exitCode: 1,
+          },
+          {
+            type: "agentMessage",
+            id: "agent-2",
+            text: "Tests failed.",
+            phase: "final",
+          },
+        ],
+      },
+    ],
+    {},
+  );
+
+  expect(ids).toEqual([
+    getUserTranscriptEntryId("turn-1"),
+    getAssistantTranscriptEntryId("turn-1"),
   ]);
 });

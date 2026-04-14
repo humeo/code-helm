@@ -39,6 +39,8 @@ import {
   shouldProjectManagedSessionDiscordSurface,
   renderApprovalLifecycleMessage,
   renderApprovalLifecyclePayload,
+  detectThreadLanguageFromTexts,
+  renderApprovalDeliveryFailureText,
   resumeManagedSession,
   startTurnWithThreadResumeRetry,
   syncManagedSession,
@@ -3017,7 +3019,7 @@ test("snapshot mismatch ignores live-vs-snapshot id remapping when the same turn
       "live-commentary-id",
       "live-final-id",
       getUserTranscriptEntryId("turn-1"),
-      getProcessTranscriptEntryId("turn-1"),
+      getProcessTranscriptEntryId("turn-1", 0),
       getAssistantTranscriptEntryId("turn-1"),
     ]),
     finalizingItemIds: new Set<string>(),
@@ -3424,6 +3426,27 @@ test("approval lifecycle payload includes thread buttons only while pending", ()
   expect((pending.components ?? []).length).toBe(1);
   expect(approved.content).toBe("Approval `req-7`: approved.");
   expect(approved.components).toEqual([]);
+});
+
+test("approval delivery failure text follows the thread language", () => {
+  expect(
+    detectThreadLanguageFromTexts([
+      "请先看一下日志",
+      "好的，我继续查。",
+    ]),
+  ).toBe("zh");
+  expect(
+    detectThreadLanguageFromTexts([
+      "Please inspect the latest logs.",
+    ]),
+  ).toBe("en");
+
+  expect(renderApprovalDeliveryFailureText("zh")).toBe(
+    "审批卡片发送失败，当前操作仍在等待审批。",
+  );
+  expect(renderApprovalDeliveryFailureText("en")).toBe(
+    "Approval card delivery failed. The action is still waiting for approval.",
+  );
 });
 
 test("approval lifecycle updates edit the same Discord message instead of sending a new one", async () => {

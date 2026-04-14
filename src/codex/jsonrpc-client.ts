@@ -1,5 +1,6 @@
 import { EventRouter } from "./event-router";
 import {
+  isApprovalRequestMethod,
   isRoutedEventMethod,
   type ApprovalRequestEvent,
   type ApprovalRequestParams,
@@ -333,7 +334,7 @@ export class JsonRpcClient {
       return;
     }
 
-    if (method === "item/commandExecution/requestApproval") {
+    if (isApprovalRequestMethod(method)) {
       if (!("id" in message)) {
         return;
       }
