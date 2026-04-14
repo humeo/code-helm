@@ -35,6 +35,14 @@ const sessionsTableHasLifecycleConstraint = (db: Database) => {
   return row?.sql.includes(lifecycleConstraintSql) ?? false;
 };
 
+const approvalsTableHasCascadeUpdate = (db: Database) => {
+  const row = db.prepare(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'approvals'",
+  ).get() as SqliteMasterRow | null;
+
+  return row?.sql.includes("ON UPDATE CASCADE") ?? false;
+};
+
 const rebuildSessionsTableWithLifecycleConstraint = (
   db: Database,
   hasLifecycleStateColumn: boolean,
@@ -112,9 +120,65 @@ const upgradeSessionsLifecycleState = (db: Database) => {
   `);
 };
 
+const rebuildApprovalsTableWithCascadeUpdate = (db: Database) => {
+  db.exec("PRAGMA foreign_keys = OFF");
+  db.exec("BEGIN");
+  try {
+    db.exec(`
+      CREATE TABLE approvals_next (
+        request_id TEXT PRIMARY KEY,
+        discord_thread_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        resolved_by_discord_user_id TEXT,
+        resolution TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (discord_thread_id)
+          REFERENCES sessions(discord_thread_id)
+          ON UPDATE CASCADE
+      )
+    `);
+    db.exec(`
+      INSERT INTO approvals_next (
+        request_id,
+        discord_thread_id,
+        status,
+        resolved_by_discord_user_id,
+        resolution,
+        created_at,
+        updated_at
+      )
+      SELECT
+        request_id,
+        discord_thread_id,
+        status,
+        resolved_by_discord_user_id,
+        resolution,
+        created_at,
+        updated_at
+      FROM approvals
+    `);
+    db.exec("DROP TABLE approvals");
+    db.exec("ALTER TABLE approvals_next RENAME TO approvals");
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  } finally {
+    db.exec("PRAGMA foreign_keys = ON");
+  }
+};
+
+const upgradeApprovalsCascadeUpdate = (db: Database) => {
+  if (!approvalsTableHasCascadeUpdate(db)) {
+    rebuildApprovalsTableWithCascadeUpdate(db);
+  }
+};
+
 export const applyMigrations = (db: Database) => {
   db.exec(initMigration);
   upgradeSessionsLifecycleState(db);
+  upgradeApprovalsCascadeUpdate(db);
 };
 
 if (import.meta.main) {

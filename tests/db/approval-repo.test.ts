@@ -3,7 +3,7 @@ import { expect, test } from "bun:test";
 import { createDatabaseClient } from "../../src/db/client";
 import { applyMigrations } from "../../src/db/migrate";
 import { createApprovalRepo } from "../../src/db/repos/approvals";
-import { createSessionRepo } from "../../src/db/repos/sessions";
+import { createSessionRepo, type SessionRepo } from "../../src/db/repos/sessions";
 import { createWorkdirRepo } from "../../src/db/repos/workdirs";
 import { createWorkspaceRepo } from "../../src/db/repos/workspaces";
 
@@ -224,6 +224,44 @@ test("repo can list pending approvals for a Discord thread newest first", () => 
     requestId: "req-3",
     status: "pending",
   });
+
+  db.close();
+});
+
+test("approval rows follow a rebound Discord thread for the managed session", () => {
+  const db = createMigratedDb();
+  seedWorkspaceGraph(db);
+  const sessionRepo = createSessionRepo(db) as SessionRepo & {
+    rebindDiscordThread(input: {
+      currentDiscordThreadId: string;
+      nextDiscordThreadId: string;
+    }): void;
+  };
+  const approvalRepo = createApprovalRepo(db);
+
+  approvalRepo.insert({
+    requestId: "req-1",
+    discordThreadId: "123",
+    status: "pending",
+  });
+
+  sessionRepo.rebindDiscordThread({
+    currentDiscordThreadId: "123",
+    nextDiscordThreadId: "replacement-thread",
+  });
+
+  expect(approvalRepo.listPendingByDiscordThreadId("123")).toHaveLength(0);
+  expect(approvalRepo.listPendingByDiscordThreadId("replacement-thread")).toEqual([
+    {
+      requestId: "req-1",
+      discordThreadId: "replacement-thread",
+      status: "pending",
+      resolvedByDiscordUserId: null,
+      resolution: null,
+      createdAt: expect.any(String),
+      updatedAt: expect.any(String),
+    },
+  ]);
 
   db.close();
 });
