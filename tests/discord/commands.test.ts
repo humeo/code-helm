@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import * as discordCommands from "../../src/discord/commands";
 import {
   buildControlChannelCommands,
   controlChannelCommands,
@@ -104,6 +105,55 @@ const createInteraction = ({
   };
 };
 
+const createAutocompleteInteraction = ({
+  guildId = "g1",
+  channelId = "c1",
+  focusedOption,
+  focusedValue = "",
+  options = {},
+}: {
+  guildId?: string | null;
+  channelId?: string;
+  focusedOption: string;
+  focusedValue?: string;
+  options?: Record<string, string>;
+}) => {
+  const responses: unknown[] = [];
+
+  return {
+    interaction: {
+      guildId,
+      channelId,
+      user: { id: "u1" },
+      options: {
+        getFocused(withName?: boolean) {
+          return withName
+            ? { name: focusedOption, value: focusedValue }
+            : focusedValue;
+        },
+        getString(name: string, required?: boolean) {
+          const value = options[name];
+
+          if (value === undefined && required) {
+            throw new Error(`Missing required option: ${name}`);
+          }
+
+          return value ?? null;
+        },
+      },
+      async respond(payload: unknown) {
+        responses.push(payload);
+      },
+    },
+    responses,
+  };
+};
+
+const handleControlChannelAutocomplete = discordCommands
+  .handleControlChannelAutocomplete as
+  | ((interaction: never, services: never) => Promise<unknown>)
+  | undefined;
+
 test("/session-new delegates with the configured workdir", async () => {
   const { calls, services } = createServices();
   const { interaction, replies, followsUps, defers } = createInteraction({
@@ -190,6 +240,76 @@ test("command registration locks /session-resume to workdir and session autocomp
       autocomplete: true,
     },
   ]);
+});
+
+test("/session-resume workdir autocomplete uses configured workdirs", async () => {
+  const { interaction, responses } = createAutocompleteInteraction({
+    focusedOption: "workdir",
+    focusedValue: "exa",
+  });
+  const calls = {
+    autocompleteResumeWorkdirs: [] as Array<Record<string, string>>,
+  };
+  const services = {
+    autocompleteResumeWorkdirs(input: Record<string, string>) {
+      calls.autocompleteResumeWorkdirs.push(input);
+      return [
+        { name: "Code Agent Helm Example (example)", value: "example" },
+      ];
+    },
+  };
+
+  await handleControlChannelAutocomplete?.(
+    { ...interaction, commandName: "session-resume" } as never,
+    services as never,
+  );
+
+  expect(calls.autocompleteResumeWorkdirs).toEqual([
+    {
+      actorId: "u1",
+      guildId: "g1",
+      channelId: "c1",
+      query: "exa",
+    },
+  ]);
+  expect(responses).toEqual([
+    [{ name: "Code Agent Helm Example (example)", value: "example" }],
+  ]);
+});
+
+test("/session-resume session autocomplete uses the selected workdir", async () => {
+  const { interaction, responses } = createAutocompleteInteraction({
+    focusedOption: "session",
+    focusedValue: "codex",
+    options: { workdir: "example" },
+  });
+  const calls = {
+    autocompleteResumeSessions: [] as Array<Record<string, string>>,
+  };
+  const services = {
+    autocompleteResumeSessions(input: Record<string, string>) {
+      calls.autocompleteResumeSessions.push(input);
+      return [
+        { name: "codex-thread-7", value: "codex-thread-7" },
+      ];
+    },
+  };
+
+  await handleControlChannelAutocomplete?.(
+    { ...interaction, commandName: "session-resume" } as never,
+    services as never,
+  );
+
+  expect(calls.autocompleteResumeSessions).toEqual([
+    {
+      actorId: "u1",
+      guildId: "g1",
+      channelId: "c1",
+      workdirId: "example",
+      query: "codex",
+    },
+  ]);
+  expect(responses).toEqual([[{ name: "codex-thread-7", value: "codex-thread-7" }]]);
 });
 
 test("/session-close defers and delegates using the current thread context", async () => {
