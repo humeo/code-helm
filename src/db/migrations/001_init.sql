@@ -37,5 +37,7 @@ CREATE TABLE IF NOT EXISTS approvals (
   resolution TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  FOREIGN KEY (discord_thread_id) REFERENCES sessions(discord_thread_id)
+  FOREIGN KEY (discord_thread_id)
+    REFERENCES sessions(discord_thread_id)
+    ON UPDATE CASCADE
 );

@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import { createDatabaseClient } from "../../src/db/client";
 import { applyMigrations } from "../../src/db/migrate";
+import type { SessionRepo } from "../../src/db/repos/sessions";
 import { createApprovalRepo } from "../../src/db/repos/approvals";
 import { createSessionRepo } from "../../src/db/repos/sessions";
 import { createWorkdirRepo } from "../../src/db/repos/workdirs";
@@ -237,6 +238,37 @@ test("marks externally modified sessions as degraded with a reason", () => {
   db.close();
 });
 
+test("rebinds a managed session to a replacement Discord thread without changing the Codex thread", () => {
+  const db = createMigratedDb();
+  seedWorkspaceGraph(db);
+  const repo = insertSession(db, {
+    discordThreadId: "deleted-thread",
+    codexThreadId: "codex-thread-1",
+  }) as SessionRepo & {
+    rebindDiscordThread(input: {
+      currentDiscordThreadId: string;
+      nextDiscordThreadId: string;
+    }): void;
+  };
+
+  repo.rebindDiscordThread({
+    currentDiscordThreadId: "deleted-thread",
+    nextDiscordThreadId: "replacement-thread",
+  });
+
+  expect(repo.getByDiscordThreadId("deleted-thread")).toBeNull();
+  expect(repo.getByDiscordThreadId("replacement-thread")).toMatchObject({
+    discordThreadId: "replacement-thread",
+    codexThreadId: "codex-thread-1",
+    ownerDiscordUserId: "u1",
+    workdirId: "wd1",
+    state: "idle",
+    lifecycleState: "active",
+  });
+
+  db.close();
+});
+
 test("sync-state updates can clear a stale degradation reason", () => {
   const db = createMigratedDb();
   seedWorkspaceGraph(db);
@@ -466,6 +498,7 @@ test("exposes only the narrow session repository API", () => {
     "listArchived",
     "markDeleted",
     "markExternallyModified",
+    "rebindDiscordThread",
     "syncState",
     "updateLifecycleState",
     "updateState",

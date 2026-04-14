@@ -118,6 +118,11 @@ export const createSessionRepo = (db: Database) => {
       SET lifecycle_state = 'deleted', updated_at = ?
       WHERE discord_thread_id = ?`,
   );
+  const rebindDiscordThreadStatement = db.prepare(
+    `UPDATE sessions
+      SET discord_thread_id = ?, updated_at = ?
+      WHERE discord_thread_id = ?`,
+  );
 
   return {
     insert(input: InsertSessionInput) {
@@ -208,6 +213,22 @@ export const createSessionRepo = (db: Database) => {
           discordThreadId,
         ) as MutationResult,
         discordThreadId,
+      );
+    },
+    rebindDiscordThread({
+      currentDiscordThreadId,
+      nextDiscordThreadId,
+    }: {
+      currentDiscordThreadId: string;
+      nextDiscordThreadId: string;
+    }) {
+      assertSessionUpdated(
+        rebindDiscordThreadStatement.run(
+          nextDiscordThreadId,
+          now(),
+          currentDiscordThreadId,
+        ) as MutationResult,
+        currentDiscordThreadId,
       );
     },
   };
