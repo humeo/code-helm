@@ -195,7 +195,7 @@ test("session started renderer returns a structured system card payload", () => 
     embeds: [
       {
         title: "Session started",
-        description: "Session: `api`\n\nCodex thread: `codex-thread-1`",
+        description: "Session: `api`\nCodex thread: `codex-thread-1`",
         color: 0x2563eb,
       },
     ],

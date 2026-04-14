@@ -275,6 +275,8 @@ const collectTurnEntries = (
       }
 
       if (isCommentaryPhase(assistant.phase)) {
+        appendProcessStep(processSteps, text);
+        processOrder = Math.min(processOrder ?? Number.POSITIVE_INFINITY, order - 0.5);
         continue;
       }
 
@@ -302,6 +304,21 @@ const collectTurnEntries = (
   const footer = (
     options.activeTurnId === turn.id ? options.activeTurnFooter : undefined
   ) ?? (hasFailedCommand ? "Command failed" : undefined);
+
+  if (processSteps.length > 0 || footer) {
+    entries.push({
+      order:
+        processOrder
+        ?? (finalAssistant ? finalAssistant.order - 0.5 : (turn.items?.length ?? 0)),
+      entry: {
+        itemId: getProcessTranscriptEntryId(turn.id),
+        kind: "process",
+        turnId: turn.id,
+        steps: processSteps,
+        footer,
+      },
+    });
+  }
 
   if (finalAssistant) {
     entries.push({
@@ -402,6 +419,10 @@ export const collectComparableTranscriptItemIds = (
 
     if (hasFinalAssistant) {
       comparableIds.push(getAssistantTranscriptEntryId(turn.id));
+    }
+
+    if (processSteps.length > 0) {
+      comparableIds.push(getProcessTranscriptEntryId(turn.id));
     }
   }
 

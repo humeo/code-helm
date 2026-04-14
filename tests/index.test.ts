@@ -288,6 +288,9 @@ const createControlChannelServicesFixture = ({
     }>,
     readThreadIds: [] as string[],
     usabilityChecks: [] as string[],
+    updateStatusCard: [] as Array<{
+      state?: string;
+    }>,
   };
 
   if (existingSession) {
@@ -416,7 +419,8 @@ const createControlChannelServicesFixture = ({
     ensureTranscriptRuntime: (codexThreadId) => {
       calls.ensureTranscriptRuntime.push(codexThreadId);
     },
-    updateStatusCard: async () => {
+    updateStatusCard: async ({ state }) => {
+      calls.updateStatusCard.push({ state });
       if (updateStatusCardError) {
         throw updateStatusCardError;
       }
@@ -691,26 +695,28 @@ test("resume attachment resolution distinguishes reuse, reopen, rebind, and crea
   ).toBe("create");
 });
 
-test("create session rolls back the new binding when status-card setup fails", async () => {
-  const failure = new Error("status card failed");
+test("create session does not render an initial idle status card", async () => {
   const { services, calls, getSessionByCodexThreadId } = createControlChannelServicesFixture({
-    updateStatusCardError: failure,
   });
 
-  await expect(
-    services.createSession({
-      actorId: "owner-1",
-      guildId: "guild-1",
-      channelId: "control-1",
-      workdirId: "api",
-    }),
-  ).rejects.toBe(failure);
+  const result = await services.createSession({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
+    workdirId: "api",
+  });
 
-  expect(calls.deletedThreads).toEqual(["discord-thread-new-1"]);
-  expect(calls.deletedSessions).toEqual(["discord-thread-new-1"]);
+  expect(calls.updateStatusCard).toEqual([]);
+  expect(calls.deletedThreads).toEqual([]);
+  expect(calls.deletedSessions).toEqual([]);
   expect(getSessionByCodexThreadId("codex-thread-1")).toMatchObject({
     discordThreadId: "discord-thread-new-1",
-    lifecycleState: "deleted",
+    lifecycleState: "active",
+  });
+  expect(result).toEqual({
+    reply: {
+      content: "Created session <#discord-thread-new-1> for `API`.",
+    },
   });
 });
 
@@ -2528,6 +2534,53 @@ test("approval interaction replies to Codex before persisting a terminal local d
   ]);
 });
 
+test("approval interaction still resolves pending approvals for degraded sessions", async () => {
+  const calls: string[] = [];
+
+  const handled = await handleApprovalInteraction({
+    interaction: {
+      customId: "approval|req-1|approve",
+      user: { id: "owner-1" },
+      deferUpdate: async () => {
+        calls.push("defer");
+      },
+      reply: async () => {
+        calls.push("reply");
+      },
+    } as never,
+    client: {
+      replyToServerRequest: async () => {
+        calls.push("rpc");
+      },
+    } as never,
+    sessionRepo: {
+      getByDiscordThreadId: () =>
+        createSessionRecord({
+          discordThreadId: "discord-thread-1",
+          ownerDiscordUserId: "owner-1",
+          state: "degraded",
+        }),
+    } as never,
+    approvalRepo: {
+      getByRequestId: () => ({
+        requestId: "req-1",
+        discordThreadId: "discord-thread-1",
+        status: "pending",
+      }),
+      insert: () => {
+        calls.push("insert");
+      },
+    } as never,
+  });
+
+  expect(handled).toBe(true);
+  expect(calls).toEqual([
+    "defer",
+    "rpc",
+    "insert",
+  ]);
+});
+
 test("approval interaction does not persist a terminal local decision when the Codex reply fails", async () => {
   const calls: string[] = [];
   const failure = new Error("rpc failed");
@@ -2681,22 +2734,46 @@ test("approval interaction rejects concurrent resolution attempts for the same r
   expect(inFlightRequestIds.size).toBe(0);
 });
 
-test("live turn process rendering does not produce a Codex panel", () => {
+test("live turn process rendering keeps commentary deduped and the footer on the last line", () => {
   const liveCommentaryPayload = renderLiveTurnProcessMessage({
     turnId: "turn-1",
     steps: ["reading SKILL.md"],
     liveCommentaryText: "running `bun test`",
+    footer: "Waiting for approval",
   });
 
-  expect(liveCommentaryPayload).toBeUndefined();
+  expect(liveCommentaryPayload).toEqual({
+    embeds: [
+      {
+        title: "Codex",
+        description: "reading SKILL.md\nrunning `bun test`",
+        color: 0x64748b,
+        footer: {
+          text: "Waiting for approval",
+        },
+      },
+    ],
+  });
 
   const dedupedPayload = renderLiveTurnProcessMessage({
     turnId: "turn-1",
-    steps: [],
+    steps: ["reading SKILL.md"],
     liveCommentaryText: "reading SKILL.md",
+    footer: "Waiting for approval",
   });
 
-  expect(dedupedPayload).toBeUndefined();
+  expect(dedupedPayload).toEqual({
+    embeds: [
+      {
+        title: "Codex",
+        description: "reading SKILL.md",
+        color: 0x64748b,
+        footer: {
+          text: "Waiting for approval",
+        },
+      },
+    ],
+  });
   expect(shouldRenderCommandExecutionStartMessage()).toBe(false);
 });
 
@@ -3516,7 +3593,7 @@ test("status card renderer stays operational and compact", () => {
   ).toBe("CodeHelm status: Waiting for approval.");
 });
 
-test("running updates stay on the status card and out of the transcript", () => {
+test("running updates stay on the status card and the live Codex process panel", () => {
   expect(
     renderStatusCardText({
       state: "running",
@@ -3532,10 +3609,18 @@ test("running updates stay on the status card and out of the transcript", () => 
   expect(
     renderLiveTurnProcessMessage({
       turnId: "turn-1",
-      steps: [],
+      steps: ["reasoning"],
       liveCommentaryText: "reasoning",
     }),
-  ).toBeUndefined();
+  ).toEqual({
+    embeds: [
+      {
+        title: "Codex",
+        description: "reasoning",
+        color: 0x64748b,
+      },
+    ],
+  });
   expect(shouldRenderCommandExecutionStartMessage()).toBe(false);
 });
 

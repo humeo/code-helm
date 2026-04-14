@@ -250,18 +250,55 @@ const getFooterForSessionState = (
   return undefined;
 };
 
+const collectVisibleTurnProcessSteps = ({
+  steps,
+  liveCommentaryText,
+}: {
+  steps: string[];
+  liveCommentaryText?: string;
+}) => {
+  const visibleSteps = [...steps];
+  const normalizedLiveCommentary = liveCommentaryText
+    ? normalizeProcessStepText(liveCommentaryText)
+    : "";
+
+  if (
+    normalizedLiveCommentary.length > 0
+    && visibleSteps.at(-1) !== normalizedLiveCommentary
+  ) {
+    visibleSteps.push(normalizedLiveCommentary);
+  }
+
+  return visibleSteps;
+};
+
 export const renderLiveTurnProcessMessage = ({
-  turnId: _turnId,
-  steps: _steps,
-  liveCommentaryText: _liveCommentaryText,
-  footer: _footer,
+  turnId,
+  steps,
+  liveCommentaryText,
+  footer,
 }: {
   turnId: string;
   steps: string[];
   liveCommentaryText?: string;
   footer?: ProcessFooterText;
 }) => {
-  return undefined;
+  const visibleSteps = collectVisibleTurnProcessSteps({
+    steps,
+    liveCommentaryText,
+  });
+
+  if (visibleSteps.length === 0 && !footer) {
+    return undefined;
+  }
+
+  return renderTranscriptEntry({
+    itemId: getProcessTranscriptEntryId(turnId),
+    kind: "process",
+    turnId,
+    steps: visibleSteps,
+    footer,
+  });
 };
 
 export const finalizeLiveTurnProcessMessage = async ({
@@ -2426,17 +2463,6 @@ export const createControlChannelServices = ({
           },
           onRollback: rollbackBinding,
         });
-        const session = sessionRepo.getByDiscordThreadId(thread.id);
-
-        if (!session) {
-          throw new Error(`Managed session ${codexThreadId} disappeared after creation`);
-        }
-
-        await updateStatusCard({
-          discord,
-          session,
-          state: "idle",
-        });
       } catch (error) {
         if (thread) {
           try {
@@ -3074,14 +3100,6 @@ export const handleApprovalInteraction = async ({
   if (!session || session.ownerDiscordUserId !== interaction.user.id) {
     await interaction.reply({
       content: "Only the session owner can resolve this approval.",
-      ephemeral: true,
-    });
-    return true;
-  }
-
-  if (session.state === "degraded") {
-    await interaction.reply({
-      content: "This session is read-only because it was modified outside the supported flow.",
       ephemeral: true,
     });
     return true;
@@ -3863,6 +3881,7 @@ export const startCodeHelm = async (
       turnId,
       deleteIfEmpty: true,
     });
+    runtime.seenItemIds.delete(getProcessTranscriptEntryId(turnId));
     runtime.turnProcessMessages.delete(turnId);
   };
 
@@ -3956,8 +3975,17 @@ export const startCodeHelm = async (
       const current = ensureTurnProcessMessageState(runtime, resolvedTurnId);
 
       if (current.liveCommentaryItemId === item.id) {
+        appendProcessStep(current.steps, current.liveCommentaryText ?? item.text);
         current.liveCommentaryItemId = undefined;
         current.liveCommentaryText = undefined;
+
+        if (current.steps.length > 0 || current.message || current.pendingCreate) {
+          await syncTurnProcessMessage({
+            discord,
+            session,
+            turnId: resolvedTurnId,
+          });
+        }
       }
 
       return;
@@ -4327,13 +4355,19 @@ export const startCodeHelm = async (
           }
 
           const current = ensureTurnProcessMessageState(runtime, resolvedTurnId);
-          if (current.steps.length > 0 || current.message || current.pendingCreate) {
-            await syncTurnProcessMessage({
-              discord: bot.client,
-              session,
-              turnId: resolvedTurnId,
-            });
-          }
+          current.liveCommentaryItemId = item.id;
+          current.liveCommentaryText = item.text;
+          await updateStatusCard({
+            discord: bot.client,
+            session,
+            state: "running",
+            activity: summarizeStatusActivity(item.text),
+          });
+          await syncTurnProcessMessage({
+            discord: bot.client,
+            session,
+            turnId: resolvedTurnId,
+          });
         }
         return;
       }
@@ -4580,18 +4614,11 @@ export const startCodeHelm = async (
         return;
       }
 
-      if (session.state === "degraded") {
-        if (shouldProjectManagedSessionDiscordSurface(session)) {
-          await sendTextToChannel(
-            bot.client,
-            session.discordThreadId,
-            `Approval pending for request \`${event.requestId}\`, but this session is already read-only in Discord.`,
-          );
-        }
-        return;
-      }
+      const isReadOnlySession = session.state === "degraded";
 
-      updateSessionStateIfWritable(session, "waiting-approval");
+      if (!isReadOnlySession) {
+        updateSessionStateIfWritable(session, "waiting-approval");
+      }
       approvalRepo.insert({
         requestId: event.requestId,
         discordThreadId: session.discordThreadId,
@@ -4604,7 +4631,7 @@ export const startCodeHelm = async (
       const runtime = ensureTranscriptRuntime(session.codexThreadId);
       const approvalTurnId = event.turnId ?? runtime.activeTurnId;
 
-      if (approvalTurnId) {
+      if (!isReadOnlySession && approvalTurnId) {
         runtime.activeTurnId = approvalTurnId;
         const current = ensureTurnProcessMessageState(runtime, approvalTurnId);
         current.footer = "Waiting for approval";
@@ -4615,11 +4642,13 @@ export const startCodeHelm = async (
         });
       }
 
-      await updateStatusCard({
-        discord: bot.client,
-        session,
-        state: "waiting-approval",
-      });
+      if (!isReadOnlySession) {
+        await updateStatusCard({
+          discord: bot.client,
+          session,
+          state: "waiting-approval",
+        });
+      }
       const requestId = String(event.requestId);
       const lifecycleState = approvalThreadMessages.get(requestId) ?? {};
       const pendingMessagePromise = upsertApprovalLifecycleMessage({

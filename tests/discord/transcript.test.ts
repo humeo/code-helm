@@ -10,7 +10,7 @@ import {
 } from "../../src/discord/transcript";
 import type { CodexTurn } from "../../src/codex/protocol-types";
 
-test("does not duplicate Discord-originated user messages or surface commentary-only process output", () => {
+test("does not duplicate Discord-originated user messages and preserves commentary in the process transcript", () => {
   const turns: CodexTurn[] = [
     {
       id: "turn-1",
@@ -36,7 +36,14 @@ test("does not duplicate Discord-originated user messages or surface commentary-
     pendingDiscordInputs: ["Inspect the repo."],
   });
 
-  expect(entries).toEqual([]);
+  expect(entries).toEqual([
+    {
+      itemId: getProcessTranscriptEntryId("turn-1"),
+      kind: "process",
+      turnId: "turn-1",
+      steps: ["Reading the repository structure now."],
+    },
+  ]);
 });
 
 test("renders non-Discord input as a remote input card with explicit reply instructions", () => {
@@ -277,17 +284,35 @@ test("builds one Codex process message and one final reply for a completed turn"
 
   expect(entries).toEqual([
     {
+      itemId: getProcessTranscriptEntryId("turn-1"),
+      kind: "process",
+      turnId: "turn-1",
+      steps: [
+        "reading SKILL.md",
+        "RUN `bun test`",
+      ],
+    },
+    {
       itemId: getAssistantTranscriptEntryId("turn-1"),
       kind: "assistant",
       text: "OK",
     },
   ]);
   expect(renderTranscriptEntry(entries[0])).toEqual({
+    embeds: [
+      {
+        title: "Codex",
+        description: "reading SKILL.md\nRUN `bun test`",
+        color: 0x64748b,
+      },
+    ],
+  });
+  expect(renderTranscriptEntry(entries[1])).toEqual({
     content: "OK",
   });
 });
 
-test("commentary-only turns do not create a process transcript entry", () => {
+test("commentary-only turns preserve process history without fabricating a final reply", () => {
   const entries = collectTranscriptEntries(
     [
       {
@@ -308,7 +333,14 @@ test("commentary-only turns do not create a process transcript entry", () => {
     },
   );
 
-  expect(entries).toEqual([]);
+  expect(entries).toEqual([
+    {
+      itemId: getProcessTranscriptEntryId("turn-1"),
+      kind: "process",
+      turnId: "turn-1",
+      steps: ["reading README.md"],
+    },
+  ]);
 });
 
 test("active turn process footers stay on the last line", () => {
@@ -342,7 +374,18 @@ test("active turn process footers stay on the last line", () => {
     },
   );
 
-  expect(entries).toEqual([]);
+  expect(entries).toEqual([
+    {
+      itemId: getProcessTranscriptEntryId("turn-1"),
+      kind: "process",
+      turnId: "turn-1",
+      steps: [
+        "reading README.md",
+        "RUN `touch /tmp/README.md`",
+      ],
+      footer: waitingFooter,
+    },
+  ]);
 });
 
 test("failed command execution stays in the process card without a separate error bubble", () => {
@@ -369,7 +412,15 @@ test("failed command execution stays in the process card without a separate erro
     },
   );
 
-  expect(entries).toEqual([]);
+  expect(entries).toEqual([
+    {
+      itemId: getProcessTranscriptEntryId("turn-1"),
+      kind: "process",
+      turnId: "turn-1",
+      steps: ["RUN `npm test`"],
+      footer: "Command failed",
+    },
+  ]);
 });
 
 test("preserves process-before-final order without a separate failed-command bubble", () => {
@@ -409,9 +460,18 @@ test("preserves process-before-final order without a separate failed-command bub
   );
 
   expect(entries.map((entry) => entry.itemId)).toEqual([
+    getProcessTranscriptEntryId("turn-1"),
     getAssistantTranscriptEntryId("turn-1"),
   ]);
   expect(entries[0]).toMatchObject({
+    kind: "process",
+    steps: [
+      "reading package.json",
+      "RUN `npm test`",
+    ],
+    footer: "Command failed",
+  });
+  expect(entries[1]).toMatchObject({
     kind: "assistant",
     text: "Tests failed.",
   });
@@ -441,5 +501,12 @@ test("successful command execution contributes only to the process message", () 
     },
   );
 
-  expect(entries).toEqual([]);
+  expect(entries).toEqual([
+    {
+      itemId: getProcessTranscriptEntryId("turn-1"),
+      kind: "process",
+      turnId: "turn-1",
+      steps: ["RUN `ls`"],
+    },
+  ]);
 });

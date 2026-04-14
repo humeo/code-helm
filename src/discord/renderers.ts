@@ -141,7 +141,7 @@ export const renderSessionStartedPayload = ({
 
   return buildEmbedPayload({
     title: "Session started",
-    description: `Session: \`${workdirLabel}\`\n\nCodex thread: \`${codexThreadId}\``,
+    description: `Session: \`${workdirLabel}\`\nCodex thread: \`${codexThreadId}\``,
     color: startedNoticeColor,
   });
 };
