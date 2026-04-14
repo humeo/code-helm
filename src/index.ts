@@ -2274,7 +2274,7 @@ export const resolveResumeAttachmentKind = ({
   return "reuse";
 };
 
-const buildResumeSessionAutocompleteChoices = async ({
+export const buildResumeSessionAutocompleteChoices = async ({
   codexClient,
   query,
   workdirId,

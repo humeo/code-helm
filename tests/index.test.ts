@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
-import type { CodexThread, CodexThreadStatus } from "../src/codex/protocol-types";
+import type {
+  CodexThread,
+  CodexThreadStatus,
+  ThreadListParams,
+} from "../src/codex/protocol-types";
 import {
   applyManagedTurnCompletion,
   applyStatusCardUpdate,
@@ -39,6 +43,7 @@ import {
   upsertApprovalLifecycleMessage,
   upsertStreamingTranscriptMessage,
   canImportThreadIntoWorkdir,
+  buildResumeSessionAutocompleteChoices,
   describeCodexThreadStatus,
   type EditableStatusCardMessage,
   filterConfiguredWorkdirs,
@@ -241,48 +246,100 @@ test("resume picker threads sort by updatedAt, createdAt, then id", () => {
   ]);
 });
 
+test("resume session autocomplete pipeline scopes threads, sorts them, formats labels, and truncates to 25", async () => {
+  const calls: Array<Record<string, unknown>> = [];
+  const threads = [
+    createResumePickerThread({
+      id: "codex-thread-12345678901",
+      preview:
+        "This preview is intentionally long so the autocomplete helper has to " +
+        "truncate it before Discord rejects the choice label.",
+      updatedAt: 5_000,
+    }),
+    ...Array.from({ length: 26 }, (_, index) =>
+      createResumePickerThread({
+        id: `codex-thread-${String(index).padStart(2, "0")}`,
+        preview: `Preview ${index}`,
+        updatedAt: index,
+        createdAt: index,
+      })
+    ),
+  ];
+
+  const choices = await buildResumeSessionAutocompleteChoices({
+    codexClient: {
+      async listThreads(params: ThreadListParams) {
+        calls.push(params as Record<string, unknown>);
+        return {
+          data: threads,
+          nextCursor: null,
+        };
+      },
+    } as never,
+    query: "  plan  ",
+    workdirId: "api",
+    workdirs: [
+      {
+        id: "api",
+        label: "API",
+        absolutePath: "/tmp/workspace/api",
+      },
+    ],
+  });
+
+  expect(calls).toEqual([
+    {
+      cwd: "/tmp/workspace/api",
+      searchTerm: "plan",
+      limit: 25,
+    },
+  ]);
+  expect(choices).toHaveLength(25);
+  expect(choices[0]?.value).toBe("codex-thread-12345678901");
+  expect(choices[0]?.name.length).toBeLessThanOrEqual(100);
+  expect(choices[0]?.name.endsWith(" · …345678901")).toBe(true);
+  expect(choices.at(-1)?.value).toBe("codex-thread-02");
+});
+
 test("resume session autocomplete labels include status, preview or name, and a short thread id", () => {
   expect(
-    formatResumeSessionAutocompleteChoice({
+    formatResumeSessionAutocompleteChoice(createResumePickerThread({
       id: "codex-thread-123456789",
-      cwd: "/tmp/workspace/api",
       preview: "  Draft plan  ",
       name: "Ignored name",
       status: {
         type: "active",
         activeFlags: ["waitingOnApproval"],
       },
-    } as never),
+    })),
   ).toEqual({
     name: "active(waitingOnApproval) · Draft plan · …123456789",
     value: "codex-thread-123456789",
   });
 
   expect(
-    formatResumeSessionAutocompleteChoice({
+    formatResumeSessionAutocompleteChoice(createResumePickerThread({
       id: "codex-thread-000000002",
-      cwd: "/tmp/workspace/api",
       preview: "   ",
       name: "Named fallback",
       status: {
         type: "idle",
       },
-    } as never),
+    })),
   ).toEqual({
     name: "idle · Named fallback · …000000002",
     value: "codex-thread-000000002",
   });
 
-  const longChoice = formatResumeSessionAutocompleteChoice({
+  const longChoice = formatResumeSessionAutocompleteChoice(createResumePickerThread({
     id: "codex-thread-12345678901",
-    cwd: "/tmp/workspace/api",
     preview:
       "This preview is intentionally long so the autocomplete helper has to " +
       "truncate it before Discord rejects the choice label.",
     status: {
       type: "idle",
     },
-  } as never);
+  }));
 
   expect(longChoice.value).toBe("codex-thread-12345678901");
   expect(longChoice.name.length).toBeLessThanOrEqual(100);
