@@ -2164,10 +2164,13 @@ const findConfiguredWorkdir = (config: AppConfig, workdirId: string) => {
   return config.workdirs.find((workdir) => workdir.id === workdirId);
 };
 
-export const filterConfiguredWorkdirs = (config: AppConfig, query: string) => {
+export const filterConfiguredWorkdirs = (
+  workdirs: AppConfig["workdirs"],
+  query: string,
+) => {
   const normalizedQuery = query.trim().toLowerCase();
 
-  return config.workdirs
+  return workdirs
     .filter((workdir) => {
       if (!normalizedQuery) {
         return true;
@@ -2224,12 +2227,27 @@ const formatResumeThreadIdSuffix = (threadId: string) => {
 };
 
 export const formatResumeSessionAutocompleteChoice = (thread: CodexThread) => {
+  const statusText = describeCodexThreadStatus(thread.status);
+  const threadIdSuffix = formatResumeThreadIdSuffix(thread.id);
+  const maxNameLength = 100;
+  const separator = " · ";
+  const titlePrefix = `${statusText}${separator}`;
+  const titleSuffix = `${separator}${threadIdSuffix}`;
+  const maxTitleLength = maxNameLength - titlePrefix.length - titleSuffix.length;
+  const title = formatResumeThreadTitle(thread);
+  const safeTitle =
+    maxTitleLength <= 0
+      ? ""
+      : title.length <= maxTitleLength
+        ? title
+        : maxTitleLength === 1
+          ? "…"
+          : `${title.slice(0, maxTitleLength - 1)}…`;
+
   return {
-    name: [
-      describeCodexThreadStatus(thread.status),
-      formatResumeThreadTitle(thread),
-      formatResumeThreadIdSuffix(thread.id),
-    ].join(" · "),
+    name: safeTitle.length > 0
+      ? `${titlePrefix}${safeTitle}${titleSuffix}`
+      : `${statusText}${titleSuffix}`,
     value: thread.id,
   };
 };
@@ -3379,7 +3397,7 @@ export const startCodeHelm = async (
         return [];
       }
 
-      return filterConfiguredWorkdirs(config, query);
+      return filterConfiguredWorkdirs(config.workdirs, query);
     },
     async autocompleteResumeSessions({
       guildId,

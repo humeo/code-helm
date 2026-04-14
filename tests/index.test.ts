@@ -175,20 +175,18 @@ test("import also requires the selected workdir to match the thread cwd", () => 
 test("configured workdir autocomplete choices are sourced from daemon config", () => {
   expect(
     filterConfiguredWorkdirs(
-      {
-        workdirs: [
-          {
-            id: "example",
-            label: "Code Agent Helm Example",
-            absolutePath: "/tmp/workspace/example",
-          },
-          {
-            id: "web",
-            label: "Web App",
-            absolutePath: "/tmp/workspace/web",
-          },
-        ],
-      } as never,
+      [
+        {
+          id: "example",
+          label: "Code Agent Helm Example",
+          absolutePath: "/tmp/workspace/example",
+        },
+        {
+          id: "web",
+          label: "Web App",
+          absolutePath: "/tmp/workspace/web",
+        },
+      ],
       "exa",
     ),
   ).toEqual([
@@ -274,6 +272,22 @@ test("resume session autocomplete labels include status, preview or name, and a 
     name: "idle · Named fallback · …000000002",
     value: "codex-thread-000000002",
   });
+
+  const longChoice = formatResumeSessionAutocompleteChoice({
+    id: "codex-thread-12345678901",
+    cwd: "/tmp/workspace/api",
+    preview:
+      "This preview is intentionally long so the autocomplete helper has to " +
+      "truncate it before Discord rejects the choice label.",
+    status: {
+      type: "idle",
+    },
+  } as never);
+
+  expect(longChoice.value).toBe("codex-thread-12345678901");
+  expect(longChoice.name.length).toBeLessThanOrEqual(100);
+  expect(longChoice.name.startsWith("idle · ")).toBe(true);
+  expect(longChoice.name.endsWith(" · …345678901")).toBe(true);
 });
 
 test("resume attachment resolution distinguishes reuse, reopen, rebind, and create", () => {
