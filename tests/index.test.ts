@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import type { CodexThreadStatus } from "../src/codex/protocol-types";
+import type { CodexThread, CodexThreadStatus } from "../src/codex/protocol-types";
 import {
   applyManagedTurnCompletion,
   applyStatusCardUpdate,
@@ -41,10 +41,13 @@ import {
   canImportThreadIntoWorkdir,
   describeCodexThreadStatus,
   type EditableStatusCardMessage,
+  filterConfiguredWorkdirs,
   findReusableStatusCardMessage,
   inferSessionStateFromThreadStatus,
   isImportableThreadStatus,
+  formatResumeSessionAutocompleteChoice,
   recoverStatusCardMessageFromHistory,
+  resolveResumeAttachmentKind,
   shouldPollSnapshotForSessionState,
   shouldDegradeForSnapshotMismatch,
   shouldHoldSnapshotTranscriptForManualSync,
@@ -60,6 +63,7 @@ import {
   renderLiveTurnProcessMessage,
   seedTranscriptRuntimeSeenItemsFromSnapshot,
   noteTrustedLiveExternalTurnStart,
+  sortResumePickerThreads,
 } from "../src/index";
 import { renderStatusCardText } from "../src/discord/renderers";
 import {
@@ -99,6 +103,18 @@ const createThreadReadResult = ({
     status,
     turns,
   },
+});
+
+const createResumePickerThread = (
+  overrides: Partial<CodexThread> = {},
+): CodexThread => ({
+  id: "codex-thread-1",
+  cwd: "/tmp/workspace/api",
+  preview: "",
+  status: { type: "idle" },
+  createdAt: 1_000,
+  updatedAt: 1_000,
+  ...overrides,
 });
 
 test("import eligibility only allows idle and notLoaded threads", () => {
@@ -154,6 +170,146 @@ test("import also requires the selected workdir to match the thread cwd", () => 
       "/tmp/workspace/api",
     ),
   ).toBe(false);
+});
+
+test("configured workdir autocomplete choices are sourced from daemon config", () => {
+  expect(
+    filterConfiguredWorkdirs(
+      {
+        workdirs: [
+          {
+            id: "example",
+            label: "Code Agent Helm Example",
+            absolutePath: "/tmp/workspace/example",
+          },
+          {
+            id: "web",
+            label: "Web App",
+            absolutePath: "/tmp/workspace/web",
+          },
+        ],
+      } as never,
+      "exa",
+    ),
+  ).toEqual([
+    {
+      name: "Code Agent Helm Example (example)",
+      value: "example",
+    },
+  ]);
+});
+
+test("resume picker threads sort by updatedAt, createdAt, then id", () => {
+  const oldest = createResumePickerThread({
+    id: "thread-e",
+    createdAt: 1_000,
+    updatedAt: 1_000,
+  });
+  const sameUpdatedOlderCreated = createResumePickerThread({
+    id: "thread-c",
+    createdAt: 2_000,
+    updatedAt: 3_000,
+  });
+  const sameUpdatedNewerCreated = createResumePickerThread({
+    id: "thread-d",
+    createdAt: 3_000,
+    updatedAt: 3_000,
+  });
+  const sameTimestampsEarlierId = createResumePickerThread({
+    id: "thread-a",
+    createdAt: 4_000,
+    updatedAt: 4_000,
+  });
+  const sameTimestampsLaterId = createResumePickerThread({
+    id: "thread-b",
+    createdAt: 4_000,
+    updatedAt: 4_000,
+  });
+
+  expect(
+    sortResumePickerThreads([
+      oldest,
+      sameUpdatedOlderCreated,
+      sameUpdatedNewerCreated,
+      sameTimestampsLaterId,
+      sameTimestampsEarlierId,
+    ]).map((thread) => thread.id),
+  ).toEqual([
+    "thread-a",
+    "thread-b",
+    "thread-d",
+    "thread-c",
+    "thread-e",
+  ]);
+});
+
+test("resume session autocomplete labels include status, preview or name, and a short thread id", () => {
+  expect(
+    formatResumeSessionAutocompleteChoice({
+      id: "codex-thread-123456789",
+      cwd: "/tmp/workspace/api",
+      preview: "  Draft plan  ",
+      name: "Ignored name",
+      status: {
+        type: "active",
+        activeFlags: ["waitingOnApproval"],
+      },
+    } as never),
+  ).toEqual({
+    name: "active(waitingOnApproval) · Draft plan · …123456789",
+    value: "codex-thread-123456789",
+  });
+
+  expect(
+    formatResumeSessionAutocompleteChoice({
+      id: "codex-thread-000000002",
+      cwd: "/tmp/workspace/api",
+      preview: "   ",
+      name: "Named fallback",
+      status: {
+        type: "idle",
+      },
+    } as never),
+  ).toEqual({
+    name: "idle · Named fallback · …000000002",
+    value: "codex-thread-000000002",
+  });
+});
+
+test("resume attachment resolution distinguishes reuse, reopen, rebind, and create", () => {
+  expect(
+    resolveResumeAttachmentKind({
+      existingSession: {
+        lifecycleState: "active",
+      } as never,
+      discordThreadUsable: true,
+    }),
+  ).toBe("reuse");
+
+  expect(
+    resolveResumeAttachmentKind({
+      existingSession: {
+        lifecycleState: "archived",
+      } as never,
+      discordThreadUsable: true,
+    }),
+  ).toBe("reopen");
+
+  expect(
+    resolveResumeAttachmentKind({
+      existingSession: {
+        lifecycleState: "deleted",
+      } as never,
+      discordThreadUsable: false,
+    }),
+  ).toBe("rebind");
+
+  expect(
+    resolveResumeAttachmentKind({
+      existingSession: null,
+      discordThreadUsable: true,
+    }),
+  ).toBe("create");
 });
 
 test("status descriptions stay readable in Discord output", () => {

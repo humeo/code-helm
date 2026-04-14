@@ -2164,7 +2164,7 @@ const findConfiguredWorkdir = (config: AppConfig, workdirId: string) => {
   return config.workdirs.find((workdir) => workdir.id === workdirId);
 };
 
-const filterConfiguredWorkdirs = (config: AppConfig, query: string) => {
+export const filterConfiguredWorkdirs = (config: AppConfig, query: string) => {
   const normalizedQuery = query.trim().toLowerCase();
 
   return config.workdirs
@@ -2186,30 +2186,74 @@ const filterConfiguredWorkdirs = (config: AppConfig, query: string) => {
     }));
 };
 
-const formatSessionAutocompleteChoice = (thread: {
-  id: string;
-  preview?: string;
-}) => {
-  const label = thread.preview?.trim();
+export const sortResumePickerThreads = (threads: CodexThread[]) => {
+  return [...threads].sort((left, right) => {
+    const leftUpdatedAt = left.updatedAt ?? Number.NEGATIVE_INFINITY;
+    const rightUpdatedAt = right.updatedAt ?? Number.NEGATIVE_INFINITY;
 
-  if (!label) {
-    return {
-      name: thread.id,
-      value: thread.id,
-    };
+    if (leftUpdatedAt !== rightUpdatedAt) {
+      return rightUpdatedAt - leftUpdatedAt;
+    }
+
+    const leftCreatedAt = left.createdAt ?? Number.NEGATIVE_INFINITY;
+    const rightCreatedAt = right.createdAt ?? Number.NEGATIVE_INFINITY;
+
+    if (leftCreatedAt !== rightCreatedAt) {
+      return rightCreatedAt - leftCreatedAt;
+    }
+
+    return left.id.localeCompare(right.id);
+  });
+};
+
+const formatResumeThreadTitle = (thread: CodexThread) => {
+  const preview = thread.preview.trim();
+  const name = typeof thread.name === "string" ? thread.name.trim() : "";
+
+  return preview || name || thread.id;
+};
+
+const formatResumeThreadIdSuffix = (threadId: string) => {
+  const shortIdLength = 9;
+
+  if (threadId.length <= shortIdLength) {
+    return threadId;
   }
 
-  const suffix = ` — ${label}`;
-  const maxNameLength = 100;
-  const baseLength = maxNameLength - suffix.length;
+  return `…${threadId.slice(-shortIdLength)}`;
+};
 
+export const formatResumeSessionAutocompleteChoice = (thread: CodexThread) => {
   return {
-    name:
-      baseLength > 0
-        ? `${thread.id.slice(0, baseLength)}${suffix}`
-        : thread.id,
+    name: [
+      describeCodexThreadStatus(thread.status),
+      formatResumeThreadTitle(thread),
+      formatResumeThreadIdSuffix(thread.id),
+    ].join(" · "),
     value: thread.id,
   };
+};
+
+export const resolveResumeAttachmentKind = ({
+  existingSession,
+  discordThreadUsable,
+}: {
+  existingSession: { lifecycleState: SessionLifecycleState } | null;
+  discordThreadUsable: boolean;
+}) => {
+  if (!existingSession) {
+    return "create";
+  }
+
+  if (!discordThreadUsable || existingSession.lifecycleState === "deleted") {
+    return "rebind";
+  }
+
+  if (existingSession.lifecycleState === "archived") {
+    return "reopen";
+  }
+
+  return "reuse";
 };
 
 const buildResumeSessionAutocompleteChoices = async ({
@@ -2239,7 +2283,9 @@ const buildResumeSessionAutocompleteChoices = async ({
     limit: 25,
   });
 
-  return result.data.slice(0, 25).map(formatSessionAutocompleteChoice);
+  return sortResumePickerThreads(result.data)
+    .slice(0, 25)
+    .map(formatResumeSessionAutocompleteChoice);
 };
 
 const registerGuildCommands = async (
