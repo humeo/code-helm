@@ -3354,22 +3354,11 @@ export const startCodeHelm = async (
         workdirs: config.workdirs,
       });
     },
-    async resumeSession({ actorId, guildId, channelId, workdirId, codexThreadId }) {
+    async resumeSession({ actorId, guildId, channelId, workdirId: _workdirId, codexThreadId }) {
       const contextError = requireConfiguredControlChannel(config, guildId, channelId);
 
       if (contextError) {
         return contextError;
-      }
-
-      const workdir = findConfiguredWorkdir(config, workdirId);
-
-      if (!workdir) {
-        return {
-          reply: {
-            content: `Unknown workdir \`${workdirId}\`.`,
-            ephemeral: true,
-          },
-        };
       }
 
       const session = sessionRepo.getByCodexThreadId(codexThreadId);
@@ -3381,17 +3370,6 @@ export const startCodeHelm = async (
 
       if (!session) {
         return validation;
-      }
-
-      if (session.workdirId !== workdir.id) {
-        return {
-          reply: {
-            content:
-              `Session \`${codexThreadId}\` belongs to workdir \`${session.workdirId}\`, ` +
-              `not \`${workdir.id}\`.`,
-            ephemeral: true,
-          },
-        };
       }
 
       if (
