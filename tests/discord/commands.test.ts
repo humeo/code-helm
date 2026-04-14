@@ -18,30 +18,24 @@ const okResult = (
 
 const createServices = () => {
   const calls = {
-    listWorkdirs: [] as Array<Record<string, string>>,
     createSession: [] as Array<Record<string, string>>,
-    importSession: [] as Array<Record<string, string>>,
-    listSessions: [] as Array<Record<string, string>>,
     closeSession: [] as Array<Record<string, string>>,
     syncSession: [] as Array<Record<string, string>>,
     resumeSession: [] as Array<Record<string, string>>,
   };
 
   const services: DiscordCommandServices = {
-    listWorkdirs(input) {
-      calls.listWorkdirs.push(input);
+    listWorkdirs() {
       return okResult("workdirs");
     },
     createSession(input) {
       calls.createSession.push(input);
       return okResult("session created");
     },
-    importSession(input) {
-      calls.importSession.push(input);
+    importSession() {
       return okResult("session imported");
     },
-    listSessions(input) {
-      calls.listSessions.push(input);
+    listSessions() {
       return okResult("sessions");
     },
     closeSession(input) {
@@ -110,28 +104,7 @@ const createInteraction = ({
   };
 };
 
-test("/workdir-list delegates to listWorkdirs", async () => {
-  const { calls, services } = createServices();
-  const { interaction, replies, followsUps, defers } = createInteraction({
-    commandName: "workdir-list",
-  });
-
-  const handled = await handleControlChannelCommand(interaction as never, services);
-
-  expect(handled).toBe(true);
-  expect(calls.listWorkdirs).toEqual([
-    {
-      actorId: "u1",
-      guildId: "g1",
-      channelId: "c1",
-    },
-  ]);
-  expect(defers).toEqual([null]);
-  expect(replies).toEqual([]);
-  expect(followsUps).toEqual([{ content: "workdirs" }]);
-});
-
-test("/session-new extracts the workdir option correctly", async () => {
+test("/session-new delegates with the configured workdir", async () => {
   const { calls, services } = createServices();
   const { interaction, replies, followsUps, defers } = createInteraction({
     commandName: "session-new",
@@ -154,28 +127,7 @@ test("/session-new extracts the workdir option correctly", async () => {
   expect(followsUps).toEqual([{ content: "session created" }]);
 });
 
-test("/session-list defers before replying", async () => {
-  const { calls, services } = createServices();
-  const { interaction, replies, followsUps, defers } = createInteraction({
-    commandName: "session-list",
-  });
-
-  const handled = await handleControlChannelCommand(interaction as never, services);
-
-  expect(handled).toBe(true);
-  expect(calls.listSessions).toEqual([
-    {
-      actorId: "u1",
-      guildId: "g1",
-      channelId: "c1",
-    },
-  ]);
-  expect(defers).toEqual([null]);
-  expect(replies).toEqual([]);
-  expect(followsUps).toEqual([{ content: "sessions" }]);
-});
-
-test("command registration includes configured workdir choices for create/import", () => {
+test("command registration removes deprecated command names and keeps session-new workdir choices", () => {
   const commandsByName = new Map(
     buildControlChannelCommands([
       {
@@ -188,6 +140,10 @@ test("command registration includes configured workdir choices for create/import
       },
     ]).map((command) => [command.name, command]),
   );
+
+  expect(commandsByName.has("workdir-list")).toBe(false);
+  expect(commandsByName.has("session-list")).toBe(false);
+  expect(commandsByName.has("session-import")).toBe(false);
 
   expect(commandsByName.get("session-new")?.options).toEqual([
     {
@@ -207,34 +163,9 @@ test("command registration includes configured workdir choices for create/import
       ],
     },
   ]);
-
-  expect(commandsByName.get("session-import")?.options).toEqual([
-    {
-      type: 3,
-      name: "workdir",
-      description: "Configured workdir identifier",
-      required: true,
-      choices: [
-        {
-          name: "Code Agent Helm Example (example)",
-          value: "example",
-        },
-        {
-          name: "Web App (web)",
-          value: "web",
-        },
-      ],
-    },
-    {
-      type: 3,
-      name: "session",
-      description: "Codex session identifier to import",
-      required: true,
-    },
-  ]);
 });
 
-test("command registration includes session-close, session-sync, and session-resume", () => {
+test("command registration locks /session-resume to workdir and session autocomplete", () => {
   const commandsByName = new Map(
     controlChannelCommands.map((command) => [command.name, command]),
   );
@@ -246,9 +177,17 @@ test("command registration includes session-close, session-sync, and session-res
   expect(commandsByName.get("session-resume")?.options).toEqual([
     {
       type: 3,
-      name: "session",
-      description: "Managed Codex thread identifier to resume",
+      name: "workdir",
+      description: "Configured workdir identifier",
       required: true,
+      autocomplete: true,
+    },
+    {
+      type: 3,
+      name: "session",
+      description: "Codex session identifier to attach",
+      required: true,
+      autocomplete: true,
     },
   ]);
 });
@@ -297,11 +236,11 @@ test("/session-sync defers and delegates using the current thread context", asyn
   expect(followsUps).toEqual([{ content: "session synced" }]);
 });
 
-test("/session-resume extracts the managed session id, defers, and delegates", async () => {
+test("/session-resume extracts workdir and session, defers, and delegates", async () => {
   const { calls, services } = createServices();
   const { interaction, replies, followsUps, defers } = createInteraction({
     commandName: "session-resume",
-    options: { session: "codex-thread-7" },
+    options: { workdir: "example", session: "codex-thread-7" },
   });
 
   const handled = await handleControlChannelCommand(interaction as never, services);
@@ -312,6 +251,7 @@ test("/session-resume extracts the managed session id, defers, and delegates", a
       actorId: "u1",
       guildId: "g1",
       channelId: "c1",
+      workdirId: "example",
       codexThreadId: "codex-thread-7",
     },
   ]);
@@ -331,10 +271,7 @@ test("unknown commands return unhandled without requiring guild context", async 
 
   expect(handled).toBe(false);
   expect(calls).toEqual({
-    listWorkdirs: [],
     createSession: [],
-    importSession: [],
-    listSessions: [],
     closeSession: [],
     syncSession: [],
     resumeSession: [],
