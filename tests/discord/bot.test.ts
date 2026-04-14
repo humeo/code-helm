@@ -78,6 +78,7 @@ test("createDiscordBot routes autocomplete interactions to the autocomplete hand
     resolveResponded = resolve;
   });
   const interaction = {
+    commandName: "session-resume",
     isChatInputCommand() {
       return false;
     },
