@@ -2707,7 +2707,7 @@ export const startCodeHelm = async (
         turns,
         degradeOnUnexpectedItems,
       })
-      && shouldDegradeDiscordToReadOnly({ controlSurface: "unknown" })
+      && shouldDegradeDiscordToReadOnly({ controlSurface: "codex-remote" })
     ) {
       await degradeSessionToReadOnly({
         discord,
@@ -2963,8 +2963,6 @@ export const startCodeHelm = async (
     session: NonNullable<ReturnType<typeof sessionRepo.getByCodexThreadId>>,
   ) => {
     const discord = requireDiscordClient(discordClient);
-    const runtime = ensureTranscriptRuntime(session.codexThreadId);
-    runtime.pendingDiscordInputs = [];
 
     return syncManagedSession({
       session,
@@ -2979,7 +2977,7 @@ export const startCodeHelm = async (
         return shouldDegradeForSnapshotMismatch({
             runtime,
             turns: snapshot.thread.turns,
-          }) && shouldDegradeDiscordToReadOnly({ controlSurface: "unknown" })
+          }) && shouldDegradeDiscordToReadOnly({ controlSurface: "codex-remote" })
           ? "snapshot_mismatch"
           : null;
       },
