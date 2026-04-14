@@ -4,6 +4,8 @@ import type {
   CodexThreadStatus,
   ThreadListParams,
 } from "../src/codex/protocol-types";
+import type { AppConfig } from "../src/config";
+import type { SessionResumeState } from "../src/domain/types";
 import {
   applyManagedTurnCompletion,
   applyStatusCardUpdate,
@@ -11,8 +13,8 @@ import {
   closeManagedSession,
   reconcileResumedApprovalState,
   reconcileApprovalResolutionSurface,
+  createControlChannelServices,
   resolveCloseSessionCommand,
-  resolveResumeSessionCommand,
   resolveSyncSessionCommand,
   describeSessionAccessMode,
   formatManagedSessionList,
@@ -42,14 +44,12 @@ import {
   syncManagedSession,
   upsertApprovalLifecycleMessage,
   upsertStreamingTranscriptMessage,
-  canImportThreadIntoWorkdir,
   buildResumeSessionAutocompleteChoices,
   describeCodexThreadStatus,
   type EditableStatusCardMessage,
   filterConfiguredWorkdirs,
   findReusableStatusCardMessage,
   inferSessionStateFromThreadStatus,
-  isImportableThreadStatus,
   formatResumeSessionAutocompleteChoice,
   recoverStatusCardMessageFromHistory,
   resolveResumeAttachmentKind,
@@ -77,7 +77,10 @@ import {
   getUserTranscriptEntryId,
 } from "../src/discord/transcript";
 import type { CodexTurn } from "../src/codex/protocol-types";
-import type { SessionRecord } from "../src/db/repos/sessions";
+import type {
+  InsertSessionInput,
+  SessionRecord,
+} from "../src/db/repos/sessions";
 
 const createSessionRecord = (
   overrides: Partial<SessionRecord> = {},
@@ -122,20 +125,6 @@ const createResumePickerThread = (
   ...overrides,
 });
 
-test("import eligibility only allows idle and notLoaded threads", () => {
-  const cases: Array<[CodexThreadStatus, boolean]> = [
-    [{ type: "idle" }, true],
-    [{ type: "notLoaded" }, true],
-    [{ type: "systemError" }, false],
-    [{ type: "active", activeFlags: [] }, false],
-    [{ type: "active", activeFlags: ["waitingOnApproval"] }, false],
-  ];
-
-  for (const [status, expected] of cases) {
-    expect(isImportableThreadStatus(status)).toBe(expected);
-  }
-});
-
 test("thread statuses map into Discord session runtime states", () => {
   expect(inferSessionStateFromThreadStatus({ type: "idle" })).toBe("idle");
   expect(inferSessionStateFromThreadStatus({ type: "notLoaded" })).toBe("idle");
@@ -156,26 +145,288 @@ test("thread statuses map into Discord session runtime states", () => {
   );
 });
 
-test("import also requires the selected workdir to match the thread cwd", () => {
-  expect(
-    canImportThreadIntoWorkdir(
-      {
-        cwd: "/tmp/workspace/api",
-        status: { type: "idle" },
-      },
-      "/tmp/workspace/api",
-    ),
-  ).toBe(true);
-  expect(
-    canImportThreadIntoWorkdir(
-      {
-        cwd: "/tmp/workspace/web",
-        status: { type: "idle" },
-      },
-      "/tmp/workspace/api",
-    ),
-  ).toBe(false);
+const createAppConfig = (): AppConfig => ({
+  DISCORD_APP_ID: "app-1",
+  discord: {
+    botToken: "token-1",
+    appId: "app-1",
+    guildId: "guild-1",
+    controlChannelId: "control-1",
+  },
+  codex: {
+    appServerUrl: "ws://localhost:7777/codex",
+  },
+  databasePath: ":memory:",
+  workspace: {
+    id: "workspace-1",
+    name: "Workspace",
+    rootPath: "/tmp/workspace",
+  },
+  workdirs: [
+    {
+      id: "api",
+      label: "API",
+      absolutePath: "/tmp/workspace/api",
+    },
+  ],
 });
+
+const createResumeOutcome = (
+  kind: SessionResumeState["kind"],
+): SessionResumeState => {
+  switch (kind) {
+    case "ready":
+      return {
+        kind: "ready",
+        session: {
+          lifecycleState: "active",
+          runtimeState: "idle",
+          accessMode: "writable",
+        },
+        persistedRuntimeState: "idle",
+        statusCardState: "idle",
+      };
+    case "busy":
+      return {
+        kind: "busy",
+        session: {
+          lifecycleState: "active",
+          runtimeState: "running",
+          accessMode: "writable",
+        },
+        persistedRuntimeState: "running",
+        statusCardState: "running",
+      };
+    case "read-only":
+      return {
+        kind: "read-only",
+        session: {
+          lifecycleState: "active",
+          runtimeState: "idle",
+          accessMode: "read-only",
+        },
+        persistedRuntimeState: "degraded",
+        statusCardState: undefined,
+      };
+    case "error":
+      return {
+        kind: "error",
+        session: {
+          lifecycleState: "active",
+          runtimeState: "error",
+          accessMode: "read-only",
+        },
+        persistedRuntimeState: "degraded",
+        statusCardState: undefined,
+      };
+    case "untrusted":
+      return {
+        kind: "untrusted",
+        reason: "sync_state_untrusted",
+      };
+  }
+};
+
+const createControlChannelServicesFixture = ({
+  existingSession,
+  discordThreadUsable = true,
+  readThreadStatus = { type: "idle" } satisfies CodexThreadStatus,
+  readThreadCwd = "/tmp/workspace/api",
+  syncOutcome = createResumeOutcome("ready"),
+  resumeOutcome = createResumeOutcome("ready"),
+}: {
+  existingSession?: SessionRecord | null;
+  discordThreadUsable?: boolean;
+  readThreadStatus?: CodexThreadStatus;
+  readThreadCwd?: string;
+  syncOutcome?: SessionResumeState;
+  resumeOutcome?: SessionResumeState;
+} = {}) => {
+  const config = createAppConfig();
+  const sessionRecords = new Map<string, SessionRecord>();
+  const codexThreadToDiscordThread = new Map<string, string>();
+  const calls = {
+    ensureTranscriptRuntime: [] as string[],
+    createVisibleSessionThread: [] as Array<{
+      title: string;
+      starterText: string;
+    }>,
+    threadMessages: [] as Array<{
+      threadId: string;
+      payload: unknown;
+    }>,
+    insertedSessions: [] as Array<{
+      discordThreadId: string;
+      codexThreadId: string;
+      ownerDiscordUserId: string;
+      workdirId: string;
+      state: string;
+    }>,
+    reboundThreads: [] as Array<{
+      currentDiscordThreadId: string;
+      nextDiscordThreadId: string;
+    }>,
+    lifecycleUpdates: [] as Array<{
+      discordThreadId: string;
+      lifecycleState: SessionRecord["lifecycleState"];
+    }>,
+    syncedThreads: [] as string[],
+    resumedThreads: [] as string[],
+    sentTexts: [] as Array<{
+      channelId: string;
+      content: string;
+    }>,
+    readThreadIds: [] as string[],
+    usabilityChecks: [] as string[],
+  };
+
+  if (existingSession) {
+    sessionRecords.set(existingSession.discordThreadId, existingSession);
+    codexThreadToDiscordThread.set(
+      existingSession.codexThreadId,
+      existingSession.discordThreadId,
+    );
+  }
+
+  let nextThreadId = 1;
+
+  const services = createControlChannelServices({
+    config,
+    codexClient: {
+      async startThread() {
+        return {
+          thread: createResumePickerThread(),
+          cwd: "/tmp/workspace/api",
+        };
+      },
+      async listThreads() {
+        return {
+          data: [],
+          nextCursor: null,
+        };
+      },
+    } as never,
+    sessionRepo: {
+      getByDiscordThreadId(discordThreadId: string) {
+        return sessionRecords.get(discordThreadId) ?? null;
+      },
+      getByCodexThreadId(codexThreadId: string) {
+        const discordThreadId = codexThreadToDiscordThread.get(codexThreadId);
+        return discordThreadId
+          ? sessionRecords.get(discordThreadId) ?? null
+          : null;
+      },
+      insert(input: InsertSessionInput) {
+        calls.insertedSessions.push(input);
+        const inserted = createSessionRecord({
+          discordThreadId: input.discordThreadId,
+          codexThreadId: input.codexThreadId,
+          ownerDiscordUserId: input.ownerDiscordUserId,
+          workdirId: input.workdirId,
+          state: input.state,
+          lifecycleState: "active",
+        });
+        sessionRecords.set(inserted.discordThreadId, inserted);
+        codexThreadToDiscordThread.set(inserted.codexThreadId, inserted.discordThreadId);
+      },
+      updateLifecycleState(
+        discordThreadId: string,
+        lifecycleState: SessionRecord["lifecycleState"],
+      ) {
+        calls.lifecycleUpdates.push({ discordThreadId, lifecycleState });
+        const current = sessionRecords.get(discordThreadId);
+
+        if (!current) {
+          throw new Error(`Missing session for ${discordThreadId}`);
+        }
+
+        sessionRecords.set(discordThreadId, {
+          ...current,
+          lifecycleState,
+        });
+      },
+      rebindDiscordThread(input: {
+        currentDiscordThreadId: string;
+        nextDiscordThreadId: string;
+      }) {
+        calls.reboundThreads.push(input);
+        const current = sessionRecords.get(input.currentDiscordThreadId);
+
+        if (!current) {
+          throw new Error(`Missing session for ${input.currentDiscordThreadId}`);
+        }
+
+        sessionRecords.delete(input.currentDiscordThreadId);
+        sessionRecords.set(input.nextDiscordThreadId, {
+          ...current,
+          discordThreadId: input.nextDiscordThreadId,
+        });
+        codexThreadToDiscordThread.set(current.codexThreadId, input.nextDiscordThreadId);
+      },
+    } as never,
+    getDiscordClient: () => ({ id: "discord-client" }) as never,
+    createVisibleSessionThread: async ({ title, starterText }) => {
+      calls.createVisibleSessionThread.push({ title, starterText });
+      const threadId = `discord-thread-new-${nextThreadId++}`;
+
+      return {
+        id: threadId,
+        async send(payload: unknown) {
+          calls.threadMessages.push({ threadId, payload });
+          return undefined as never;
+        },
+        async delete() {
+          return undefined as never;
+        },
+      };
+    },
+    ensureTranscriptRuntime: (codexThreadId) => {
+      calls.ensureTranscriptRuntime.push(codexThreadId);
+    },
+    updateStatusCard: async () => {},
+    closeManagedSession: async () => {},
+    syncManagedSessionIntoDiscordThread: async (session) => {
+      calls.syncedThreads.push(session.discordThreadId);
+      return syncOutcome;
+    },
+    resumeManagedSessionIntoDiscordThread: async (session) => {
+      calls.resumedThreads.push(session.discordThreadId);
+      return resumeOutcome;
+    },
+    sendTextToChannel: async (_client, channelId, content) => {
+      calls.sentTexts.push({
+        channelId,
+        content: typeof content === "string" ? content : content.content ?? "",
+      });
+      return undefined;
+    },
+    isManagedDiscordThreadUsable: async ({ threadId }) => {
+      calls.usabilityChecks.push(threadId);
+      return discordThreadUsable;
+    },
+    readThreadForSnapshotReconciliation: async ({ threadId }) => {
+      calls.readThreadIds.push(threadId);
+      return {
+        thread: createResumePickerThread({
+          id: threadId,
+          cwd: readThreadCwd,
+          status: readThreadStatus,
+        }),
+      };
+    },
+  });
+
+  return {
+    services,
+    calls,
+    getSessionByCodexThreadId(codexThreadId: string) {
+      const discordThreadId = codexThreadToDiscordThread.get(codexThreadId);
+      return discordThreadId
+        ? sessionRecords.get(discordThreadId) ?? null
+        : null;
+    },
+  };
+};
 
 test("configured workdir autocomplete choices are sourced from daemon config", () => {
   expect(
@@ -290,14 +541,11 @@ test("resume session autocomplete pipeline scopes threads, sorts them, formats l
       },
     } as never,
     query: "  plan  ",
-    workdirId: "api",
-    workdirs: [
-      {
-        id: "api",
-        label: "API",
-        absolutePath: "/tmp/workspace/api",
-      },
-    ],
+    workdir: {
+      id: "api",
+      label: "API",
+      absolutePath: "/tmp/workspace/api",
+    },
   });
 
   expect(calls).toEqual([
@@ -402,6 +650,208 @@ test("resume attachment resolution distinguishes reuse, reopen, rebind, and crea
   ).toBe("create");
 });
 
+test("unmanaged session with matching workdir creates a new Discord thread and session row", async () => {
+  const { services, calls, getSessionByCodexThreadId } = createControlChannelServicesFixture();
+
+  const result = await services.resumeSession({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
+    workdirId: "api",
+    codexThreadId: "codex-thread-1",
+  });
+
+  expect(calls.readThreadIds).toEqual(["codex-thread-1"]);
+  expect(calls.createVisibleSessionThread).toHaveLength(1);
+  expect(calls.insertedSessions).toEqual([
+    {
+      discordThreadId: "discord-thread-new-1",
+      codexThreadId: "codex-thread-1",
+      ownerDiscordUserId: "owner-1",
+      workdirId: "api",
+      state: "idle",
+    },
+  ]);
+  expect(calls.syncedThreads).toEqual(["discord-thread-new-1"]);
+  expect(getSessionByCodexThreadId("codex-thread-1")).toMatchObject({
+    discordThreadId: "discord-thread-new-1",
+    codexThreadId: "codex-thread-1",
+    ownerDiscordUserId: "owner-1",
+    workdirId: "api",
+  });
+  expect(result).toEqual({
+    reply: {
+      content: "Attached session <#discord-thread-new-1>. Session is writable.",
+    },
+  });
+});
+
+test("archived managed session syncs and reopens the same Discord thread", async () => {
+  const { services, calls } = createControlChannelServicesFixture({
+    existingSession: createSessionRecord({
+      discordThreadId: "discord-thread-archived",
+      lifecycleState: "archived",
+    }),
+  });
+
+  const result = await services.resumeSession({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
+    workdirId: "api",
+    codexThreadId: "codex-thread-1",
+  });
+
+  expect(calls.usabilityChecks).toEqual(["discord-thread-archived"]);
+  expect(calls.createVisibleSessionThread).toHaveLength(0);
+  expect(calls.resumedThreads).toEqual(["discord-thread-archived"]);
+  expect(calls.syncedThreads).toEqual([]);
+  expect(result).toEqual({
+    reply: {
+      content: "Attached session <#discord-thread-archived>. Session is writable.",
+    },
+  });
+});
+
+test("active managed session reuses the existing Discord thread instead of creating a duplicate", async () => {
+  const { services, calls } = createControlChannelServicesFixture({
+    existingSession: createSessionRecord({
+      discordThreadId: "discord-thread-active",
+      lifecycleState: "active",
+    }),
+  });
+
+  const result = await services.resumeSession({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
+    workdirId: "api",
+    codexThreadId: "codex-thread-1",
+  });
+
+  expect(calls.usabilityChecks).toEqual(["discord-thread-active"]);
+  expect(calls.createVisibleSessionThread).toHaveLength(0);
+  expect(calls.syncedThreads).toEqual(["discord-thread-active"]);
+  expect(calls.resumedThreads).toEqual([]);
+  expect(result).toEqual({
+    reply: {
+      content: "Attached session <#discord-thread-active>. Session is writable.",
+    },
+  });
+});
+
+test("deleted or unusable managed thread creates a replacement Discord thread through rebindDiscordThread", async () => {
+  const { services, calls, getSessionByCodexThreadId } = createControlChannelServicesFixture({
+    existingSession: createSessionRecord({
+      discordThreadId: "discord-thread-deleted",
+      lifecycleState: "deleted",
+    }),
+    discordThreadUsable: false,
+  });
+
+  const result = await services.resumeSession({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
+    workdirId: "api",
+    codexThreadId: "codex-thread-1",
+  });
+
+  expect(calls.usabilityChecks).toEqual(["discord-thread-deleted"]);
+  expect(calls.createVisibleSessionThread).toHaveLength(1);
+  expect(calls.reboundThreads).toEqual([
+    {
+      currentDiscordThreadId: "discord-thread-deleted",
+      nextDiscordThreadId: "discord-thread-new-1",
+    },
+  ]);
+  expect(calls.lifecycleUpdates).toEqual([
+    {
+      discordThreadId: "discord-thread-new-1",
+      lifecycleState: "active",
+    },
+  ]);
+  expect(calls.syncedThreads).toEqual(["discord-thread-new-1"]);
+  expect(getSessionByCodexThreadId("codex-thread-1")).toMatchObject({
+    discordThreadId: "discord-thread-new-1",
+    lifecycleState: "active",
+  });
+  expect(result).toEqual({
+    reply: {
+      content:
+        "Attached session in replacement thread <#discord-thread-new-1>. Session is writable.",
+    },
+  });
+});
+
+test("attached busy sessions stay non-writable", async () => {
+  const { services, calls } = createControlChannelServicesFixture({
+    syncOutcome: createResumeOutcome("busy"),
+  });
+
+  const result = await services.resumeSession({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
+    workdirId: "api",
+    codexThreadId: "codex-thread-1",
+  });
+
+  expect(calls.syncedThreads).toEqual(["discord-thread-new-1"]);
+  expect(result).toEqual({
+    reply: {
+      content: "Attached session <#discord-thread-new-1>. Session remains `running`.",
+    },
+  });
+});
+
+test("attached degraded or error sessions stay read-only", async () => {
+  const readOnlyFixture = createControlChannelServicesFixture({
+    syncOutcome: createResumeOutcome("read-only"),
+  });
+
+  const readOnlyResult = await readOnlyFixture.services.resumeSession({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
+    workdirId: "api",
+    codexThreadId: "codex-thread-1",
+  });
+
+  expect(readOnlyResult).toEqual({
+    reply: {
+      content: "Attached session <#discord-thread-new-1>. Session remains read-only.",
+    },
+  });
+  expect(readOnlyFixture.calls.sentTexts).toEqual([]);
+
+  const errorFixture = createControlChannelServicesFixture({
+    syncOutcome: createResumeOutcome("error"),
+  });
+
+  const errorResult = await errorFixture.services.resumeSession({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
+    workdirId: "api",
+    codexThreadId: "codex-thread-1",
+  });
+
+  expect(errorResult).toEqual({
+    reply: {
+      content:
+        "Attached session <#discord-thread-new-1>. Session remains read-only because Codex reports an error state.",
+    },
+  });
+  expect(errorFixture.calls.sentTexts).toEqual([
+    {
+      channelId: "discord-thread-new-1",
+      content:
+        "CodeHelm attached this thread as an error surface. Review the latest Codex state before sending more input.",
+    },
+  ]);
+});
+
 test("status descriptions stay readable in Discord output", () => {
   expect(describeCodexThreadStatus({ type: "idle" })).toBe("idle");
   expect(
@@ -458,81 +908,6 @@ test("close command rejects non-owners", () => {
   ).toEqual({
     reply: {
       content: "Only the session owner can close this session.",
-      ephemeral: true,
-    },
-  });
-});
-
-test("resume command rejects unknown managed sessions", () => {
-  expect(
-    resolveResumeSessionCommand({
-      actorId: "owner-1",
-      codexThreadId: "codex-thread-1",
-      session: null,
-    }),
-  ).toEqual({
-    reply: {
-      content: "Unknown managed session `codex-thread-1`.",
-      ephemeral: true,
-    },
-  });
-});
-
-test("resume command rejects non-owners", () => {
-  expect(
-    resolveResumeSessionCommand({
-      actorId: "viewer-1",
-      codexThreadId: "codex-thread-1",
-      session: {
-        ...createSessionRecord({
-          codexThreadId: "codex-thread-1",
-          ownerDiscordUserId: "owner-1",
-          lifecycleState: "archived",
-        }),
-      },
-    }),
-  ).toEqual({
-    reply: {
-      content: "Only the session owner can resume this session.",
-      ephemeral: true,
-    },
-  });
-});
-
-test("resume command rejects deleted Discord thread containers", () => {
-  expect(
-    resolveResumeSessionCommand({
-      actorId: "owner-1",
-      codexThreadId: "codex-thread-1",
-      session: createSessionRecord({
-        codexThreadId: "codex-thread-1",
-        ownerDiscordUserId: "owner-1",
-        lifecycleState: "deleted",
-      }),
-    }),
-  ).toEqual({
-    reply: {
-      content:
-        "Session `codex-thread-1` no longer has a resumable Discord thread.",
-      ephemeral: true,
-    },
-  });
-});
-
-test("resume command rejects non-archived sessions", () => {
-  expect(
-    resolveResumeSessionCommand({
-      actorId: "owner-1",
-      codexThreadId: "codex-thread-1",
-      session: createSessionRecord({
-        codexThreadId: "codex-thread-1",
-        ownerDiscordUserId: "owner-1",
-        lifecycleState: "active",
-      }),
-    }),
-  ).toEqual({
-    reply: {
-      content: "Session `codex-thread-1` is currently `active`, not `archived`.",
       ephemeral: true,
     },
   });
