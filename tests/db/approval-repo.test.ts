@@ -265,3 +265,129 @@ test("approval rows follow a rebound Discord thread for the managed session", ()
 
   db.close();
 });
+
+test("migrations rebuild legacy approvals so rebinds cascade to the replacement thread", () => {
+  const db = createDatabaseClient(":memory:");
+
+  db.exec(`
+    CREATE TABLE workspaces (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      root_path TEXT NOT NULL UNIQUE,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE workdirs (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      label TEXT NOT NULL,
+      absolute_path TEXT NOT NULL UNIQUE,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (workspace_id) REFERENCES workspaces(id)
+    );
+
+    CREATE TABLE sessions (
+      discord_thread_id TEXT PRIMARY KEY,
+      codex_thread_id TEXT NOT NULL UNIQUE,
+      owner_discord_user_id TEXT NOT NULL,
+      workdir_id TEXT NOT NULL,
+      state TEXT NOT NULL,
+      lifecycle_state TEXT NOT NULL DEFAULT 'active',
+      degradation_reason TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (workdir_id) REFERENCES workdirs(id)
+    );
+
+    CREATE TABLE approvals (
+      request_id TEXT PRIMARY KEY,
+      discord_thread_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      resolved_by_discord_user_id TEXT,
+      resolution TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (discord_thread_id) REFERENCES sessions(discord_thread_id)
+    );
+  `);
+
+  db.exec(`
+    INSERT INTO workspaces (id, name, root_path, created_at, updated_at)
+    VALUES ('ws1', 'Main Workspace', '/tmp/ws1', '2026-04-09T00:00:00.000Z', '2026-04-09T00:00:00.000Z');
+
+    INSERT INTO workdirs (id, workspace_id, label, absolute_path, created_at, updated_at)
+    VALUES ('wd1', 'ws1', 'App', '/tmp/ws1/app', '2026-04-09T00:00:00.000Z', '2026-04-09T00:00:00.000Z');
+
+    INSERT INTO sessions (
+      discord_thread_id,
+      codex_thread_id,
+      owner_discord_user_id,
+      workdir_id,
+      state,
+      lifecycle_state,
+      degradation_reason,
+      created_at,
+      updated_at
+    ) VALUES (
+      'legacy-thread',
+      'legacy-codex',
+      'legacy-user',
+      'wd1',
+      'running',
+      'active',
+      NULL,
+      '2026-04-09T00:00:00.000Z',
+      '2026-04-09T00:00:00.000Z'
+    );
+
+    INSERT INTO approvals (
+      request_id,
+      discord_thread_id,
+      status,
+      resolved_by_discord_user_id,
+      resolution,
+      created_at,
+      updated_at
+    ) VALUES (
+      'legacy-approval',
+      'legacy-thread',
+      'pending',
+      NULL,
+      NULL,
+      '2026-04-09T00:00:00.000Z',
+      '2026-04-09T00:00:00.000Z'
+    );
+  `);
+
+  applyMigrations(db);
+
+  const sessionRepo = createSessionRepo(db) as SessionRepo & {
+    rebindDiscordThread(input: {
+      currentDiscordThreadId: string;
+      nextDiscordThreadId: string;
+    }): void;
+  };
+  const approvalRepo = createApprovalRepo(db);
+
+  sessionRepo.rebindDiscordThread({
+    currentDiscordThreadId: "legacy-thread",
+    nextDiscordThreadId: "replacement-thread",
+  });
+
+  expect(approvalRepo.listPendingByDiscordThreadId("legacy-thread")).toHaveLength(0);
+  expect(approvalRepo.listPendingByDiscordThreadId("replacement-thread")).toEqual([
+    {
+      requestId: "legacy-approval",
+      discordThreadId: "replacement-thread",
+      status: "pending",
+      resolvedByDiscordUserId: null,
+      resolution: null,
+      createdAt: expect.any(String),
+      updatedAt: expect.any(String),
+    },
+  ]);
+
+  db.close();
+});
