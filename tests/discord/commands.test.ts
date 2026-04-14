@@ -6,6 +6,7 @@ import {
   handleControlChannelCommand,
   replyWithCommandError,
   type DiscordCommandResult,
+  type DiscordCommandServices,
 } from "../../src/discord/commands";
 
 const okResult = (
@@ -16,13 +17,6 @@ const okResult = (
   ...overrides,
 });
 
-type CommandServiceFixture = {
-  createSession(input: Record<string, string>): DiscordCommandResult;
-  closeSession(input: Record<string, string>): DiscordCommandResult;
-  syncSession(input: Record<string, string>): DiscordCommandResult;
-  resumeSession(input: Record<string, string>): DiscordCommandResult;
-};
-
 const createServices = () => {
   const calls = {
     createSession: [] as Array<Record<string, string>>,
@@ -31,7 +25,7 @@ const createServices = () => {
     resumeSession: [] as Array<Record<string, string>>,
   };
 
-  const services: CommandServiceFixture = {
+  const services: DiscordCommandServices = {
     createSession(input) {
       calls.createSession.push(input);
       return okResult("session created");
@@ -47,6 +41,16 @@ const createServices = () => {
     resumeSession(input) {
       calls.resumeSession.push(input);
       return okResult("session resumed");
+    },
+    autocompleteResumeWorkdirs(input) {
+      return [
+        { name: `workdir:${input.query}`, value: "example" },
+      ];
+    },
+    autocompleteResumeSessions(input) {
+      return [
+        { name: `session:${input.query}`, value: "codex-thread-7" },
+      ];
     },
   };
 
@@ -158,10 +162,7 @@ test("/session-new delegates with the configured workdir", async () => {
     options: { workdir: "wd-42" },
   });
 
-  const handled = await handleControlChannelCommand(
-    interaction as never,
-    services as never,
-  );
+  const handled = await handleControlChannelCommand(interaction as never, services);
 
   expect(handled).toBe(true);
   expect(calls.createSession).toEqual([
@@ -333,10 +334,7 @@ test("/session-close defers and delegates using the current thread context", asy
   });
   interaction.channelId = "thread-42";
 
-  const handled = await handleControlChannelCommand(
-    interaction as never,
-    services as never,
-  );
+  const handled = await handleControlChannelCommand(interaction as never, services);
 
   expect(handled).toBe(true);
   expect(calls.closeSession).toEqual([
@@ -358,10 +356,7 @@ test("/session-sync defers and delegates using the current thread context", asyn
   });
   interaction.channelId = "thread-42";
 
-  const handled = await handleControlChannelCommand(
-    interaction as never,
-    services as never,
-  );
+  const handled = await handleControlChannelCommand(interaction as never, services);
 
   expect(handled).toBe(true);
   expect(calls.syncSession).toEqual([
@@ -383,10 +378,7 @@ test("/session-resume extracts workdir and session, defers, and delegates", asyn
     options: { workdir: "example", session: "codex-thread-7" },
   });
 
-  const handled = await handleControlChannelCommand(
-    interaction as never,
-    services as never,
-  );
+  const handled = await handleControlChannelCommand(interaction as never, services);
 
   expect(handled).toBe(true);
   expect(calls.resumeSession).toEqual([
@@ -410,10 +402,7 @@ test("unknown commands return unhandled without requiring guild context", async 
     guildId: null,
   });
 
-  const handled = await handleControlChannelCommand(
-    interaction as never,
-    services as never,
-  );
+  const handled = await handleControlChannelCommand(interaction as never, services);
 
   expect(handled).toBe(false);
   expect(calls).toEqual({

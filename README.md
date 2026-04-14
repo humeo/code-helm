@@ -97,28 +97,30 @@ The current product baseline and executable end-to-end regression checklist live
 
 Use the control channel for session management, not for normal conversation.
 
-- `workdir-list` shows the configured workdirs
-- `session-new --workdir <id>` creates a new Codex session in that workdir
-- `session-import --workdir <id> --session <thread-id>` attaches Discord to an existing idle session
+- `session-new --workdir <id>` creates a fresh Codex session in that workdir
+- `session-resume --workdir <id> --session <thread-id>` attaches Discord to an existing Codex session chosen from the selected workdir's live Codex thread list
 - `session-close` archives the current managed Discord thread without destroying the Codex session
-- `session-resume --session <thread-id>` syncs and reopens an archived managed session on the same Discord thread
-- `session-list` shows known sessions
+- `session-sync` is the manual recovery path for degraded managed session threads
 
-Session creation creates a new Codex App Server thread first, then binds it to a new Discord thread. Import reuses an existing Codex thread, resumes it first, then creates the Discord thread around it and backfills the durable conversation-first subset into Discord.
+Session discovery lives inside `/session-resume`, not in separate list/import commands.
 
-Import is intentionally narrow:
+Session creation creates a new Codex App Server thread first, then binds it to a new Discord thread.
 
-- only `idle` and `notLoaded` Codex thread states are importable
-- `running` sessions cannot be imported
-- `waiting-approval` sessions cannot be imported
+`/session-resume` is the only attach path for existing Codex sessions:
 
-Close and resume keep `thread = session` intact:
+- the selected Codex thread must belong to the selected workdir
+- if the session already has an active usable Discord thread, CodeHelm reuses that thread
+- if the session has an archived Discord thread, CodeHelm syncs first and reopens that same thread
+- if the session has no Discord attachment yet, CodeHelm creates a new Discord thread and binds it
+- if the old Discord thread was deleted or is no longer usable, CodeHelm creates a replacement thread and rebinds the managed attachment
+- if attach finds `running` or `waiting-approval`, Discord reflects that busy state without pretending the session is writable
+- if attach finds `waiting-approval`, CodeHelm uses resume semantics so approval UI and DM controls can be rehydrated on the attached Discord surface
+
+Managed attachment keeps the Codex session identity stable even when the Discord container changes:
 
 - `session-close` archives the same Discord thread and marks the managed session `archived`
-- `session-resume` always syncs the Codex session first, then reopens that same thread
-- a resumed thread only accepts new Discord input after sync says the session is `idle`
-- if resume sync finds `running` or `waiting-approval`, the thread reopens but the original message is not forwarded
-- if resume sync finds a degraded session, the thread reopens in read-only mode
+- `session-resume` reuses, reopens, creates, or replaces the Discord thread attachment around the same Codex session
+- `session-sync` only reevaluates a degraded active managed thread; it does not create or replace attachments
 - deleting the Discord thread is treated as detaching the Discord container, not as deleting the Codex session
 
 ## Conversation-First Transcript
@@ -172,7 +174,7 @@ CodeHelm treats unsupported external modification as a read-only condition in th
 - the current runtime seeds a transcript snapshot for mapped sessions and periodically reconciles `thread/read(includeTurns=true)`
 - if new snapshot items appear without having been observed on the live app-server stream, Discord marks the session read-only with reason `snapshot_mismatch`
 - this is a best-effort detector for unsupported/offline modification, not a precise control-surface identifier
-- once downgraded, the thread stays read-only in Discord until the session is recreated or re-imported
+- once downgraded, the thread stays read-only in Discord until a trustworthy sync clears the degradation or the session is recreated
 
 ## What Has Been Verified Here
 
@@ -181,9 +183,11 @@ Verified in the current repo state:
 - config parsing requires the documented env vars and validates `WORKDIRS_JSON`
 - `WORKDIRS_JSON` paths must be absolute and under `WORKSPACE_ROOT`
 - Discord control commands are guild-only and DM-disabled
-- import eligibility is limited to idle / notLoaded thread states
-- import also rejects Codex threads whose cwd does not match the selected workdir
-- imported sessions backfill the durable conversation-first subset into the new Discord thread
+- the user-facing command surface is `session-new`, `session-resume`, `session-close`, and `session-sync`
+- `/session-resume` uses required `workdir + session` autocomplete instead of separate list/import commands
+- `/session-resume` rejects Codex threads whose cwd does not match the selected workdir
+- `/session-resume` can attach unmanaged Codex sessions, reuse active Discord attachments, reopen archived ones, and replace deleted or unusable Discord thread containers
+- waiting-approval attaches use resume semantics so approval state can be restored on the attached Discord surface
 - live app-server transcript sync relays Discord-originated user messages once, labels live non-Discord user input as `Codex CLI`, keeps commentary durable only when no final reply exists, and omits successful command executions from the main transcript
 - owner-only control checks are implemented for Discord thread control
 - approval UI behavior is split between owner controls and status-only viewers

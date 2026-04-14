@@ -3,12 +3,14 @@ import {
   Events,
   GatewayIntentBits,
   type Awaitable,
+  type AutocompleteInteraction,
   type ChatInputCommandInteraction,
   type ClientOptions,
   type Interaction,
 } from "discord.js";
 import {
   controlChannelCommands,
+  handleControlChannelAutocomplete,
   handleControlChannelCommand,
   replyWithCommandError,
   type DiscordCommandServices,
@@ -43,6 +45,12 @@ const isControlCommandInteraction = (
   return interaction.isChatInputCommand();
 };
 
+const isControlAutocompleteInteraction = (
+  interaction: Interaction,
+): interaction is AutocompleteInteraction => {
+  return interaction.isAutocomplete();
+};
+
 export const createDiscordBot = ({
   token,
   services,
@@ -61,6 +69,16 @@ export const createDiscordBot = ({
   });
 
   client.on(Events.InteractionCreate, async (interaction) => {
+    if (isControlAutocompleteInteraction(interaction)) {
+      try {
+        await handleControlChannelAutocomplete(interaction, services);
+      } catch (error) {
+        logger.error("Discord autocomplete failed", error);
+        await interaction.respond([]);
+      }
+      return;
+    }
+
     if (!isControlCommandInteraction(interaction)) {
       return;
     }

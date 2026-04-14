@@ -1202,17 +1202,6 @@ const coerceCodexThreadStatus = (value: unknown): CodexThreadStatus | undefined 
   return undefined;
 };
 
-export const isImportableThreadStatus = (status: CodexThreadStatus) => {
-  return status.type === "idle" || status.type === "notLoaded";
-};
-
-export const canImportThreadIntoWorkdir = (
-  thread: Pick<CodexThread, "cwd" | "status">,
-  workdirPath: string,
-) => {
-  return thread.cwd === workdirPath && isImportableThreadStatus(thread.status);
-};
-
 export const inferSessionStateFromThreadStatus = (
   status: CodexThreadStatus,
 ): SessionRuntimeState => {
@@ -1481,12 +1470,6 @@ const approvalDecision = (action: ApprovalAction): {
   };
 };
 
-const formatWorkdirList = (workdirs: WorkdirConfig[]) => {
-  return workdirs
-    .map((workdir) => `- \`${workdir.id}\`: ${workdir.label} (${workdir.absolutePath})`)
-    .join("\n");
-};
-
 export const describeSessionAccessMode = (
   session: Pick<SessionRecord, "state" | "lifecycleState">,
 ) => {
@@ -1680,71 +1663,6 @@ export const resolveCloseSessionCommand = ({
       content:
         `Close is wired for <#${session.discordThreadId}> ` +
         "but archive behavior is not implemented yet.",
-      ephemeral: true,
-    },
-  };
-};
-
-export const resolveResumeSessionCommand = ({
-  actorId,
-  codexThreadId,
-  session,
-}: {
-  actorId: string;
-  codexThreadId: string;
-  session:
-    | Pick<
-        SessionRecord,
-        "discordThreadId"
-        | "ownerDiscordUserId"
-        | "lifecycleState"
-      >
-    | null;
-}): DiscordCommandResult => {
-  if (!session) {
-    return {
-      reply: {
-        content: `Unknown managed session \`${codexThreadId}\`.`,
-        ephemeral: true,
-      },
-    };
-  }
-
-  if (session.ownerDiscordUserId !== actorId) {
-    return {
-      reply: {
-        content: "Only the session owner can resume this session.",
-        ephemeral: true,
-      },
-    };
-  }
-
-  if (session.lifecycleState === "deleted") {
-    return {
-      reply: {
-        content: `Session \`${codexThreadId}\` no longer has a resumable Discord thread.`,
-        ephemeral: true,
-      },
-    };
-  }
-
-  if (session.lifecycleState !== "archived") {
-    return {
-      reply: {
-        content:
-          `Session \`${codexThreadId}\` is currently \`${session.lifecycleState}\`, ` +
-          "not `archived`.",
-        ephemeral: true,
-      },
-    };
-  }
-
-  return {
-    reply: {
-      content:
-        `Resume is wired for \`${codexThreadId}\` ` +
-        `(${formatManagedSessionThreadReference(session)}) ` +
-        "but sync-and-unarchive behavior is not implemented yet.",
       ephemeral: true,
     },
   };
@@ -2164,6 +2082,730 @@ const findConfiguredWorkdir = (config: AppConfig, workdirId: string) => {
   return config.workdirs.find((workdir) => workdir.id === workdirId);
 };
 
+export const filterConfiguredWorkdirs = (
+  workdirs: AppConfig["workdirs"],
+  query: string,
+) => {
+  const normalizedQuery = query.trim().toLowerCase();
+
+  return workdirs
+    .filter((workdir) => {
+      if (!normalizedQuery) {
+        return true;
+      }
+
+      return (
+        workdir.id.toLowerCase().includes(normalizedQuery)
+        || workdir.label.toLowerCase().includes(normalizedQuery)
+        || workdir.absolutePath.toLowerCase().includes(normalizedQuery)
+      );
+    })
+    .slice(0, 25)
+    .map((workdir) => ({
+      name: `${workdir.label} (${workdir.id})`,
+      value: workdir.id,
+    }));
+};
+
+export const sortResumePickerThreads = (threads: CodexThread[]) => {
+  return [...threads].sort((left, right) => {
+    const leftUpdatedAt = left.updatedAt ?? Number.NEGATIVE_INFINITY;
+    const rightUpdatedAt = right.updatedAt ?? Number.NEGATIVE_INFINITY;
+
+    if (leftUpdatedAt !== rightUpdatedAt) {
+      return rightUpdatedAt - leftUpdatedAt;
+    }
+
+    const leftCreatedAt = left.createdAt ?? Number.NEGATIVE_INFINITY;
+    const rightCreatedAt = right.createdAt ?? Number.NEGATIVE_INFINITY;
+
+    if (leftCreatedAt !== rightCreatedAt) {
+      return rightCreatedAt - leftCreatedAt;
+    }
+
+    return left.id.localeCompare(right.id);
+  });
+};
+
+const formatResumeThreadTitle = (thread: CodexThread) => {
+  const preview = thread.preview.trim();
+  const name = typeof thread.name === "string" ? thread.name.trim() : "";
+
+  return preview || name || thread.id;
+};
+
+const formatResumeThreadIdSuffix = (threadId: string) => {
+  const shortIdLength = 9;
+
+  if (threadId.length <= shortIdLength) {
+    return threadId;
+  }
+
+  return `…${threadId.slice(-shortIdLength)}`;
+};
+
+export const formatResumeSessionAutocompleteChoice = (thread: CodexThread) => {
+  const statusText = describeCodexThreadStatus(thread.status);
+  const threadIdSuffix = formatResumeThreadIdSuffix(thread.id);
+  const maxNameLength = 100;
+  const separator = " · ";
+  const titlePrefix = `${statusText}${separator}`;
+  const titleSuffix = `${separator}${threadIdSuffix}`;
+  const maxTitleLength = maxNameLength - titlePrefix.length - titleSuffix.length;
+  const title = formatResumeThreadTitle(thread);
+  const safeTitle =
+    maxTitleLength <= 0
+      ? ""
+      : title.length <= maxTitleLength
+        ? title
+        : maxTitleLength === 1
+          ? "…"
+          : `${title.slice(0, maxTitleLength - 1)}…`;
+
+  return {
+    name: safeTitle.length > 0
+      ? `${titlePrefix}${safeTitle}${titleSuffix}`
+      : `${statusText}${titleSuffix}`,
+    value: thread.id,
+  };
+};
+
+export const resolveResumeAttachmentKind = ({
+  existingSession,
+  discordThreadUsable,
+}: {
+  existingSession: { lifecycleState: SessionLifecycleState } | null;
+  discordThreadUsable: boolean;
+}) => {
+  if (!existingSession) {
+    return "create";
+  }
+
+  if (!discordThreadUsable || existingSession.lifecycleState === "deleted") {
+    return "rebind";
+  }
+
+  if (existingSession.lifecycleState === "archived") {
+    return "reopen";
+  }
+
+  return "reuse";
+};
+
+export const buildResumeSessionAutocompleteChoices = async ({
+  codexClient,
+  query,
+  workdir,
+}: {
+  codexClient: Pick<JsonRpcClient, "listThreads">;
+  query: string;
+  workdir?: WorkdirConfig;
+}) => {
+  if (!workdir) {
+    return [];
+  }
+
+  const searchTerm = query.trim() || null;
+  const threads: CodexThread[] = [];
+  let cursor: string | null = null;
+
+  do {
+    const result = await codexClient.listThreads({
+      cwd: workdir.absolutePath,
+      searchTerm,
+      limit: 100,
+      ...(cursor ? { cursor } : {}),
+    });
+
+    threads.push(...result.data);
+    cursor = result.nextCursor;
+  } while (cursor);
+
+  return sortResumePickerThreads(threads)
+    .slice(0, 25)
+    .map(formatResumeSessionAutocompleteChoice);
+};
+
+const attachedSessionErrorSurfaceText =
+  "CodeHelm attached this thread as an error surface. Review the latest Codex state before sending more input.";
+
+const describeAttachedSessionResult = (result: SessionResumeState) => {
+  switch (result.kind) {
+    case "ready":
+      return "Session is writable.";
+    case "busy":
+      return `Session remains \`${result.session.runtimeState}\`.`;
+    case "read-only":
+      return "Session remains read-only.";
+    case "error":
+      return "Session remains read-only because Codex reports an error state.";
+    case "untrusted":
+      return null;
+  }
+};
+
+type BoundSessionThread = {
+  id: string;
+  send(payload: DiscordChannelMessagePayload): Promise<unknown>;
+  delete(reason?: string): Promise<unknown>;
+};
+
+type CreateControlChannelServicesDeps = {
+  config: AppConfig;
+  codexClient: Pick<JsonRpcClient, "listThreads" | "startThread">;
+  sessionRepo: Pick<
+    ReturnType<typeof createSessionRepo>,
+    | "getByDiscordThreadId"
+    | "getByCodexThreadId"
+    | "insert"
+    | "markDeleted"
+    | "rebindDiscordThread"
+    | "updateLifecycleState"
+  >;
+  getDiscordClient: () => Client;
+  createVisibleSessionThread: (input: {
+    client: Client;
+    controlChannelId: string;
+    title: string;
+    starterText: string;
+  }) => Promise<BoundSessionThread>;
+  ensureTranscriptRuntime: (codexThreadId: string) => void;
+  updateStatusCard: (input: {
+    discord: Client;
+    session: NonNullable<ReturnType<CreateControlChannelServicesDeps["sessionRepo"]["getByCodexThreadId"]>>;
+    state: SessionRuntimeState;
+  }) => Promise<void>;
+  closeManagedSession: (
+    session: NonNullable<ReturnType<CreateControlChannelServicesDeps["sessionRepo"]["getByDiscordThreadId"]>>,
+  ) => Promise<void>;
+  syncManagedSessionIntoDiscordThread: (
+    session: NonNullable<ReturnType<CreateControlChannelServicesDeps["sessionRepo"]["getByCodexThreadId"]>>,
+  ) => Promise<SessionResumeState>;
+  resumeManagedSessionIntoDiscordThread: (
+    session: NonNullable<ReturnType<CreateControlChannelServicesDeps["sessionRepo"]["getByCodexThreadId"]>>,
+  ) => Promise<SessionResumeState>;
+  sendTextToChannel: (
+    client: Client,
+    channelId: string,
+    payload: string | DiscordChannelMessagePayload,
+  ) => Promise<unknown>;
+  isManagedDiscordThreadUsable: (input: {
+    client: Client;
+    threadId: string;
+  }) => Promise<boolean>;
+  readThreadForSnapshotReconciliation: (input: {
+    threadId: string;
+  }) => Promise<ThreadReadResult>;
+};
+
+const createAttachedSessionThread = async ({
+  client,
+  controlChannelId,
+  createVisibleSessionThread,
+  workdir,
+  codexThreadId,
+  title,
+  starterText,
+  onBound,
+  onRollback,
+}: {
+  client: Client;
+  controlChannelId: string;
+  createVisibleSessionThread: CreateControlChannelServicesDeps["createVisibleSessionThread"];
+  workdir: WorkdirConfig;
+  codexThreadId: string;
+  title: string;
+  starterText: string;
+  onBound: (thread: BoundSessionThread) => Promise<void>;
+  onRollback?: (thread: BoundSessionThread) => Promise<void>;
+}) => {
+  let thread: BoundSessionThread | undefined;
+
+  try {
+    thread = await createVisibleSessionThread({
+      client,
+      controlChannelId,
+      title,
+      starterText,
+    });
+    await onBound(thread);
+    await thread.send({
+      ...renderSessionStartedPayload({
+        type: "session.started",
+        params: {
+          workdirLabel: workdir.label,
+          codexThreadId,
+        },
+      }),
+    });
+
+    return thread;
+  } catch (error) {
+    if (thread) {
+      try {
+        await thread.delete("CodeHelm failed to bind the attached session");
+      } catch (deleteError) {
+        logger.warn("Failed to clean up orphan Discord thread after session attachment", deleteError);
+      }
+
+      if (onRollback) {
+        try {
+          await onRollback(thread);
+        } catch (rollbackError) {
+          logger.warn("Failed to roll back session attachment binding", rollbackError);
+        }
+      }
+    }
+
+    throw error;
+  }
+};
+
+export const createControlChannelServices = ({
+  config,
+  codexClient,
+  sessionRepo,
+  getDiscordClient,
+  createVisibleSessionThread,
+  ensureTranscriptRuntime,
+  updateStatusCard,
+  closeManagedSession,
+  syncManagedSessionIntoDiscordThread,
+  resumeManagedSessionIntoDiscordThread,
+  sendTextToChannel,
+  isManagedDiscordThreadUsable,
+  readThreadForSnapshotReconciliation,
+}: CreateControlChannelServicesDeps): DiscordCommandServices => {
+  return {
+    async createSession({ actorId, guildId, channelId, workdirId }) {
+      const contextError = requireConfiguredControlChannel(config, guildId, channelId);
+
+      if (contextError) {
+        return contextError;
+      }
+
+      const workdir = findConfiguredWorkdir(config, workdirId);
+
+      if (!workdir) {
+        return {
+          reply: {
+            content: `Unknown workdir \`${workdirId}\`.`,
+            ephemeral: true,
+          },
+        };
+      }
+
+      const started = await codexClient.startThread({
+        cwd: workdir.absolutePath,
+      });
+      const codexThreadId = started.thread.id;
+      const discord = getDiscordClient();
+      let thread: BoundSessionThread | undefined;
+      const rollbackBinding = async (boundThread: BoundSessionThread) => {
+        sessionRepo.markDeleted(boundThread.id);
+      };
+
+      try {
+        thread = await createAttachedSessionThread({
+          client: discord,
+          controlChannelId: config.discord.controlChannelId,
+          createVisibleSessionThread,
+          workdir,
+          codexThreadId,
+          title: `${workdir.label}-session`,
+          starterText: `Opening session for \`${workdir.label}\`.`,
+          onBound: async (boundThread) => {
+            sessionRepo.insert({
+              discordThreadId: boundThread.id,
+              codexThreadId,
+              ownerDiscordUserId: actorId,
+              workdirId: workdir.id,
+              state: "idle",
+            });
+            ensureTranscriptRuntime(codexThreadId);
+          },
+          onRollback: rollbackBinding,
+        });
+        const session = sessionRepo.getByDiscordThreadId(thread.id);
+
+        if (!session) {
+          throw new Error(`Managed session ${codexThreadId} disappeared after creation`);
+        }
+
+        await updateStatusCard({
+          discord,
+          session,
+          state: "idle",
+        });
+      } catch (error) {
+        if (thread) {
+          try {
+            await thread.delete("CodeHelm failed to bind the new session");
+          } catch (deleteError) {
+            logger.warn("Failed to clean up orphan Discord thread after session creation", deleteError);
+          }
+
+          try {
+            await rollbackBinding(thread);
+          } catch (rollbackError) {
+            logger.warn("Failed to roll back session creation binding", rollbackError);
+          }
+        }
+
+        throw error;
+      }
+
+      return {
+        reply: {
+          content: `Created session <#${thread.id}> for \`${workdir.label}\`.`,
+        },
+      };
+    },
+    async closeSession({ actorId, guildId, channelId }) {
+      const guildError = requireConfiguredGuild(config, guildId);
+
+      if (guildError) {
+        return guildError;
+      }
+
+      const session = sessionRepo.getByDiscordThreadId(channelId);
+
+      if (!session) {
+        return resolveCloseSessionCommand({
+          actorId,
+          session: null,
+        });
+      }
+
+      if (!canControlSession({
+        viewerId: actorId,
+        ownerId: session.ownerDiscordUserId,
+      })) {
+        return resolveCloseSessionCommand({
+          actorId,
+          session,
+        });
+      }
+
+      await closeManagedSession(session);
+
+      return {
+        reply: {
+          content: `Archived session <#${session.discordThreadId}>.`,
+        },
+      };
+    },
+    async syncSession({ actorId, guildId, channelId }) {
+      const guildError = requireConfiguredGuild(config, guildId);
+
+      if (guildError) {
+        return guildError;
+      }
+
+      const session = sessionRepo.getByDiscordThreadId(channelId);
+      const validation = resolveSyncSessionCommand({
+        actorId,
+        session,
+      });
+
+      if (
+        !session
+        || !canControlSession({
+          viewerId: actorId,
+          ownerId: session.ownerDiscordUserId,
+        })
+        || session.lifecycleState !== "active"
+        || coercePersistedSessionRuntimeState(session.state) !== "degraded"
+      ) {
+        return validation;
+      }
+
+      let result: SessionResumeState;
+
+      try {
+        result = await syncManagedSessionIntoDiscordThread(session);
+      } catch (error) {
+        return {
+          reply: {
+            content:
+              error instanceof Error
+                ? `Sync failed for \`${session.codexThreadId}\`: ${error.message}.`
+                : `Sync failed for \`${session.codexThreadId}\`.`,
+            ephemeral: true,
+          },
+        };
+      }
+
+      if (result.kind === "untrusted") {
+        return {
+          reply: {
+            content:
+              `Sync aborted for \`${session.codexThreadId}\` because CodeHelm could not ` +
+              "establish a trustworthy synced session view.",
+            ephemeral: true,
+          },
+        };
+      }
+
+      const summary =
+        result.kind === "ready"
+          ? "Session is writable."
+          : result.kind === "busy"
+            ? `Session is now \`${result.session.runtimeState}\`.`
+            : result.kind === "error"
+              ? "Session remains read-only because Codex reports an error state."
+              : "Session remains read-only.";
+
+      return {
+        reply: {
+          content: `Synced session <#${session.discordThreadId}>. ${summary}`,
+        },
+      };
+    },
+    async autocompleteResumeWorkdirs({ guildId, channelId, query }) {
+      const contextError = requireConfiguredControlChannel(config, guildId, channelId);
+
+      if (contextError) {
+        return [];
+      }
+
+      return filterConfiguredWorkdirs(config.workdirs, query);
+    },
+    async autocompleteResumeSessions({
+      guildId,
+      channelId,
+      workdirId,
+      query,
+    }) {
+      const contextError = requireConfiguredControlChannel(config, guildId, channelId);
+
+      if (contextError) {
+        return [];
+      }
+
+      const workdir = workdirId
+        ? findConfiguredWorkdir(config, workdirId)
+        : undefined;
+
+      return buildResumeSessionAutocompleteChoices({
+        codexClient,
+        query,
+        workdir,
+      });
+    },
+    async resumeSession({ actorId, guildId, channelId, workdirId, codexThreadId }) {
+      const contextError = requireConfiguredControlChannel(config, guildId, channelId);
+
+      if (contextError) {
+        return contextError;
+      }
+
+      const workdir = findConfiguredWorkdir(config, workdirId);
+
+      if (!workdir) {
+        return {
+          reply: {
+            content: `Unknown workdir \`${workdirId}\`.`,
+            ephemeral: true,
+          },
+        };
+      }
+
+      try {
+        const snapshot = await readThreadForSnapshotReconciliation({
+          threadId: codexThreadId,
+        });
+
+        if (snapshot.thread.cwd !== workdir.absolutePath) {
+          return {
+            reply: {
+              content:
+                `Session \`${codexThreadId}\` belongs to \`${snapshot.thread.cwd}\`, ` +
+                `not workdir \`${workdir.id}\`.`,
+              ephemeral: true,
+            },
+          };
+        }
+
+        const discord = getDiscordClient();
+        const existingSession = sessionRepo.getByCodexThreadId(codexThreadId);
+
+        if (
+          existingSession
+          && !canControlSession({
+            viewerId: actorId,
+            ownerId: existingSession.ownerDiscordUserId,
+          })
+        ) {
+          return {
+            reply: {
+              content: "Only the session owner can attach this session.",
+              ephemeral: true,
+            },
+          };
+        }
+
+        const discordThreadUsable = existingSession
+          ? await isManagedDiscordThreadUsable({
+              client: discord,
+              threadId: existingSession.discordThreadId,
+            })
+          : true;
+        const attachmentKind = resolveResumeAttachmentKind({
+          existingSession,
+          discordThreadUsable,
+        });
+        let attachedSession = existingSession;
+        let rollbackAttach:
+          | (() => Promise<void>)
+          | undefined;
+
+        if (attachmentKind === "create") {
+          const rollbackBinding = async (thread: BoundSessionThread) => {
+            sessionRepo.markDeleted(thread.id);
+          };
+          const thread = await createAttachedSessionThread({
+            client: discord,
+            controlChannelId: config.discord.controlChannelId,
+            createVisibleSessionThread,
+            workdir,
+            codexThreadId,
+            title: `${workdir.label}-session`,
+            starterText: `Attaching Codex session \`${codexThreadId}\` for \`${workdir.label}\`.`,
+            onBound: async (boundThread) => {
+              sessionRepo.insert({
+                discordThreadId: boundThread.id,
+                codexThreadId,
+                ownerDiscordUserId: actorId,
+                workdirId: workdir.id,
+                state: inferSessionStateFromThreadStatus(snapshot.thread.status),
+              });
+              ensureTranscriptRuntime(codexThreadId);
+            },
+            onRollback: rollbackBinding,
+          });
+          attachedSession = sessionRepo.getByDiscordThreadId(thread.id);
+          rollbackAttach = async () => {
+            await thread.delete("CodeHelm rolled back an untrusted session attach");
+            await rollbackBinding(thread);
+          };
+        } else if (attachmentKind === "rebind") {
+          const previousThreadId = existingSession?.discordThreadId;
+          const previousLifecycleState = existingSession?.lifecycleState;
+
+          if (!previousThreadId) {
+            throw new Error(`Managed session ${codexThreadId} is missing a Discord thread binding`);
+          }
+
+          const rollbackBinding = async (thread: BoundSessionThread) => {
+            sessionRepo.rebindDiscordThread({
+              currentDiscordThreadId: thread.id,
+              nextDiscordThreadId: previousThreadId,
+            });
+
+            if (previousLifecycleState) {
+              sessionRepo.updateLifecycleState(previousThreadId, previousLifecycleState);
+            }
+          };
+          const thread = await createAttachedSessionThread({
+            client: discord,
+            controlChannelId: config.discord.controlChannelId,
+            createVisibleSessionThread,
+            workdir,
+            codexThreadId,
+            title: `${workdir.label}-session`,
+            starterText: `Attaching Codex session \`${codexThreadId}\` for \`${workdir.label}\`.`,
+            onBound: async (boundThread) => {
+              sessionRepo.rebindDiscordThread({
+                currentDiscordThreadId: previousThreadId,
+                nextDiscordThreadId: boundThread.id,
+              });
+              sessionRepo.updateLifecycleState(boundThread.id, "active");
+            },
+            onRollback: rollbackBinding,
+          });
+          attachedSession = sessionRepo.getByDiscordThreadId(thread.id);
+          rollbackAttach = async () => {
+            await thread.delete("CodeHelm rolled back an untrusted replacement attach");
+            await rollbackBinding(thread);
+          };
+        }
+
+        if (!attachedSession) {
+          throw new Error(`Managed session ${codexThreadId} disappeared during attach`);
+        }
+
+        const shouldResumeIntoDiscordThread =
+          attachmentKind === "reopen"
+          || inferSyncedSessionRuntimeState(snapshot.thread) === "waiting-approval";
+        const result =
+          shouldResumeIntoDiscordThread
+            ? await resumeManagedSessionIntoDiscordThread(attachedSession)
+            : await syncManagedSessionIntoDiscordThread(attachedSession);
+
+        if (result.kind === "untrusted") {
+          const untrustedReply = {
+            reply: {
+              content:
+                `Attach aborted for \`${codexThreadId}\` because CodeHelm could not ` +
+                "establish a trustworthy synced session view.",
+              ephemeral: true,
+            },
+          };
+
+          if (rollbackAttach) {
+            try {
+              await rollbackAttach();
+            } catch (rollbackError) {
+              logger.warn(
+                `Failed to roll back untrusted attach for ${codexThreadId}`,
+                rollbackError,
+              );
+            }
+          }
+
+          return untrustedReply;
+        }
+
+        if (result.kind === "error") {
+          await sendTextToChannel(
+            discord,
+            attachedSession.discordThreadId,
+            attachedSessionErrorSurfaceText,
+          );
+        }
+
+        const summary = describeAttachedSessionResult(result);
+
+        if (!summary) {
+          throw new Error(`Unhandled attach result for ${codexThreadId}`);
+        }
+
+        const threadPrefix =
+          attachmentKind === "rebind"
+            ? `Attached session in replacement thread <#${attachedSession.discordThreadId}>.`
+            : `Attached session <#${attachedSession.discordThreadId}>.`;
+
+        return {
+          reply: {
+            content: `${threadPrefix} ${summary}`,
+          },
+        };
+      } catch (error) {
+        return {
+          reply: {
+            content:
+              error instanceof Error
+                ? `Attach failed for \`${codexThreadId}\`: ${error.message}.`
+                : `Attach failed for \`${codexThreadId}\`.`,
+            ephemeral: true,
+          },
+        };
+      }
+    },
+  };
+};
+
 const registerGuildCommands = async (
   config: AppConfig,
   commands: RESTPostAPIChatInputApplicationCommandsJSONBody[],
@@ -2266,6 +2908,22 @@ const setThreadArchivedState = async ({
   }
 
   await channel.setArchived(archived, reason);
+};
+
+const isManagedDiscordThreadUsable = async ({
+  client,
+  threadId,
+}: {
+  client: Client;
+  threadId: string;
+}) => {
+  try {
+    const channel = await client.channels.fetch(threadId);
+
+    return isSendableChannel(channel) && isArchiveableThreadChannel(channel);
+  } catch {
+    return false;
+  }
 };
 
 const recoverStatusCardMessage = async (
@@ -3052,233 +3710,15 @@ export const startCodeHelm = async (
     });
   };
 
-  const services: DiscordCommandServices = {
-    async listWorkdirs({ guildId, channelId }) {
-      const contextError = requireConfiguredControlChannel(config, guildId, channelId);
-
-      if (contextError) {
-        return contextError;
-      }
-
-      return {
-        reply: {
-          content: formatWorkdirList(config.workdirs),
-        },
-      };
-    },
-    async createSession({ actorId, guildId, channelId, workdirId }) {
-      const contextError = requireConfiguredControlChannel(config, guildId, channelId);
-
-      if (contextError) {
-        return contextError;
-      }
-
-      const workdir = findConfiguredWorkdir(config, workdirId);
-
-      if (!workdir) {
-        return {
-          reply: {
-            content: `Unknown workdir \`${workdirId}\`.`,
-            ephemeral: true,
-          },
-        };
-      }
-
-      const started = await codexClient.startThread({
-        cwd: workdir.absolutePath,
-      });
-      const codexThreadId = started.thread.id;
-      const discord = requireDiscordClient(discordClient);
-      let thread: AnyThreadChannel | undefined;
-
-      try {
-        thread = await createVisibleSessionThread({
-          client: discord,
-          controlChannelId: config.discord.controlChannelId,
-          title: `${workdir.label}-session`,
-          starterText: `Opening session for \`${workdir.label}\`.`,
-        });
-
-        sessionRepo.insert({
-          discordThreadId: thread.id,
-          codexThreadId,
-          ownerDiscordUserId: actorId,
-          workdirId: workdir.id,
-          state: "idle",
-        });
-        ensureTranscriptRuntime(codexThreadId);
-        await thread.send({
-          ...renderSessionStartedPayload({
-            type: "session.started",
-            params: {
-              workdirLabel: workdir.label,
-              codexThreadId,
-            },
-          }),
-        });
-        await updateStatusCard({
-          discord,
-          session: sessionRepo.getByDiscordThreadId(thread.id)!,
-          state: "idle",
-        });
-      } catch (error) {
-        if (thread) {
-          try {
-            await thread.delete("CodeHelm failed to bind the new session");
-          } catch (deleteError) {
-            logger.warn("Failed to clean up orphan Discord thread after session creation", deleteError);
-          }
-        }
-        throw error;
-      }
-
-      return {
-        reply: {
-          content: `Created session <#${thread.id}> for \`${workdir.label}\`.`,
-        },
-      };
-    },
-    async importSession({ actorId, guildId, channelId, workdirId, sessionId }) {
-      const contextError = requireConfiguredControlChannel(config, guildId, channelId);
-
-      if (contextError) {
-        return contextError;
-      }
-
-      const existingSession = sessionRepo.getByCodexThreadId(sessionId);
-
-      if (existingSession) {
-        return {
-          reply: {
-            content: `Codex session \`${sessionId}\` is already mapped to <#${existingSession.discordThreadId}>.`,
-            ephemeral: true,
-          },
-        };
-      }
-
-      const workdir = findConfiguredWorkdir(config, workdirId);
-
-      if (!workdir) {
-        return {
-          reply: {
-            content: `Unknown workdir \`${workdirId}\`.`,
-            ephemeral: true,
-          },
-        };
-      }
-
-      const readResult = await readThreadForSnapshotReconciliation({
-        codexClient,
-        threadId: sessionId,
-      });
-
-      if (!canImportThreadIntoWorkdir(readResult.thread, workdir.absolutePath)) {
-        return {
-          reply: {
-            content:
-              readResult.thread.cwd !== workdir.absolutePath
-                ? `Session \`${sessionId}\` belongs to \`${readResult.thread.cwd}\`, not workdir \`${workdir.id}\`.`
-                : `Session \`${sessionId}\` is not importable because its status is \`${describeCodexThreadStatus(readResult.thread.status)}\`.`,
-            ephemeral: true,
-          },
-        };
-      }
-
-      await codexClient.resumeThread({ threadId: sessionId });
-
-      const discord = requireDiscordClient(discordClient);
-      let thread: AnyThreadChannel | undefined;
-
-      try {
-        thread = await createVisibleSessionThread({
-          client: discord,
-          controlChannelId: config.discord.controlChannelId,
-          title: `${workdir.label}-import`,
-          starterText: `Importing Codex session \`${sessionId}\` for \`${workdir.label}\`.`,
-        });
-
-        sessionRepo.insert({
-          discordThreadId: thread.id,
-          codexThreadId: sessionId,
-          ownerDiscordUserId: actorId,
-          workdirId: workdir.id,
-          state: inferSessionStateFromThreadStatus(readResult.thread.status),
-        });
-        await thread.send({
-          ...renderSessionStartedPayload({
-            type: "session.started",
-            params: {
-              workdirLabel: workdir.label,
-              codexThreadId: sessionId,
-            },
-          }),
-        });
-        await updateStatusCard({
-          discord,
-          session: sessionRepo.getByDiscordThreadId(thread.id)!,
-          state: inferSessionStateFromThreadStatus(readResult.thread.status),
-        });
-        await syncTranscriptSnapshot({
-          discord,
-          session: sessionRepo.getByDiscordThreadId(thread.id)!,
-          degradeOnUnexpectedItems: false,
-        });
-      } catch (error) {
-        if (thread) {
-          try {
-            await thread.delete("CodeHelm failed to bind the imported session");
-          } catch (deleteError) {
-            logger.warn("Failed to clean up orphan Discord thread after session import", deleteError);
-          }
-        }
-        throw error;
-      }
-
-      return {
-        reply: {
-          content: `Imported session into <#${thread.id}>.`,
-        },
-      };
-    },
-    async listSessions({ guildId, channelId }) {
-      const contextError = requireConfiguredControlChannel(config, guildId, channelId);
-
-      if (contextError) {
-        return contextError;
-      }
-
-      return {
-        reply: {
-          content: formatManagedSessionList(sessionRepo.listAll()),
-        },
-      };
-    },
-    async closeSession({ actorId, guildId, channelId }) {
-      const guildError = requireConfiguredGuild(config, guildId);
-
-      if (guildError) {
-        return guildError;
-      }
-
-      const session = sessionRepo.getByDiscordThreadId(channelId);
-
-      if (!session) {
-        return resolveCloseSessionCommand({
-          actorId,
-          session: null,
-        });
-      }
-
-      if (!canControlSession({
-        viewerId: actorId,
-        ownerId: session.ownerDiscordUserId,
-      })) {
-        return resolveCloseSessionCommand({
-          actorId,
-          session,
-        });
-      }
-
+  const services = createControlChannelServices({
+    config,
+    codexClient,
+    sessionRepo,
+    getDiscordClient: () => requireDiscordClient(discordClient),
+    createVisibleSessionThread,
+    ensureTranscriptRuntime,
+    updateStatusCard,
+    closeManagedSession: async (session) => {
       const discord = requireDiscordClient(discordClient);
 
       await closeManagedSession({
@@ -3300,158 +3740,17 @@ export const startCodeHelm = async (
           sessionRepo.updateLifecycleState(session.discordThreadId, lifecycleState);
         },
       });
-
-      return {
-        reply: {
-          content: `Archived session <#${session.discordThreadId}>.`,
-        },
-      };
     },
-    async syncSession({ actorId, guildId, channelId }) {
-      const guildError = requireConfiguredGuild(config, guildId);
-
-      if (guildError) {
-        return guildError;
-      }
-
-      const session = sessionRepo.getByDiscordThreadId(channelId);
-      const validation = resolveSyncSessionCommand({
-        actorId,
-        session,
-      });
-
-      if (
-        !session
-        || !canControlSession({
-          viewerId: actorId,
-          ownerId: session.ownerDiscordUserId,
-        })
-        || session.lifecycleState !== "active"
-        || coercePersistedSessionRuntimeState(session.state) !== "degraded"
-      ) {
-        return validation;
-      }
-
-      let result: SessionResumeState;
-
-      try {
-        result = await syncManagedSessionIntoDiscordThread(session);
-      } catch (error) {
-        return {
-          reply: {
-            content:
-              error instanceof Error
-                ? `Sync failed for \`${session.codexThreadId}\`: ${error.message}.`
-                : `Sync failed for \`${session.codexThreadId}\`.`,
-            ephemeral: true,
-          },
-        };
-      }
-
-      if (result.kind === "untrusted") {
-        return {
-          reply: {
-            content:
-              `Sync aborted for \`${session.codexThreadId}\` because CodeHelm could not ` +
-              "establish a trustworthy synced session view.",
-            ephemeral: true,
-          },
-        };
-      }
-
-      const summary =
-        result.kind === "ready"
-          ? "Session is writable."
-          : result.kind === "busy"
-            ? `Session is now \`${result.session.runtimeState}\`.`
-            : result.kind === "error"
-              ? "Session remains read-only because Codex reports an error state."
-              : "Session remains read-only.";
-
-      return {
-        reply: {
-          content: `Synced session <#${session.discordThreadId}>. ${summary}`,
-        },
-      };
-    },
-    async resumeSession({ actorId, guildId, channelId, codexThreadId }) {
-      const contextError = requireConfiguredControlChannel(config, guildId, channelId);
-
-      if (contextError) {
-        return contextError;
-      }
-
-      const session = sessionRepo.getByCodexThreadId(codexThreadId);
-      const validation = resolveResumeSessionCommand({
-        actorId,
-        codexThreadId,
-        session,
-      });
-
-      if (
-        !session
-        || !canControlSession({
-          viewerId: actorId,
-          ownerId: session.ownerDiscordUserId,
-        })
-        || session.lifecycleState === "deleted"
-        || session.lifecycleState !== "archived"
-      ) {
-        return validation;
-      }
-
-      let result: SessionResumeState;
-
-      try {
-        result = await resumeManagedSessionIntoDiscordThread(session);
-      } catch (error) {
-        return {
-          reply: {
-            content:
-              error instanceof Error
-                ? `Resume failed for \`${codexThreadId}\`: ${error.message}.`
-                : `Resume failed for \`${codexThreadId}\`.`,
-            ephemeral: true,
-          },
-        };
-      }
-
-      if (result.kind === "untrusted") {
-        return {
-          reply: {
-            content:
-              `Resume aborted for \`${codexThreadId}\` because CodeHelm could not ` +
-              "establish a trustworthy synced session view.",
-            ephemeral: true,
-          },
-        };
-      }
-
-      if (result.kind === "error") {
-        const discord = requireDiscordClient(discordClient);
-        await sendTextToChannel(
-          discord,
-          session.discordThreadId,
-          "CodeHelm resumed this thread as an error surface. Review the latest Codex state before sending more input.",
-        );
-      }
-
-      const summary =
-        result.kind === "ready"
-          ? "Session is writable."
-          : result.kind === "busy"
-            ? `Session remains \`${result.session.runtimeState}\`.`
-            : result.kind === "read-only"
-              ? "Session remains read-only."
-              : "Session resumed as an error surface.";
-
-      return {
-        reply: {
-          content: `Resumed session <#${session.discordThreadId}>. ${summary}`,
-        },
-      };
-    },
-  };
+    syncManagedSessionIntoDiscordThread,
+    resumeManagedSessionIntoDiscordThread,
+    sendTextToChannel,
+    isManagedDiscordThreadUsable,
+    readThreadForSnapshotReconciliation: ({ threadId }) =>
+      readThreadForSnapshotReconciliation({
+        codexClient,
+        threadId,
+      }),
+  });
 
   const bot = createDiscordBot({
     token: config.discord.botToken,

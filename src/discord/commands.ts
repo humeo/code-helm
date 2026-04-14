@@ -2,6 +2,7 @@ import {
   DiscordjsErrorCodes,
   MessageFlags,
   SlashCommandBuilder,
+  type AutocompleteInteraction,
   type ChatInputCommandInteraction,
   type InteractionReplyOptions,
   type RESTPostAPIChatInputApplicationCommandsJSONBody,
@@ -25,31 +26,11 @@ export type DiscordCommandResult = {
   intent?: DiscordCommandIntent;
 };
 
-export type ListWorkdirsInput = {
-  actorId: string;
-  guildId: string;
-  channelId: string;
-};
-
 export type CreateSessionInput = {
   actorId: string;
   guildId: string;
   channelId: string;
   workdirId: string;
-};
-
-export type ImportSessionInput = {
-  actorId: string;
-  guildId: string;
-  channelId: string;
-  workdirId: string;
-  sessionId: string;
-};
-
-export type ListSessionsInput = {
-  actorId: string;
-  guildId: string;
-  channelId: string;
 };
 
 export type CloseSessionInput = {
@@ -68,21 +49,26 @@ export type ResumeSessionInput = {
   actorId: string;
   guildId: string;
   channelId: string;
+  workdirId: string;
   codexThreadId: string;
 };
 
+export type DiscordAutocompleteChoice = {
+  name: string;
+  value: string;
+};
+
+export type ResumeSessionAutocompleteInput = {
+  actorId: string;
+  guildId: string;
+  channelId: string;
+  workdirId?: string;
+  query: string;
+};
+
 export type DiscordCommandServices = {
-  listWorkdirs(
-    input: ListWorkdirsInput,
-  ): Promise<DiscordCommandResult> | DiscordCommandResult;
   createSession(
     input: CreateSessionInput,
-  ): Promise<DiscordCommandResult> | DiscordCommandResult;
-  importSession(
-    input: ImportSessionInput,
-  ): Promise<DiscordCommandResult> | DiscordCommandResult;
-  listSessions(
-    input: ListSessionsInput,
   ): Promise<DiscordCommandResult> | DiscordCommandResult;
   closeSession(
     input: CloseSessionInput,
@@ -93,6 +79,12 @@ export type DiscordCommandServices = {
   resumeSession(
     input: ResumeSessionInput,
   ): Promise<DiscordCommandResult> | DiscordCommandResult;
+  autocompleteResumeWorkdirs(
+    input: ResumeSessionAutocompleteInput,
+  ): Promise<DiscordAutocompleteChoice[]> | DiscordAutocompleteChoice[];
+  autocompleteResumeSessions(
+    input: ResumeSessionAutocompleteInput,
+  ): Promise<DiscordAutocompleteChoice[]> | DiscordAutocompleteChoice[];
 };
 
 const guildOnlyCommand = (name: string, description: string) => {
@@ -103,8 +95,7 @@ const guildOnlyCommand = (name: string, description: string) => {
 };
 
 const workdirOptionDescription = "Configured workdir identifier";
-const importOptionDescription = "Codex session identifier to import";
-const resumeOptionDescription = "Managed Codex thread identifier to resume";
+const resumeOptionDescription = "Codex session identifier to attach";
 
 type CommandWorkdir = {
   id: string;
@@ -136,39 +127,33 @@ export const buildControlChannelCommands = (
   workdirs: CommandWorkdir[] = [],
 ): RESTPostAPIChatInputApplicationCommandsJSONBody[] =>
   [
-    guildOnlyCommand("workdir-list", "List configured workdirs"),
     addWorkdirOption(
       guildOnlyCommand("session-new", "Create a new session for a workdir"),
       workdirs,
     ),
-    addWorkdirOption(
-      guildOnlyCommand("session-import", "Import an idle session into Discord"),
-      workdirs,
-    ).addStringOption((option) =>
-      option
-        .setName("session")
-        .setDescription(importOptionDescription)
-        .setRequired(true),
-    ),
-    guildOnlyCommand("session-list", "List known sessions"),
     guildOnlyCommand("session-close", "Close the current managed session thread"),
     guildOnlyCommand("session-sync", "Sync the current degraded session thread"),
-    guildOnlyCommand("session-resume", "Resume a managed session thread")
+    guildOnlyCommand("session-resume", "Attach Discord to an existing Codex session")
+      .addStringOption((option) =>
+        option
+          .setName("workdir")
+          .setDescription(workdirOptionDescription)
+          .setRequired(true)
+          .setAutocomplete(true),
+      )
       .addStringOption((option) =>
         option
           .setName("session")
           .setDescription(resumeOptionDescription)
-          .setRequired(true),
+          .setRequired(true)
+          .setAutocomplete(true),
       ),
   ].map((command) => command.toJSON());
 
 export const controlChannelCommands = buildControlChannelCommands();
 
 const controlCommandNames = new Set([
-  "workdir-list",
   "session-new",
-  "session-import",
-  "session-list",
   "session-close",
   "session-sync",
   "session-resume",
@@ -179,6 +164,20 @@ export const isControlChannelCommandName = (commandName: string) => {
 };
 
 const interactionContext = (interaction: ChatInputCommandInteraction) => {
+  const guildId = interaction.guildId;
+
+  if (!guildId) {
+    throw new Error("Control commands require a guild context");
+  }
+
+  return {
+    actorId: interaction.user.id,
+    guildId,
+    channelId: interaction.channelId,
+  };
+};
+
+const autocompleteContext = (interaction: AutocompleteInteraction) => {
   const guildId = interaction.guildId;
 
   if (!guildId) {
@@ -234,11 +233,6 @@ export const handleControlChannelCommand = async (
   const context = interactionContext(interaction);
 
   switch (interaction.commandName) {
-    case "workdir-list": {
-      await safelyDeferReply(interaction);
-      await safelyReply(interaction, await services.listWorkdirs(context));
-      return true;
-    }
     case "session-new": {
       await safelyDeferReply(interaction);
       await safelyReply(
@@ -250,22 +244,6 @@ export const handleControlChannelCommand = async (
       );
       return true;
     }
-    case "session-import": {
-      await safelyDeferReply(interaction);
-      await safelyReply(
-        interaction,
-        await services.importSession({
-          ...context,
-          workdirId: interaction.options.getString("workdir", true),
-          sessionId: interaction.options.getString("session", true),
-        }),
-      );
-      return true;
-    }
-    case "session-list":
-      await safelyDeferReply(interaction);
-      await safelyReply(interaction, await services.listSessions(context));
-      return true;
     case "session-close":
       await safelyDeferReply(interaction);
       await safelyReply(interaction, await services.closeSession(context));
@@ -280,6 +258,7 @@ export const handleControlChannelCommand = async (
         interaction,
         await services.resumeSession({
           ...context,
+          workdirId: interaction.options.getString("workdir", true),
           codexThreadId: interaction.options.getString("session", true),
         }),
       );
@@ -287,6 +266,44 @@ export const handleControlChannelCommand = async (
     default:
       return false;
   }
+};
+
+export const handleControlChannelAutocomplete = async (
+  interaction: AutocompleteInteraction,
+  services: DiscordCommandServices,
+) => {
+  if (interaction.commandName !== "session-resume") {
+    await interaction.respond([]);
+    return false;
+  }
+
+  const { name: focusedOption, value } = interaction.options.getFocused(true);
+  const context = autocompleteContext(interaction);
+  const query = String(value ?? "");
+
+  let choices: DiscordAutocompleteChoice[] = [];
+
+  switch (focusedOption) {
+    case "workdir":
+      choices = await services.autocompleteResumeWorkdirs({
+        ...context,
+        query,
+      });
+      break;
+    case "session":
+      choices = await services.autocompleteResumeSessions({
+        ...context,
+        workdirId: interaction.options.getString("workdir") ?? undefined,
+        query,
+      });
+      break;
+    default:
+      await interaction.respond([]);
+      return false;
+  }
+
+  await interaction.respond(choices.slice(0, 25));
+  return true;
 };
 
 export const replyWithCommandError = async (
