@@ -149,10 +149,10 @@ const createAutocompleteInteraction = ({
   };
 };
 
-const handleControlChannelAutocomplete = discordCommands
-  .handleControlChannelAutocomplete as
-  | ((interaction: never, services: never) => Promise<unknown>)
-  | undefined;
+const getHandleControlChannelAutocomplete = () => {
+  return (discordCommands as Record<string, unknown>)
+    .handleControlChannelAutocomplete;
+};
 
 test("/session-new delegates with the configured workdir", async () => {
   const { calls, services } = createServices();
@@ -259,7 +259,14 @@ test("/session-resume workdir autocomplete uses configured workdirs", async () =
     },
   };
 
-  await handleControlChannelAutocomplete?.(
+  const handleControlChannelAutocomplete =
+    getHandleControlChannelAutocomplete();
+  expect(typeof handleControlChannelAutocomplete).toBe("function");
+  if (typeof handleControlChannelAutocomplete !== "function") {
+    throw new Error("handleControlChannelAutocomplete export is missing");
+  }
+
+  await handleControlChannelAutocomplete(
     { ...interaction, commandName: "session-resume" } as never,
     services as never,
   );
@@ -295,7 +302,14 @@ test("/session-resume session autocomplete uses the selected workdir", async () 
     },
   };
 
-  await handleControlChannelAutocomplete?.(
+  const handleControlChannelAutocomplete =
+    getHandleControlChannelAutocomplete();
+  expect(typeof handleControlChannelAutocomplete).toBe("function");
+  if (typeof handleControlChannelAutocomplete !== "function") {
+    throw new Error("handleControlChannelAutocomplete export is missing");
+  }
+
+  await handleControlChannelAutocomplete(
     { ...interaction, commandName: "session-resume" } as never,
     services as never,
   );
