@@ -73,6 +73,10 @@ test("createDiscordBot routes autocomplete interactions to the autocomplete hand
   });
 
   const responses: unknown[] = [];
+  let resolveResponded: (() => void) | undefined;
+  const responded = new Promise<void>((resolve) => {
+    resolveResponded = resolve;
+  });
   const interaction = {
     isChatInputCommand() {
       return false;
@@ -95,11 +99,19 @@ test("createDiscordBot routes autocomplete interactions to the autocomplete hand
     },
     async respond(payload: unknown) {
       responses.push(payload);
+      resolveResponded?.();
     },
   };
 
   bot.client.emit(Events.InteractionCreate, interaction as never);
-  await Promise.resolve();
+  await Promise.race([
+    responded,
+    new Promise<never>((_, reject) => {
+      setTimeout(() => {
+        reject(new Error("Autocomplete response was not observed"));
+      }, 100);
+    }),
+  ]);
 
   expect(responses).toEqual([
     [{ name: "Code Agent Helm Example (example)", value: "example" }],
