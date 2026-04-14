@@ -5,10 +5,7 @@ import { createDiscordBot } from "../../src/discord/bot";
 const createServices = () => {
   return {
     services: {
-      listWorkdirs: () => ({ reply: { content: "workdirs" } }),
       createSession: () => ({ reply: { content: "session created" } }),
-      importSession: () => ({ reply: { content: "session imported" } }),
-      listSessions: () => ({ reply: { content: "sessions" } }),
       closeSession: () => ({ reply: { content: "session closed" } }),
       syncSession: () => ({ reply: { content: "session synced" } }),
       resumeSession: () => ({ reply: { content: "session resumed" } }),
