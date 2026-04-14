@@ -5,12 +5,7 @@ import { createDiscordBot } from "../../src/discord/bot";
 const createServices = () => {
   return {
     services: {
-      // compat-only stubs for the current command-service contract
-      // until the deprecated command surface is removed.
-      listWorkdirs: () => ({ reply: { content: "workdirs" } }),
       createSession: () => ({ reply: { content: "session created" } }),
-      importSession: () => ({ reply: { content: "session imported" } }),
-      listSessions: () => ({ reply: { content: "sessions" } }),
       closeSession: () => ({ reply: { content: "session closed" } }),
       syncSession: () => ({ reply: { content: "session synced" } }),
       resumeSession: () => ({ reply: { content: "session resumed" } }),

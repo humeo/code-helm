@@ -26,18 +26,9 @@ const createServices = () => {
   };
 
   const services: DiscordCommandServices = {
-    listWorkdirs() {
-      return okResult("workdirs");
-    },
     createSession(input) {
       calls.createSession.push(input);
       return okResult("session created");
-    },
-    importSession() {
-      return okResult("session imported");
-    },
-    listSessions() {
-      return okResult("sessions");
     },
     closeSession(input) {
       calls.closeSession.push(input);
@@ -50,6 +41,16 @@ const createServices = () => {
     resumeSession(input) {
       calls.resumeSession.push(input);
       return okResult("session resumed");
+    },
+    autocompleteResumeWorkdirs(input) {
+      return [
+        { name: `workdir:${input.query}`, value: "example" },
+      ];
+    },
+    autocompleteResumeSessions(input) {
+      return [
+        { name: `session:${input.query}`, value: "codex-thread-7" },
+      ];
     },
   };
 
