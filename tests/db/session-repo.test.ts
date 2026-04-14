@@ -469,7 +469,12 @@ test("upgrades legacy lifecycle values by normalizing invalid states to active",
 
 test("session mutation methods fail when the target session row does not exist", () => {
   const db = createMigratedDb();
-  const repo = createSessionRepo(db);
+  const repo = createSessionRepo(db) as ReturnType<typeof createSessionRepo> & {
+    rebindDiscordThread(input: {
+      currentDiscordThreadId: string;
+      nextDiscordThreadId: string;
+    }): void;
+  };
 
   expect(() => repo.updateState("missing-thread", "running")).toThrow(
     /session not found/i,
@@ -482,6 +487,12 @@ test("session mutation methods fail when the target session row does not exist",
   );
   expect(() => repo.syncState("missing-thread", "idle")).toThrow(/session not found/i);
   expect(() => repo.markDeleted("missing-thread")).toThrow(/session not found/i);
+  expect(() =>
+    repo.rebindDiscordThread({
+      currentDiscordThreadId: "missing-thread",
+      nextDiscordThreadId: "replacement-thread",
+    }),
+  ).toThrow(/session not found/i);
 
   db.close();
 });

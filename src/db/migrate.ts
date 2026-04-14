@@ -16,6 +16,13 @@ type SqliteMasterRow = {
   sql: string;
 };
 
+type ForeignKeyCheckRow = {
+  table: string;
+  rowid: number;
+  parent: string;
+  fkid: number;
+};
+
 const lifecycleConstraintSql =
   "CHECK (lifecycle_state IN ('active', 'archived', 'deleted'))";
 
@@ -41,6 +48,16 @@ const approvalsTableHasCascadeUpdate = (db: Database) => {
   ).get() as SqliteMasterRow | null;
 
   return row?.sql.includes("ON UPDATE CASCADE") ?? false;
+};
+
+const assertNoForeignKeyViolations = (db: Database, tableName: string) => {
+  const violations = db
+    .prepare(`PRAGMA foreign_key_check(${tableName})`)
+    .all() as ForeignKeyCheckRow[];
+
+  if (violations.length > 0) {
+    throw new Error(`${tableName} rebuild produced foreign key violations`);
+  }
 };
 
 const rebuildSessionsTableWithLifecycleConstraint = (
@@ -158,6 +175,7 @@ const rebuildApprovalsTableWithCascadeUpdate = (db: Database) => {
         updated_at
       FROM approvals
     `);
+    assertNoForeignKeyViolations(db, "approvals_next");
     db.exec("DROP TABLE approvals");
     db.exec("ALTER TABLE approvals_next RENAME TO approvals");
     db.exec("COMMIT");
