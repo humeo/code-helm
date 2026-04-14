@@ -2164,6 +2164,84 @@ const findConfiguredWorkdir = (config: AppConfig, workdirId: string) => {
   return config.workdirs.find((workdir) => workdir.id === workdirId);
 };
 
+const filterConfiguredWorkdirs = (config: AppConfig, query: string) => {
+  const normalizedQuery = query.trim().toLowerCase();
+
+  return config.workdirs
+    .filter((workdir) => {
+      if (!normalizedQuery) {
+        return true;
+      }
+
+      return (
+        workdir.id.toLowerCase().includes(normalizedQuery)
+        || workdir.label.toLowerCase().includes(normalizedQuery)
+        || workdir.absolutePath.toLowerCase().includes(normalizedQuery)
+      );
+    })
+    .slice(0, 25)
+    .map((workdir) => ({
+      name: `${workdir.label} (${workdir.id})`,
+      value: workdir.id,
+    }));
+};
+
+const formatSessionAutocompleteChoice = (thread: {
+  id: string;
+  preview?: string;
+}) => {
+  const label = thread.preview?.trim();
+
+  if (!label) {
+    return {
+      name: thread.id,
+      value: thread.id,
+    };
+  }
+
+  const suffix = ` — ${label}`;
+  const maxNameLength = 100;
+  const baseLength = maxNameLength - suffix.length;
+
+  return {
+    name:
+      baseLength > 0
+        ? `${thread.id.slice(0, baseLength)}${suffix}`
+        : thread.id,
+    value: thread.id,
+  };
+};
+
+const buildResumeSessionAutocompleteChoices = async ({
+  codexClient,
+  query,
+  workdirId,
+  workdirs,
+}: {
+  codexClient: Pick<JsonRpcClient, "listThreads">;
+  query: string;
+  workdirId?: string;
+  workdirs: AppConfig["workdirs"];
+}) => {
+  if (!workdirId) {
+    return [];
+  }
+
+  const workdir = workdirs.find((candidate) => candidate.id === workdirId);
+
+  if (!workdir) {
+    return [];
+  }
+
+  const result = await codexClient.listThreads({
+    cwd: workdir.absolutePath,
+    searchTerm: query.trim() || null,
+    limit: 25,
+  });
+
+  return result.data.slice(0, 25).map(formatSessionAutocompleteChoice);
+};
+
 const registerGuildCommands = async (
   config: AppConfig,
   commands: RESTPostAPIChatInputApplicationCommandsJSONBody[],
@@ -3055,19 +3133,6 @@ export const startCodeHelm = async (
   };
 
   const services: DiscordCommandServices = {
-    async listWorkdirs({ guildId, channelId }) {
-      const contextError = requireConfiguredControlChannel(config, guildId, channelId);
-
-      if (contextError) {
-        return contextError;
-      }
-
-      return {
-        reply: {
-          content: formatWorkdirList(config.workdirs),
-        },
-      };
-    },
     async createSession({ actorId, guildId, channelId, workdirId }) {
       const contextError = requireConfiguredControlChannel(config, guildId, channelId);
 
@@ -3137,121 +3202,6 @@ export const startCodeHelm = async (
       return {
         reply: {
           content: `Created session <#${thread.id}> for \`${workdir.label}\`.`,
-        },
-      };
-    },
-    async importSession({ actorId, guildId, channelId, workdirId, sessionId }) {
-      const contextError = requireConfiguredControlChannel(config, guildId, channelId);
-
-      if (contextError) {
-        return contextError;
-      }
-
-      const existingSession = sessionRepo.getByCodexThreadId(sessionId);
-
-      if (existingSession) {
-        return {
-          reply: {
-            content: `Codex session \`${sessionId}\` is already mapped to <#${existingSession.discordThreadId}>.`,
-            ephemeral: true,
-          },
-        };
-      }
-
-      const workdir = findConfiguredWorkdir(config, workdirId);
-
-      if (!workdir) {
-        return {
-          reply: {
-            content: `Unknown workdir \`${workdirId}\`.`,
-            ephemeral: true,
-          },
-        };
-      }
-
-      const readResult = await readThreadForSnapshotReconciliation({
-        codexClient,
-        threadId: sessionId,
-      });
-
-      if (!canImportThreadIntoWorkdir(readResult.thread, workdir.absolutePath)) {
-        return {
-          reply: {
-            content:
-              readResult.thread.cwd !== workdir.absolutePath
-                ? `Session \`${sessionId}\` belongs to \`${readResult.thread.cwd}\`, not workdir \`${workdir.id}\`.`
-                : `Session \`${sessionId}\` is not importable because its status is \`${describeCodexThreadStatus(readResult.thread.status)}\`.`,
-            ephemeral: true,
-          },
-        };
-      }
-
-      await codexClient.resumeThread({ threadId: sessionId });
-
-      const discord = requireDiscordClient(discordClient);
-      let thread: AnyThreadChannel | undefined;
-
-      try {
-        thread = await createVisibleSessionThread({
-          client: discord,
-          controlChannelId: config.discord.controlChannelId,
-          title: `${workdir.label}-import`,
-          starterText: `Importing Codex session \`${sessionId}\` for \`${workdir.label}\`.`,
-        });
-
-        sessionRepo.insert({
-          discordThreadId: thread.id,
-          codexThreadId: sessionId,
-          ownerDiscordUserId: actorId,
-          workdirId: workdir.id,
-          state: inferSessionStateFromThreadStatus(readResult.thread.status),
-        });
-        await thread.send({
-          ...renderSessionStartedPayload({
-            type: "session.started",
-            params: {
-              workdirLabel: workdir.label,
-              codexThreadId: sessionId,
-            },
-          }),
-        });
-        await updateStatusCard({
-          discord,
-          session: sessionRepo.getByDiscordThreadId(thread.id)!,
-          state: inferSessionStateFromThreadStatus(readResult.thread.status),
-        });
-        await syncTranscriptSnapshot({
-          discord,
-          session: sessionRepo.getByDiscordThreadId(thread.id)!,
-          degradeOnUnexpectedItems: false,
-        });
-      } catch (error) {
-        if (thread) {
-          try {
-            await thread.delete("CodeHelm failed to bind the imported session");
-          } catch (deleteError) {
-            logger.warn("Failed to clean up orphan Discord thread after session import", deleteError);
-          }
-        }
-        throw error;
-      }
-
-      return {
-        reply: {
-          content: `Imported session into <#${thread.id}>.`,
-        },
-      };
-    },
-    async listSessions({ guildId, channelId }) {
-      const contextError = requireConfiguredControlChannel(config, guildId, channelId);
-
-      if (contextError) {
-        return contextError;
-      }
-
-      return {
-        reply: {
-          content: formatManagedSessionList(sessionRepo.listAll()),
         },
       };
     },
@@ -3376,11 +3326,50 @@ export const startCodeHelm = async (
         },
       };
     },
-    async resumeSession({ actorId, guildId, channelId, codexThreadId }) {
+    async autocompleteResumeWorkdirs({ guildId, channelId, query }) {
+      const contextError = requireConfiguredControlChannel(config, guildId, channelId);
+
+      if (contextError) {
+        return [];
+      }
+
+      return filterConfiguredWorkdirs(config, query);
+    },
+    async autocompleteResumeSessions({
+      guildId,
+      channelId,
+      workdirId,
+      query,
+    }) {
+      const contextError = requireConfiguredControlChannel(config, guildId, channelId);
+
+      if (contextError) {
+        return [];
+      }
+
+      return buildResumeSessionAutocompleteChoices({
+        codexClient,
+        query,
+        workdirId,
+        workdirs: config.workdirs,
+      });
+    },
+    async resumeSession({ actorId, guildId, channelId, workdirId, codexThreadId }) {
       const contextError = requireConfiguredControlChannel(config, guildId, channelId);
 
       if (contextError) {
         return contextError;
+      }
+
+      const workdir = findConfiguredWorkdir(config, workdirId);
+
+      if (!workdir) {
+        return {
+          reply: {
+            content: `Unknown workdir \`${workdirId}\`.`,
+            ephemeral: true,
+          },
+        };
       }
 
       const session = sessionRepo.getByCodexThreadId(codexThreadId);
@@ -3390,9 +3379,23 @@ export const startCodeHelm = async (
         session,
       });
 
+      if (!session) {
+        return validation;
+      }
+
+      if (session.workdirId !== workdir.id) {
+        return {
+          reply: {
+            content:
+              `Session \`${codexThreadId}\` belongs to workdir \`${session.workdirId}\`, ` +
+              `not \`${workdir.id}\`.`,
+            ephemeral: true,
+          },
+        };
+      }
+
       if (
-        !session
-        || !canControlSession({
+        !canControlSession({
           viewerId: actorId,
           ownerId: session.ownerDiscordUserId,
         })
