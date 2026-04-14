@@ -234,6 +234,8 @@ const createControlChannelServicesFixture = ({
   readThreadCwd = "/tmp/workspace/api",
   readThreadError,
   discordClientError,
+  createThreadSendError,
+  updateStatusCardError,
   syncOutcome = createResumeOutcome("ready"),
   resumeOutcome = createResumeOutcome("ready"),
 }: {
@@ -243,6 +245,8 @@ const createControlChannelServicesFixture = ({
   readThreadCwd?: string;
   readThreadError?: Error;
   discordClientError?: Error;
+  createThreadSendError?: Error;
+  updateStatusCardError?: Error;
   syncOutcome?: SessionResumeState;
   resumeOutcome?: SessionResumeState;
 } = {}) => {
@@ -398,6 +402,9 @@ const createControlChannelServicesFixture = ({
         id: threadId,
         async send(payload: unknown) {
           calls.threadMessages.push({ threadId, payload });
+          if (createThreadSendError) {
+            throw createThreadSendError;
+          }
           return undefined as never;
         },
         async delete() {
@@ -409,7 +416,11 @@ const createControlChannelServicesFixture = ({
     ensureTranscriptRuntime: (codexThreadId) => {
       calls.ensureTranscriptRuntime.push(codexThreadId);
     },
-    updateStatusCard: async () => {},
+    updateStatusCard: async () => {
+      if (updateStatusCardError) {
+        throw updateStatusCardError;
+      }
+    },
     closeManagedSession: async () => {},
     syncManagedSessionIntoDiscordThread: async (session) => {
       calls.syncedThreads.push(session.discordThreadId);
@@ -680,6 +691,29 @@ test("resume attachment resolution distinguishes reuse, reopen, rebind, and crea
   ).toBe("create");
 });
 
+test("create session rolls back the new binding when status-card setup fails", async () => {
+  const failure = new Error("status card failed");
+  const { services, calls, getSessionByCodexThreadId } = createControlChannelServicesFixture({
+    updateStatusCardError: failure,
+  });
+
+  await expect(
+    services.createSession({
+      actorId: "owner-1",
+      guildId: "guild-1",
+      channelId: "control-1",
+      workdirId: "api",
+    }),
+  ).rejects.toBe(failure);
+
+  expect(calls.deletedThreads).toEqual(["discord-thread-new-1"]);
+  expect(calls.deletedSessions).toEqual(["discord-thread-new-1"]);
+  expect(getSessionByCodexThreadId("codex-thread-1")).toMatchObject({
+    discordThreadId: "discord-thread-new-1",
+    lifecycleState: "deleted",
+  });
+});
+
 test("unmanaged session with matching workdir creates a new Discord thread and session row", async () => {
   const { services, calls, getSessionByCodexThreadId } = createControlChannelServicesFixture();
 
@@ -856,6 +890,179 @@ test("attach surfaces snapshot read failures as structured command errors", asyn
     reply: {
       content: "Attach failed for `codex-thread-1`: thread missing.",
       ephemeral: true,
+    },
+  });
+});
+
+test("create attach rolls back the new binding when starter relay fails", async () => {
+  const failure = new Error("starter relay failed");
+  const { services, calls, getSessionByCodexThreadId } = createControlChannelServicesFixture({
+    createThreadSendError: failure,
+  });
+
+  const result = await services.resumeSession({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
+    workdirId: "api",
+    codexThreadId: "codex-thread-1",
+  });
+
+  expect(calls.deletedThreads).toEqual(["discord-thread-new-1"]);
+  expect(calls.deletedSessions).toEqual(["discord-thread-new-1"]);
+  expect(calls.syncedThreads).toEqual([]);
+  expect(calls.resumedThreads).toEqual([]);
+  expect(getSessionByCodexThreadId("codex-thread-1")).toMatchObject({
+    discordThreadId: "discord-thread-new-1",
+    lifecycleState: "deleted",
+  });
+  expect(result).toEqual({
+    reply: {
+      content: "Attach failed for `codex-thread-1`: starter relay failed.",
+      ephemeral: true,
+    },
+  });
+});
+
+test("replacement attach restores the original binding when starter relay fails", async () => {
+  const failure = new Error("starter relay failed");
+  const { services, calls, getSessionByCodexThreadId } = createControlChannelServicesFixture({
+    existingSession: createSessionRecord({
+      discordThreadId: "discord-thread-deleted",
+      lifecycleState: "deleted",
+    }),
+    discordThreadUsable: false,
+    createThreadSendError: failure,
+  });
+
+  const result = await services.resumeSession({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
+    workdirId: "api",
+    codexThreadId: "codex-thread-1",
+  });
+
+  expect(calls.reboundThreads).toEqual([
+    {
+      currentDiscordThreadId: "discord-thread-deleted",
+      nextDiscordThreadId: "discord-thread-new-1",
+    },
+    {
+      currentDiscordThreadId: "discord-thread-new-1",
+      nextDiscordThreadId: "discord-thread-deleted",
+    },
+  ]);
+  expect(calls.lifecycleUpdates).toEqual([
+    {
+      discordThreadId: "discord-thread-new-1",
+      lifecycleState: "active",
+    },
+    {
+      discordThreadId: "discord-thread-deleted",
+      lifecycleState: "deleted",
+    },
+  ]);
+  expect(calls.deletedThreads).toEqual(["discord-thread-new-1"]);
+  expect(calls.syncedThreads).toEqual([]);
+  expect(calls.resumedThreads).toEqual([]);
+  expect(getSessionByCodexThreadId("codex-thread-1")).toMatchObject({
+    discordThreadId: "discord-thread-deleted",
+    lifecycleState: "deleted",
+  });
+  expect(result).toEqual({
+    reply: {
+      content: "Attach failed for `codex-thread-1`: starter relay failed.",
+      ephemeral: true,
+    },
+  });
+});
+
+test("waiting-approval create attach resumes the Discord thread instead of doing a plain sync", async () => {
+  const waitingApprovalOutcome: SessionResumeState = {
+    kind: "busy",
+    session: {
+      lifecycleState: "active",
+      runtimeState: "waiting-approval",
+      accessMode: "writable",
+    },
+    persistedRuntimeState: "waiting-approval",
+    statusCardState: "waiting-approval",
+  };
+  const { services, calls } = createControlChannelServicesFixture({
+    readThreadStatus: {
+      type: "active",
+      activeFlags: ["waitingOnApproval"],
+    },
+    resumeOutcome: waitingApprovalOutcome,
+  });
+
+  const result = await services.resumeSession({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
+    workdirId: "api",
+    codexThreadId: "codex-thread-1",
+  });
+
+  expect(calls.insertedSessions).toEqual([
+    {
+      discordThreadId: "discord-thread-new-1",
+      codexThreadId: "codex-thread-1",
+      ownerDiscordUserId: "owner-1",
+      workdirId: "api",
+      state: "waiting-approval",
+    },
+  ]);
+  expect(calls.resumedThreads).toEqual(["discord-thread-new-1"]);
+  expect(calls.syncedThreads).toEqual([]);
+  expect(result).toEqual({
+    reply: {
+      content:
+        "Attached session <#discord-thread-new-1>. Session remains `waiting-approval`.",
+    },
+  });
+});
+
+test("waiting-approval replacement attach resumes the replacement thread instead of doing a plain sync", async () => {
+  const waitingApprovalOutcome: SessionResumeState = {
+    kind: "busy",
+    session: {
+      lifecycleState: "active",
+      runtimeState: "waiting-approval",
+      accessMode: "writable",
+    },
+    persistedRuntimeState: "waiting-approval",
+    statusCardState: "waiting-approval",
+  };
+  const { services, calls } = createControlChannelServicesFixture({
+    existingSession: createSessionRecord({
+      discordThreadId: "discord-thread-deleted",
+      lifecycleState: "deleted",
+      state: "waiting-approval",
+    }),
+    discordThreadUsable: false,
+    readThreadStatus: {
+      type: "active",
+      activeFlags: ["waitingOnApproval"],
+    },
+    resumeOutcome: waitingApprovalOutcome,
+  });
+
+  const result = await services.resumeSession({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
+    workdirId: "api",
+    codexThreadId: "codex-thread-1",
+  });
+
+  expect(calls.resumedThreads).toEqual(["discord-thread-new-1"]);
+  expect(calls.syncedThreads).toEqual([]);
+  expect(result).toEqual({
+    reply: {
+      content:
+        "Attached session in replacement thread <#discord-thread-new-1>. Session remains `waiting-approval`.",
     },
   });
 });

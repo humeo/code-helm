@@ -2307,6 +2307,7 @@ const createAttachedSessionThread = async ({
   title,
   starterText,
   onBound,
+  onRollback,
 }: {
   client: Client;
   controlChannelId: string;
@@ -2316,6 +2317,7 @@ const createAttachedSessionThread = async ({
   title: string;
   starterText: string;
   onBound: (thread: BoundSessionThread) => Promise<void>;
+  onRollback?: (thread: BoundSessionThread) => Promise<void>;
 }) => {
   let thread: BoundSessionThread | undefined;
 
@@ -2344,6 +2346,14 @@ const createAttachedSessionThread = async ({
         await thread.delete("CodeHelm failed to bind the attached session");
       } catch (deleteError) {
         logger.warn("Failed to clean up orphan Discord thread after session attachment", deleteError);
+      }
+
+      if (onRollback) {
+        try {
+          await onRollback(thread);
+        } catch (rollbackError) {
+          logger.warn("Failed to roll back session attachment binding", rollbackError);
+        }
       }
     }
 
@@ -2391,6 +2401,9 @@ export const createControlChannelServices = ({
       const codexThreadId = started.thread.id;
       const discord = getDiscordClient();
       let thread: BoundSessionThread | undefined;
+      const rollbackBinding = async (boundThread: BoundSessionThread) => {
+        sessionRepo.markDeleted(boundThread.id);
+      };
 
       try {
         thread = await createAttachedSessionThread({
@@ -2411,6 +2424,7 @@ export const createControlChannelServices = ({
             });
             ensureTranscriptRuntime(codexThreadId);
           },
+          onRollback: rollbackBinding,
         });
         const session = sessionRepo.getByDiscordThreadId(thread.id);
 
@@ -2429,6 +2443,12 @@ export const createControlChannelServices = ({
             await thread.delete("CodeHelm failed to bind the new session");
           } catch (deleteError) {
             logger.warn("Failed to clean up orphan Discord thread after session creation", deleteError);
+          }
+
+          try {
+            await rollbackBinding(thread);
+          } catch (rollbackError) {
+            logger.warn("Failed to roll back session creation binding", rollbackError);
           }
         }
 
@@ -2641,6 +2661,9 @@ export const createControlChannelServices = ({
           | undefined;
 
         if (attachmentKind === "create") {
+          const rollbackBinding = async (thread: BoundSessionThread) => {
+            sessionRepo.markDeleted(thread.id);
+          };
           const thread = await createAttachedSessionThread({
             client: discord,
             controlChannelId: config.discord.controlChannelId,
@@ -2655,15 +2678,16 @@ export const createControlChannelServices = ({
                 codexThreadId,
                 ownerDiscordUserId: actorId,
                 workdirId: workdir.id,
-              state: inferSessionStateFromThreadStatus(snapshot.thread.status),
-            });
-            ensureTranscriptRuntime(codexThreadId);
-          },
+                state: inferSessionStateFromThreadStatus(snapshot.thread.status),
+              });
+              ensureTranscriptRuntime(codexThreadId);
+            },
+            onRollback: rollbackBinding,
           });
           attachedSession = sessionRepo.getByDiscordThreadId(thread.id);
           rollbackAttach = async () => {
-            sessionRepo.markDeleted(thread.id);
             await thread.delete("CodeHelm rolled back an untrusted session attach");
+            await rollbackBinding(thread);
           };
         } else if (attachmentKind === "rebind") {
           const previousThreadId = existingSession?.discordThreadId;
@@ -2673,6 +2697,16 @@ export const createControlChannelServices = ({
             throw new Error(`Managed session ${codexThreadId} is missing a Discord thread binding`);
           }
 
+          const rollbackBinding = async (thread: BoundSessionThread) => {
+            sessionRepo.rebindDiscordThread({
+              currentDiscordThreadId: thread.id,
+              nextDiscordThreadId: previousThreadId,
+            });
+
+            if (previousLifecycleState) {
+              sessionRepo.updateLifecycleState(previousThreadId, previousLifecycleState);
+            }
+          };
           const thread = await createAttachedSessionThread({
             client: discord,
             controlChannelId: config.discord.controlChannelId,
@@ -2688,19 +2722,12 @@ export const createControlChannelServices = ({
               });
               sessionRepo.updateLifecycleState(boundThread.id, "active");
             },
+            onRollback: rollbackBinding,
           });
           attachedSession = sessionRepo.getByDiscordThreadId(thread.id);
           rollbackAttach = async () => {
-            sessionRepo.rebindDiscordThread({
-              currentDiscordThreadId: thread.id,
-              nextDiscordThreadId: previousThreadId,
-            });
-
-            if (previousLifecycleState) {
-              sessionRepo.updateLifecycleState(previousThreadId, previousLifecycleState);
-            }
-
             await thread.delete("CodeHelm rolled back an untrusted replacement attach");
+            await rollbackBinding(thread);
           };
         }
 
@@ -2708,8 +2735,11 @@ export const createControlChannelServices = ({
           throw new Error(`Managed session ${codexThreadId} disappeared during attach`);
         }
 
-        const result =
+        const shouldResumeIntoDiscordThread =
           attachmentKind === "reopen"
+          || inferSyncedSessionRuntimeState(snapshot.thread) === "waiting-approval";
+        const result =
+          shouldResumeIntoDiscordThread
             ? await resumeManagedSessionIntoDiscordThread(attachedSession)
             : await syncManagedSessionIntoDiscordThread(attachedSession);
 

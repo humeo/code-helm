@@ -24,20 +24,18 @@
 
 - `BL-CMD-001` The control surface is a guild-only slash-command console. DMs are not part of the control path.
   Evidence: `README.md`, `src/discord/commands.ts`, `tests/discord/commands.test.ts`
-- `BL-CMD-002` `/workdir-list` returns the configured workdirs for the current daemon workspace.
-  Evidence: `README.md`, `src/index.ts`, `tests/discord/commands.test.ts`
-- `BL-CMD-003` `/session-new` requires a configured workdir choice, creates a Codex session for that workdir, and opens a managed Discord thread bound to it.
+- `BL-CMD-002` `/session-new` requires a configured workdir choice, creates a Codex session for that workdir, and opens a managed Discord thread bound to it.
   Evidence: `README.md`, `src/discord/commands.ts`, `src/index.ts`
-- `BL-CMD-004` `/session-import` requires a configured workdir and a Codex session id, only imports `idle` or `notLoaded` sessions, and also requires the Codex thread cwd to match the selected workdir.
-  Evidence: `README.md`, `src/index.ts`, `tests/index.test.ts`, `tests/domain/session-service.test.ts`
-- `BL-CMD-005` `/session-list` shows known managed sessions and distinguishes active vs archived access state.
+- `BL-CMD-003` `/session-resume` requires `workdir` and `session` autocomplete inputs. Workdir choices come from daemon config; session choices come from live Codex `thread/list` scoped to the selected workdir.
+  Evidence: `README.md`, `src/discord/commands.ts`, `src/index.ts`, `tests/discord/commands.test.ts`, `tests/index.test.ts`
+- `BL-CMD-004` `/session-resume` only attaches when the selected Codex thread cwd matches the selected workdir. It can reuse an active attachment, reopen an archived one, create a new Discord thread for an unmanaged session, or create a replacement thread when the old Discord container is deleted or unusable.
+  Evidence: `README.md`, `src/index.ts`, `tests/index.test.ts`
+- `BL-CMD-005` `/session-close` only works inside a managed session thread and only for the thread owner. It archives the same Discord thread instead of destroying the Codex session.
   Evidence: `README.md`, `src/index.ts`, `tests/discord/commands.test.ts`, `tests/index.test.ts`
-- `BL-CMD-006` `/session-close` only works inside a managed session thread and only for the thread owner. It archives the same Discord thread instead of destroying the Codex session.
-  Evidence: `README.md`, `src/index.ts`, `tests/discord/commands.test.ts`, `tests/index.test.ts`
-- `BL-CMD-007` `/session-resume` only works for archived managed sessions and only for the owner. It syncs first, then reopens the same Discord thread.
-  Evidence: `README.md`, `src/index.ts`, `tests/discord/commands.test.ts`, `tests/index.test.ts`
-- `BL-CMD-008` `/session-sync` is the manual recovery path for degraded managed sessions. It only clears read-only mode when the daemon can form a trustworthy session view.
+- `BL-CMD-006` `/session-sync` is the manual recovery path for degraded managed sessions. It only clears read-only mode when the daemon can form a trustworthy session view.
   Evidence: `README.md`, `src/index.ts`, `tests/discord/commands.test.ts`, `tests/index.test.ts`, `tests/domain/session-service.test.ts`
+- `BL-CMD-007` Waiting-approval attaches use resume semantics instead of plain sync so approval lifecycle UI and owner DM controls can be rehydrated on the attached Discord surface.
+  Evidence: `README.md`, `src/index.ts`, `tests/index.test.ts`
 
 ### Managed Session Control
 
@@ -82,7 +80,7 @@
 
 - `BL-REC-001` Unsupported external modification is treated as a read-only degradation in Discord.
   Evidence: `README.md`, `src/domain/external-modification.ts`, `tests/domain/session-service.test.ts`, `tests/index.test.ts`
-- `BL-REC-002` Snapshot mismatch is a best-effort detector for unsupported/offline modification. Once degraded, Discord stays read-only until a trustworthy sync clears it or the session is recreated/re-imported.
+- `BL-REC-002` Snapshot mismatch is a best-effort detector for unsupported/offline modification. Once degraded, Discord stays read-only until a trustworthy sync clears it or the session is recreated.
   Evidence: `README.md`, `src/index.ts`, `tests/domain/session-service.test.ts`, `tests/index.test.ts`
 - `BL-REC-003` Deleting the Discord thread detaches the Discord container without deleting the underlying Codex session.
   Evidence: `README.md`, `src/index.ts`, `tests/index.test.ts`, `tests/db/session-repo.test.ts`
@@ -99,7 +97,7 @@
 
 ### P0: Every Iteration Touching Discord Or Runtime Integration
 
-#### `P0-01` Slash command picker and `/workdir-list`
+#### `P0-01` Slash command picker and `/session-new`
 
 Preconditions:
 - CodeHelm daemon is running and connected to Discord.
@@ -107,38 +105,21 @@ Preconditions:
 
 Steps:
 1. Type `/` in the control channel composer.
-2. Click the `/workdir-list` slash candidate.
+2. Click the `/session-new` slash candidate.
 3. Confirm the composer contains a real slash-command token.
-4. Press `Enter`.
+4. Choose the `example` workdir from the slash options.
+5. Press `Enter`.
 
 Expected:
-- Discord sends a real slash interaction rather than leaving raw `/workdir-list` text in the composer.
+- Discord sends a real slash interaction rather than leaving raw `/session-new` text in the composer.
 - `code-helm` replies in-channel.
-- The reply lists the configured workdirs and includes the expected `example` workdir in the local example setup.
+- A managed Discord thread is created for the selected workdir.
 - Discord does not show `The application did not respond`.
 
 Coverage:
 - `BL-CMD-001`, `BL-CMD-002`
 
-#### `P0-02` `/session-new` opens a managed thread
-
-Preconditions:
-- `P0-01` passed.
-
-Steps:
-1. Run `/session-new`.
-2. Choose the `example` workdir from the slash options.
-3. Send the command.
-
-Expected:
-- CodeHelm replies that a session was created.
-- A Discord thread is opened for the new managed session.
-- The thread clearly indicates the bound workdir/session.
-
-Coverage:
-- `BL-CMD-003`
-
-#### `P0-03` Owner message starts a turn and returns one readable conversation
+#### `P0-02` Owner message starts a turn and returns one readable conversation
 
 Preconditions:
 - A newly created managed thread exists and is writable.
@@ -155,7 +136,7 @@ Expected:
 Coverage:
 - `BL-CTRL-001`, `BL-TX-001`, `BL-TX-003`, `BL-TX-006`
 
-#### `P0-04` Busy sessions stay single-turn
+#### `P0-03` Busy sessions stay single-turn
 
 Preconditions:
 - A managed thread exists.
@@ -171,7 +152,7 @@ Expected:
 Coverage:
 - `BL-CTRL-003`
 
-#### `P0-05` Non-owner cannot control the session
+#### `P0-04` Non-owner cannot control the session
 
 Preconditions:
 - A second Discord user can see the same managed thread.
@@ -187,7 +168,7 @@ Expected:
 Coverage:
 - `BL-CTRL-002`, `BL-APR-001`, `BL-APR-002`
 
-#### `P0-06` `/session-close` archives the same thread
+#### `P0-05` `/session-close` archives the same thread
 
 Preconditions:
 - The owner is in an active managed thread.
@@ -201,12 +182,12 @@ Expected:
 - Session lifecycle changes without losing the thread/session identity.
 
 Coverage:
-- `BL-CMD-006`
+- `BL-CMD-005`
 
-#### `P0-07` Archived owner message implicitly resumes the same thread
+#### `P0-06` Archived owner message implicitly resumes the same thread
 
 Preconditions:
-- `P0-06` passed and the archived thread is still available.
+- `P0-05` passed and the archived thread is still available.
 
 Steps:
 1. Post a new owner message in the archived thread.
@@ -218,59 +199,70 @@ Expected:
 - If resume says the session is busy or degraded, the thread reopens in that state without forwarding the message.
 
 Coverage:
-- `BL-CTRL-005`, `BL-CMD-007`
+- `BL-CTRL-005`, `BL-CMD-004`
 
-#### `P0-08` `/session-list` reflects active vs archived access state
+#### `P0-07` `/session-resume` autocomplete surfaces live sessions for the selected workdir
 
 Preconditions:
-- At least one active or resumable session exists.
+- The control channel is open in Discord.
+- `P0-01` passed or another Codex thread already exists for the selected workdir.
+- The selected workdir has at least one Codex thread visible through the daemon.
 
 Steps:
-1. Run `/session-list` from the control channel.
+1. Run `/session-resume` from the control channel.
+2. Choose the `example` workdir from the slash options.
+3. Open the `session` autocomplete list.
 
 Expected:
-- The output lists known sessions.
-- Archived sessions are surfaced as inactive rather than writable.
+- Discord shows `session` suggestions only after the `workdir` is selected.
+- The suggestions correspond to live Codex threads for the selected workdir.
+- The command uses real slash-command options rather than raw text.
 
 Coverage:
-- `BL-CMD-005`
+- `BL-CMD-003`
 
 ### P1: Run When Touching The Named Subsystem Or Before Release
 
-#### `P1-01` `/session-import` accepts only importable sessions
+#### `P1-01` Explicit `/session-resume` attaches the selected Codex session based on attachment state
 
 Preconditions:
-- An idle or not-loaded Codex thread exists for the selected workdir.
-- A non-importable thread is also available for comparison if possible.
+- A selected Codex thread exists for the chosen workdir.
+- Prepare at least one of these cases if possible:
+  - a managed archived session
+  - a managed active session
+  - an unmanaged Codex session
+  - a managed session whose Discord thread was deleted or became unusable
 
 Steps:
-1. Run `/session-import` with a valid idle or not-loaded session id and matching workdir.
-2. Repeat with a running or waiting-approval session.
-3. Repeat with a mismatched cwd/workdir pair.
+1. Run `/session-resume` with the target workdir and session.
+2. Repeat for any other attachment-state variants you prepared.
 
 Expected:
-- The valid session imports into a new Discord thread and backfills the durable transcript subset.
-- Busy sessions are rejected.
-- Wrong-workdir imports are rejected.
+- An archived managed session syncs and reopens the same Discord thread.
+- An active managed session reuses the existing Discord thread instead of creating a duplicate.
+- An unmanaged or detached session creates a new or replacement Discord thread attachment.
+- Busy, degraded, or error states attach without pretending the session is writable.
+- Wrong-workdir selections are rejected.
 
 Coverage:
-- `BL-CMD-004`
+- `BL-CMD-004`, `BL-CTRL-004`
 
-#### `P1-02` Explicit `/session-resume` reopens the same managed thread
+#### `P1-02` Waiting-approval `/session-resume` restores the approval surface
 
 Preconditions:
-- A known archived managed session id exists.
+- A Codex session in `waiting-approval` state exists for the selected workdir.
+- The owner can observe both the Discord thread and DM approval surface.
 
 Steps:
-1. Run `/session-resume` from the control channel with the archived Codex thread id.
+1. Run `/session-resume` with the matching workdir and waiting-approval session id.
 
 Expected:
-- CodeHelm syncs first, then reopens the same archived thread.
-- Writable control only returns when the synced session is trustworthy and ready.
-- Busy, degraded, or error states reopen without pretending the session is writable.
+- Discord attaches to the selected session without fabricating writable idle state.
+- The thread shows waiting-approval state.
+- Approval lifecycle UI and owner DM controls are restored on the attached Discord surface.
 
 Coverage:
-- `BL-CMD-007`, `BL-CTRL-004`
+- `BL-CMD-007`, `BL-APR-001`
 
 #### `P1-03` Approval UI is owner-only and request-scoped
 
