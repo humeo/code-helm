@@ -2258,6 +2258,7 @@ type CreateControlChannelServicesDeps = {
     | "getByDiscordThreadId"
     | "getByCodexThreadId"
     | "insert"
+    | "markDeleted"
     | "rebindDiscordThread"
     | "updateLifecycleState"
   >;
@@ -2590,52 +2591,55 @@ export const createControlChannelServices = ({
         };
       }
 
-      const snapshot = await readThreadForSnapshotReconciliation({
-        threadId: codexThreadId,
-      });
-
-      if (snapshot.thread.cwd !== workdir.absolutePath) {
-        return {
-          reply: {
-            content:
-              `Session \`${codexThreadId}\` belongs to \`${snapshot.thread.cwd}\`, ` +
-              `not workdir \`${workdir.id}\`.`,
-            ephemeral: true,
-          },
-        };
-      }
-
-      const discord = getDiscordClient();
-      const existingSession = sessionRepo.getByCodexThreadId(codexThreadId);
-
-      if (
-        existingSession
-        && !canControlSession({
-          viewerId: actorId,
-          ownerId: existingSession.ownerDiscordUserId,
-        })
-      ) {
-        return {
-          reply: {
-            content: "Only the session owner can attach this session.",
-            ephemeral: true,
-          },
-        };
-      }
-
-      const discordThreadUsable = existingSession
-        ? await isManagedDiscordThreadUsable({
-            client: discord,
-            threadId: existingSession.discordThreadId,
-          })
-        : true;
-      const attachmentKind = resolveResumeAttachmentKind({
-        existingSession,
-        discordThreadUsable,
-      });
-      let attachedSession = existingSession;
-
       try {
+        const snapshot = await readThreadForSnapshotReconciliation({
+          threadId: codexThreadId,
+        });
+
+        if (snapshot.thread.cwd !== workdir.absolutePath) {
+          return {
+            reply: {
+              content:
+                `Session \`${codexThreadId}\` belongs to \`${snapshot.thread.cwd}\`, ` +
+                `not workdir \`${workdir.id}\`.`,
+              ephemeral: true,
+            },
+          };
+        }
+
+        const discord = getDiscordClient();
+        const existingSession = sessionRepo.getByCodexThreadId(codexThreadId);
+
+        if (
+          existingSession
+          && !canControlSession({
+            viewerId: actorId,
+            ownerId: existingSession.ownerDiscordUserId,
+          })
+        ) {
+          return {
+            reply: {
+              content: "Only the session owner can attach this session.",
+              ephemeral: true,
+            },
+          };
+        }
+
+        const discordThreadUsable = existingSession
+          ? await isManagedDiscordThreadUsable({
+              client: discord,
+              threadId: existingSession.discordThreadId,
+            })
+          : true;
+        const attachmentKind = resolveResumeAttachmentKind({
+          existingSession,
+          discordThreadUsable,
+        });
+        let attachedSession = existingSession;
+        let rollbackAttach:
+          | (() => Promise<void>)
+          | undefined;
+
         if (attachmentKind === "create") {
           const thread = await createAttachedSessionThread({
             client: discord,
@@ -2651,14 +2655,19 @@ export const createControlChannelServices = ({
                 codexThreadId,
                 ownerDiscordUserId: actorId,
                 workdirId: workdir.id,
-                state: inferSessionStateFromThreadStatus(snapshot.thread.status),
-              });
-              ensureTranscriptRuntime(codexThreadId);
-            },
+              state: inferSessionStateFromThreadStatus(snapshot.thread.status),
+            });
+            ensureTranscriptRuntime(codexThreadId);
+          },
           });
           attachedSession = sessionRepo.getByDiscordThreadId(thread.id);
+          rollbackAttach = async () => {
+            sessionRepo.markDeleted(thread.id);
+            await thread.delete("CodeHelm rolled back an untrusted session attach");
+          };
         } else if (attachmentKind === "rebind") {
           const previousThreadId = existingSession?.discordThreadId;
+          const previousLifecycleState = existingSession?.lifecycleState;
 
           if (!previousThreadId) {
             throw new Error(`Managed session ${codexThreadId} is missing a Discord thread binding`);
@@ -2681,6 +2690,18 @@ export const createControlChannelServices = ({
             },
           });
           attachedSession = sessionRepo.getByDiscordThreadId(thread.id);
+          rollbackAttach = async () => {
+            sessionRepo.rebindDiscordThread({
+              currentDiscordThreadId: thread.id,
+              nextDiscordThreadId: previousThreadId,
+            });
+
+            if (previousLifecycleState) {
+              sessionRepo.updateLifecycleState(previousThreadId, previousLifecycleState);
+            }
+
+            await thread.delete("CodeHelm rolled back an untrusted replacement attach");
+          };
         }
 
         if (!attachedSession) {
@@ -2693,7 +2714,7 @@ export const createControlChannelServices = ({
             : await syncManagedSessionIntoDiscordThread(attachedSession);
 
         if (result.kind === "untrusted") {
-          return {
+          const untrustedReply = {
             reply: {
               content:
                 `Attach aborted for \`${codexThreadId}\` because CodeHelm could not ` +
@@ -2701,6 +2722,19 @@ export const createControlChannelServices = ({
               ephemeral: true,
             },
           };
+
+          if (rollbackAttach) {
+            try {
+              await rollbackAttach();
+            } catch (rollbackError) {
+              logger.warn(
+                `Failed to roll back untrusted attach for ${codexThreadId}`,
+                rollbackError,
+              );
+            }
+          }
+
+          return untrustedReply;
         }
 
         if (result.kind === "error") {

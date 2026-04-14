@@ -232,6 +232,8 @@ const createControlChannelServicesFixture = ({
   discordThreadUsable = true,
   readThreadStatus = { type: "idle" } satisfies CodexThreadStatus,
   readThreadCwd = "/tmp/workspace/api",
+  readThreadError,
+  discordClientError,
   syncOutcome = createResumeOutcome("ready"),
   resumeOutcome = createResumeOutcome("ready"),
 }: {
@@ -239,6 +241,8 @@ const createControlChannelServicesFixture = ({
   discordThreadUsable?: boolean;
   readThreadStatus?: CodexThreadStatus;
   readThreadCwd?: string;
+  readThreadError?: Error;
+  discordClientError?: Error;
   syncOutcome?: SessionResumeState;
   resumeOutcome?: SessionResumeState;
 } = {}) => {
@@ -262,6 +266,7 @@ const createControlChannelServicesFixture = ({
       workdirId: string;
       state: string;
     }>,
+    deletedSessions: [] as string[],
     reboundThreads: [] as Array<{
       currentDiscordThreadId: string;
       nextDiscordThreadId: string;
@@ -272,6 +277,7 @@ const createControlChannelServicesFixture = ({
     }>,
     syncedThreads: [] as string[],
     resumedThreads: [] as string[],
+    deletedThreads: [] as string[],
     sentTexts: [] as Array<{
       channelId: string;
       content: string;
@@ -329,6 +335,19 @@ const createControlChannelServicesFixture = ({
         sessionRecords.set(inserted.discordThreadId, inserted);
         codexThreadToDiscordThread.set(inserted.codexThreadId, inserted.discordThreadId);
       },
+      markDeleted(discordThreadId: string) {
+        calls.deletedSessions.push(discordThreadId);
+        const current = sessionRecords.get(discordThreadId);
+
+        if (!current) {
+          throw new Error(`Missing session for ${discordThreadId}`);
+        }
+
+        sessionRecords.set(discordThreadId, {
+          ...current,
+          lifecycleState: "deleted",
+        });
+      },
       updateLifecycleState(
         discordThreadId: string,
         lifecycleState: SessionRecord["lifecycleState"],
@@ -364,7 +383,13 @@ const createControlChannelServicesFixture = ({
         codexThreadToDiscordThread.set(current.codexThreadId, input.nextDiscordThreadId);
       },
     } as never,
-    getDiscordClient: () => ({ id: "discord-client" }) as never,
+    getDiscordClient: () => {
+      if (discordClientError) {
+        throw discordClientError;
+      }
+
+      return { id: "discord-client" } as never;
+    },
     createVisibleSessionThread: async ({ title, starterText }) => {
       calls.createVisibleSessionThread.push({ title, starterText });
       const threadId = `discord-thread-new-${nextThreadId++}`;
@@ -376,6 +401,7 @@ const createControlChannelServicesFixture = ({
           return undefined as never;
         },
         async delete() {
+          calls.deletedThreads.push(threadId);
           return undefined as never;
         },
       };
@@ -405,6 +431,10 @@ const createControlChannelServicesFixture = ({
       return discordThreadUsable;
     },
     readThreadForSnapshotReconciliation: async ({ threadId }) => {
+      if (readThreadError) {
+        throw readThreadError;
+      }
+
       calls.readThreadIds.push(threadId);
       return {
         thread: createResumePickerThread({
@@ -780,6 +810,123 @@ test("deleted or unusable managed thread creates a replacement Discord thread th
     reply: {
       content:
         "Attached session in replacement thread <#discord-thread-new-1>. Session is writable.",
+    },
+  });
+});
+
+test("attach rejects a codex thread whose cwd does not match the selected workdir", async () => {
+  const { services, calls } = createControlChannelServicesFixture({
+    readThreadCwd: "/tmp/workspace/web",
+  });
+
+  const result = await services.resumeSession({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
+    workdirId: "api",
+    codexThreadId: "codex-thread-1",
+  });
+
+  expect(calls.createVisibleSessionThread).toHaveLength(0);
+  expect(calls.syncedThreads).toEqual([]);
+  expect(calls.resumedThreads).toEqual([]);
+  expect(result).toEqual({
+    reply: {
+      content:
+        "Session `codex-thread-1` belongs to `/tmp/workspace/web`, not workdir `api`.",
+      ephemeral: true,
+    },
+  });
+});
+
+test("attach surfaces snapshot read failures as structured command errors", async () => {
+  const { services } = createControlChannelServicesFixture({
+    readThreadError: new Error("thread missing"),
+  });
+
+  const result = await services.resumeSession({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
+    workdirId: "api",
+    codexThreadId: "codex-thread-1",
+  });
+
+  expect(result).toEqual({
+    reply: {
+      content: "Attach failed for `codex-thread-1`: thread missing.",
+      ephemeral: true,
+    },
+  });
+});
+
+test("untrusted create attach rolls back the new discord thread into a deleted binding", async () => {
+  const { services, calls, getSessionByCodexThreadId } = createControlChannelServicesFixture({
+    syncOutcome: createResumeOutcome("untrusted"),
+  });
+
+  const result = await services.resumeSession({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
+    workdirId: "api",
+    codexThreadId: "codex-thread-1",
+  });
+
+  expect(calls.syncedThreads).toEqual(["discord-thread-new-1"]);
+  expect(calls.deletedSessions).toEqual(["discord-thread-new-1"]);
+  expect(calls.deletedThreads).toEqual(["discord-thread-new-1"]);
+  expect(getSessionByCodexThreadId("codex-thread-1")).toMatchObject({
+    discordThreadId: "discord-thread-new-1",
+    lifecycleState: "deleted",
+  });
+  expect(result).toEqual({
+    reply: {
+      content:
+        "Attach aborted for `codex-thread-1` because CodeHelm could not establish a trustworthy synced session view.",
+      ephemeral: true,
+    },
+  });
+});
+
+test("untrusted replacement attach rebinds back to the original deleted thread", async () => {
+  const { services, calls, getSessionByCodexThreadId } = createControlChannelServicesFixture({
+    existingSession: createSessionRecord({
+      discordThreadId: "discord-thread-deleted",
+      lifecycleState: "deleted",
+    }),
+    discordThreadUsable: false,
+    syncOutcome: createResumeOutcome("untrusted"),
+  });
+
+  const result = await services.resumeSession({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
+    workdirId: "api",
+    codexThreadId: "codex-thread-1",
+  });
+
+  expect(calls.reboundThreads).toEqual([
+    {
+      currentDiscordThreadId: "discord-thread-deleted",
+      nextDiscordThreadId: "discord-thread-new-1",
+    },
+    {
+      currentDiscordThreadId: "discord-thread-new-1",
+      nextDiscordThreadId: "discord-thread-deleted",
+    },
+  ]);
+  expect(calls.deletedThreads).toEqual(["discord-thread-new-1"]);
+  expect(getSessionByCodexThreadId("codex-thread-1")).toMatchObject({
+    discordThreadId: "discord-thread-deleted",
+    lifecycleState: "deleted",
+  });
+  expect(result).toEqual({
+    reply: {
+      content:
+        "Attach aborted for `codex-thread-1` because CodeHelm could not establish a trustworthy synced session view.",
+      ephemeral: true,
     },
   });
 });
