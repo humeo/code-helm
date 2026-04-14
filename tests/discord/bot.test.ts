@@ -3,12 +3,7 @@ import { Client, Events, GatewayIntentBits, type RESTOptions } from "discord.js"
 import { createDiscordBot } from "../../src/discord/bot";
 
 const createServices = () => {
-  const calls = {
-    autocomplete: [] as unknown[],
-  };
-
   return {
-    calls,
     services: {
       listWorkdirs: () => ({ reply: { content: "workdirs" } }),
       createSession: () => ({ reply: { content: "session created" } }),
@@ -17,8 +12,11 @@ const createServices = () => {
       closeSession: () => ({ reply: { content: "session closed" } }),
       syncSession: () => ({ reply: { content: "session synced" } }),
       resumeSession: () => ({ reply: { content: "session resumed" } }),
-      autocomplete(interaction: unknown) {
-        calls.autocomplete.push(interaction);
+      autocompleteResumeWorkdirs() {
+        return [{ name: "Code Agent Helm Example (example)", value: "example" }];
+      },
+      autocompleteResumeSessions() {
+        return [{ name: "codex-thread-7", value: "codex-thread-7" }];
       },
     },
   };
@@ -65,13 +63,14 @@ test("createDiscordBot preserves an explicit REST request strategy override", ()
 });
 
 test("createDiscordBot routes autocomplete interactions to the autocomplete handler", async () => {
-  const { calls, services } = createServices();
+  const { services } = createServices();
   const bot = createDiscordBot({
     token: "token",
     services,
     logger,
   });
 
+  const responses: unknown[] = [];
   const interaction = {
     isChatInputCommand() {
       return false;
@@ -79,10 +78,28 @@ test("createDiscordBot routes autocomplete interactions to the autocomplete hand
     isAutocomplete() {
       return true;
     },
+    guildId: "g1",
+    channelId: "c1",
+    user: { id: "u1" },
+    options: {
+      getFocused(withName?: boolean) {
+        return withName
+          ? { name: "workdir", value: "exa" }
+          : "exa";
+      },
+      getString() {
+        return null;
+      },
+    },
+    async respond(payload: unknown) {
+      responses.push(payload);
+    },
   };
 
   bot.client.emit(Events.InteractionCreate, interaction as never);
   await Promise.resolve();
 
-  expect(calls.autocomplete).toEqual([interaction]);
+  expect(responses).toEqual([
+    [{ name: "Code Agent Helm Example (example)", value: "example" }],
+  ]);
 });
