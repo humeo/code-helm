@@ -248,7 +248,15 @@ test("resume picker threads sort by updatedAt, createdAt, then id", () => {
 
 test("resume session autocomplete pipeline scopes threads, sorts them, formats labels, and truncates to 25", async () => {
   const calls: Array<Record<string, unknown>> = [];
-  const threads = [
+  const firstPageThreads = Array.from({ length: 13 }, (_, index) =>
+    createResumePickerThread({
+      id: `codex-thread-${String(index).padStart(2, "0")}`,
+      preview: `Preview ${index}`,
+      updatedAt: index,
+      createdAt: index,
+    })
+  );
+  const secondPageThreads = [
     createResumePickerThread({
       id: "codex-thread-12345678901",
       preview:
@@ -256,12 +264,12 @@ test("resume session autocomplete pipeline scopes threads, sorts them, formats l
         "truncate it before Discord rejects the choice label.",
       updatedAt: 5_000,
     }),
-    ...Array.from({ length: 26 }, (_, index) =>
+    ...Array.from({ length: 13 }, (_, index) =>
       createResumePickerThread({
-        id: `codex-thread-${String(index).padStart(2, "0")}`,
-        preview: `Preview ${index}`,
-        updatedAt: index,
-        createdAt: index,
+        id: `codex-thread-late-${String(index).padStart(2, "0")}`,
+        preview: `Late preview ${index}`,
+        updatedAt: 100 + index,
+        createdAt: 100 + index,
       })
     ),
   ];
@@ -270,10 +278,15 @@ test("resume session autocomplete pipeline scopes threads, sorts them, formats l
     codexClient: {
       async listThreads(params: ThreadListParams) {
         calls.push(params as Record<string, unknown>);
-        return {
-          data: threads,
-          nextCursor: null,
-        };
+        return params.cursor === "cursor-2"
+          ? {
+              data: secondPageThreads,
+              nextCursor: null,
+            }
+          : {
+              data: firstPageThreads,
+              nextCursor: "cursor-2",
+            };
       },
     } as never,
     query: "  plan  ",
@@ -291,7 +304,13 @@ test("resume session autocomplete pipeline scopes threads, sorts them, formats l
     {
       cwd: "/tmp/workspace/api",
       searchTerm: "plan",
-      limit: 25,
+      limit: 100,
+    },
+    {
+      cwd: "/tmp/workspace/api",
+      searchTerm: "plan",
+      limit: 100,
+      cursor: "cursor-2",
     },
   ]);
   expect(choices).toHaveLength(25);
@@ -352,7 +371,7 @@ test("resume attachment resolution distinguishes reuse, reopen, rebind, and crea
     resolveResumeAttachmentKind({
       existingSession: {
         lifecycleState: "active",
-      } as never,
+      },
       discordThreadUsable: true,
     }),
   ).toBe("reuse");
@@ -361,7 +380,7 @@ test("resume attachment resolution distinguishes reuse, reopen, rebind, and crea
     resolveResumeAttachmentKind({
       existingSession: {
         lifecycleState: "archived",
-      } as never,
+      },
       discordThreadUsable: true,
     }),
   ).toBe("reopen");
@@ -370,7 +389,7 @@ test("resume attachment resolution distinguishes reuse, reopen, rebind, and crea
     resolveResumeAttachmentKind({
       existingSession: {
         lifecycleState: "deleted",
-      } as never,
+      },
       discordThreadUsable: false,
     }),
   ).toBe("rebind");

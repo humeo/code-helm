@@ -2295,13 +2295,23 @@ export const buildResumeSessionAutocompleteChoices = async ({
     return [];
   }
 
-  const result = await codexClient.listThreads({
-    cwd: workdir.absolutePath,
-    searchTerm: query.trim() || null,
-    limit: 25,
-  });
+  const searchTerm = query.trim() || null;
+  const threads: CodexThread[] = [];
+  let cursor: string | null = null;
 
-  return sortResumePickerThreads(result.data)
+  do {
+    const result = await codexClient.listThreads({
+      cwd: workdir.absolutePath,
+      searchTerm,
+      limit: 100,
+      ...(cursor ? { cursor } : {}),
+    });
+
+    threads.push(...result.data);
+    cursor = result.nextCursor;
+  } while (cursor);
+
+  return sortResumePickerThreads(threads)
     .slice(0, 25)
     .map(formatResumeSessionAutocompleteChoice);
 };
