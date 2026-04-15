@@ -3528,7 +3528,6 @@ export const startCodeHelm = async (
 
   applyMigrations(db);
   seedLegacyWorkspaceBootstrap(db, config, legacyWorkspaceBootstrap);
-  const configuredWorkdirs = legacyWorkspaceBootstrap?.workdirs ?? [];
 
   const sessionRepo = createSessionRepo(db);
   const approvalRepo = createApprovalRepo(db);
