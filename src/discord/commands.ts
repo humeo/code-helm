@@ -66,6 +66,14 @@ export type ResumeSessionAutocompleteInput = {
   query: string;
 };
 
+export type SessionPathAutocompleteInput = {
+  actorId: string;
+  guildId: string;
+  channelId: string;
+  path?: string;
+  query: string;
+};
+
 export type DiscordCommandServices = {
   createSession(
     input: CreateSessionInput,
@@ -79,6 +87,9 @@ export type DiscordCommandServices = {
   resumeSession(
     input: ResumeSessionInput,
   ): Promise<DiscordCommandResult> | DiscordCommandResult;
+  autocompleteSessionPaths(
+    input: SessionPathAutocompleteInput,
+  ): Promise<DiscordAutocompleteChoice[]> | DiscordAutocompleteChoice[];
   autocompleteResumeSessions(
     input: ResumeSessionAutocompleteInput,
   ): Promise<DiscordAutocompleteChoice[]> | DiscordAutocompleteChoice[];
@@ -101,7 +112,8 @@ export const buildControlChannelCommands = (): RESTPostAPIChatInputApplicationCo
         option
           .setName("path")
           .setDescription(pathOptionDescription)
-          .setRequired(true),
+          .setRequired(true)
+          .setAutocomplete(true),
       ),
     guildOnlyCommand("session-close", "Close the current managed session thread"),
     guildOnlyCommand("session-sync", "Sync the current degraded session thread"),
@@ -110,7 +122,8 @@ export const buildControlChannelCommands = (): RESTPostAPIChatInputApplicationCo
         option
           .setName("path")
           .setDescription(pathOptionDescription)
-          .setRequired(true),
+          .setRequired(true)
+          .setAutocomplete(true),
       )
       .addStringOption((option) =>
         option
@@ -243,24 +256,45 @@ export const handleControlChannelAutocomplete = async (
   interaction: AutocompleteInteraction,
   services: DiscordCommandServices,
 ) => {
-  if (interaction.commandName !== "session-resume") {
-    await interaction.respond([]);
-    return false;
-  }
-
   const { name: focusedOption, value } = interaction.options.getFocused(true);
   const context = autocompleteContext(interaction);
   const query = String(value ?? "");
 
   let choices: DiscordAutocompleteChoice[] = [];
 
-  switch (focusedOption) {
-    case "session":
-      choices = await services.autocompleteResumeSessions({
+  switch (interaction.commandName) {
+    case "session-new":
+      if (focusedOption !== "path") {
+        await interaction.respond([]);
+        return false;
+      }
+
+      choices = await services.autocompleteSessionPaths({
         ...context,
         path: interaction.options.getString("path") ?? undefined,
         query,
       });
+      break;
+    case "session-resume":
+      switch (focusedOption) {
+        case "path":
+          choices = await services.autocompleteSessionPaths({
+            ...context,
+            path: interaction.options.getString("path") ?? undefined,
+            query,
+          });
+          break;
+        case "session":
+          choices = await services.autocompleteResumeSessions({
+            ...context,
+            path: interaction.options.getString("path") ?? undefined,
+            query,
+          });
+          break;
+        default:
+          await interaction.respond([]);
+          return false;
+      }
       break;
     default:
       await interaction.respond([]);

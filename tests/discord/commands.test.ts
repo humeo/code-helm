@@ -23,6 +23,8 @@ const createServices = () => {
     closeSession: [] as Array<Record<string, string>>,
     syncSession: [] as Array<Record<string, string>>,
     resumeSession: [] as Array<Record<string, string>>,
+    autocompleteSessionPaths: [] as Array<Record<string, string>>,
+    autocompleteResumeSessions: [] as Array<Record<string, string>>,
   };
 
   const services: DiscordCommandServices = {
@@ -42,7 +44,14 @@ const createServices = () => {
       calls.resumeSession.push(input);
       return okResult("session resumed");
     },
+    autocompleteSessionPaths(input: Record<string, string>) {
+      calls.autocompleteSessionPaths.push(input);
+      return [
+        { name: `path:${input.query}`, value: "/tmp/workspace/example" },
+      ];
+    },
     autocompleteResumeSessions(input) {
+      calls.autocompleteResumeSessions.push(input);
       return [
         { name: `session:${input.query}`, value: "codex-thread-7" },
       ];
@@ -188,6 +197,7 @@ test("command registration removes deprecated command names and uses path option
       name: "path",
       description: "Path to the workspace directory",
       required: true,
+      autocomplete: true,
     },
   ]);
 });
@@ -207,6 +217,7 @@ test("command registration locks /session-resume to path and session autocomplet
       name: "path",
       description: "Path to the workspace directory",
       required: true,
+      autocomplete: true,
     },
     {
       type: 3,
@@ -218,7 +229,7 @@ test("command registration locks /session-resume to path and session autocomplet
   ]);
 });
 
-test("only /session-resume session option uses autocomplete", async () => {
+test("command registration enables path autocomplete on both session commands", () => {
   const commandsByName = new Map(
     controlChannelCommands.map((command) => [command.name, command]),
   );
@@ -229,6 +240,7 @@ test("only /session-resume session option uses autocomplete", async () => {
       name: "path",
       description: "Path to the workspace directory",
       required: true,
+      autocomplete: true,
     },
   ]);
   expect(commandsByName.get("session-resume")?.options).toEqual([
@@ -237,6 +249,7 @@ test("only /session-resume session option uses autocomplete", async () => {
       name: "path",
       description: "Path to the workspace directory",
       required: true,
+      autocomplete: true,
     },
     {
       type: 3,
@@ -248,16 +261,75 @@ test("only /session-resume session option uses autocomplete", async () => {
   ]);
 });
 
-test("/session-resume path autocomplete reads the typed path", async () => {
+test("/session-new path autocomplete delegates to shared path autocomplete", async () => {
   const { interaction, responses } = createAutocompleteInteraction({
-    focusedOption: "session",
+    focusedOption: "path",
     focusedValue: "exa",
     options: { path: "/tmp/workspace/example" },
   });
   const calls = {
+    autocompleteSessionPaths: [] as Array<Record<string, string>>,
     autocompleteResumeSessions: [] as Array<Record<string, string>>,
   };
   const services = {
+    autocompleteSessionPaths(input: Record<string, string>) {
+      calls.autocompleteSessionPaths.push(input);
+      return [
+        { name: "path:/tmp/workspace/example", value: "/tmp/workspace/example" },
+      ];
+    },
+    autocompleteResumeSessions(input: Record<string, string>) {
+      calls.autocompleteResumeSessions.push(input);
+      return [
+        { name: "codex-thread-7", value: "codex-thread-7" },
+      ];
+    },
+  };
+
+  const handleControlChannelAutocomplete =
+    getHandleControlChannelAutocomplete();
+  expect(typeof handleControlChannelAutocomplete).toBe("function");
+  if (typeof handleControlChannelAutocomplete !== "function") {
+    throw new Error("handleControlChannelAutocomplete export is missing");
+  }
+
+  await handleControlChannelAutocomplete(
+    { ...interaction, commandName: "session-new" } as never,
+    services as never,
+  );
+
+  expect(calls.autocompleteSessionPaths).toEqual([
+    {
+      actorId: "u1",
+      guildId: "g1",
+      channelId: "c1",
+      path: "/tmp/workspace/example",
+      query: "exa",
+    },
+  ]);
+  expect(calls.autocompleteResumeSessions).toEqual([]);
+  expect(responses).toEqual([
+    [{ name: "path:/tmp/workspace/example", value: "/tmp/workspace/example" }],
+  ]);
+});
+
+test("/session-resume path autocomplete delegates to shared path autocomplete", async () => {
+  const { interaction, responses } = createAutocompleteInteraction({
+    focusedOption: "path",
+    focusedValue: "exa",
+    options: { path: "/tmp/workspace/example" },
+  });
+  const calls = {
+    autocompleteSessionPaths: [] as Array<Record<string, string>>,
+    autocompleteResumeSessions: [] as Array<Record<string, string>>,
+  };
+  const services = {
+    autocompleteSessionPaths(input: Record<string, string>) {
+      calls.autocompleteSessionPaths.push(input);
+      return [
+        { name: "path:/tmp/workspace/example", value: "/tmp/workspace/example" },
+      ];
+    },
     autocompleteResumeSessions(input: Record<string, string>) {
       calls.autocompleteResumeSessions.push(input);
       return [
@@ -278,7 +350,7 @@ test("/session-resume path autocomplete reads the typed path", async () => {
     services as never,
   );
 
-  expect(calls.autocompleteResumeSessions).toEqual([
+  expect(calls.autocompleteSessionPaths).toEqual([
     {
       actorId: "u1",
       guildId: "g1",
@@ -287,21 +359,29 @@ test("/session-resume path autocomplete reads the typed path", async () => {
       query: "exa",
     },
   ]);
+  expect(calls.autocompleteResumeSessions).toEqual([]);
   expect(responses).toEqual([
-    [{ name: "codex-thread-7", value: "codex-thread-7" }],
+    [{ name: "path:/tmp/workspace/example", value: "/tmp/workspace/example" }],
   ]);
 });
 
-test("/session-resume session autocomplete uses the selected path", async () => {
+test("/session-resume session autocomplete still uses the session service", async () => {
   const { interaction, responses } = createAutocompleteInteraction({
     focusedOption: "session",
     focusedValue: "codex",
     options: { path: "/tmp/workspace/example" },
   });
   const calls = {
+    autocompleteSessionPaths: [] as Array<Record<string, string>>,
     autocompleteResumeSessions: [] as Array<Record<string, string>>,
   };
   const services = {
+    autocompleteSessionPaths(input: Record<string, string>) {
+      calls.autocompleteSessionPaths.push(input);
+      return [
+        { name: "path:/tmp/workspace/example", value: "/tmp/workspace/example" },
+      ];
+    },
     autocompleteResumeSessions(input: Record<string, string>) {
       calls.autocompleteResumeSessions.push(input);
       return [
@@ -331,7 +411,10 @@ test("/session-resume session autocomplete uses the selected path", async () => 
       query: "codex",
     },
   ]);
-  expect(responses).toEqual([[{ name: "codex-thread-7", value: "codex-thread-7" }]]);
+  expect(calls.autocompleteSessionPaths).toEqual([]);
+  expect(responses).toEqual([
+    [{ name: "codex-thread-7", value: "codex-thread-7" }],
+  ]);
 });
 
 test("/session-close defers and delegates using the current thread context", async () => {
@@ -417,6 +500,8 @@ test("unknown commands return unhandled without requiring guild context", async 
     closeSession: [],
     syncSession: [],
     resumeSession: [],
+    autocompleteSessionPaths: [],
+    autocompleteResumeSessions: [],
   });
   expect(replies).toEqual([]);
   expect(followsUps).toEqual([]);
