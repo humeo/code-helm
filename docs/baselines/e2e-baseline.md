@@ -25,8 +25,9 @@
 - `BL-CMD-001` The control surface is a guild-only slash-command console. DMs are not part of the control path.
   Evidence: `README.md`, `src/discord/commands.ts`, `tests/discord/commands.test.ts`
 - `BL-CMD-002` `/session-new` requires a `path`, creates a Codex session for that path, and opens a managed Discord thread bound to it.
-  Evidence: `README.md`, `src/discord/commands.ts`, `src/index.ts`
-- `BL-CMD-003` `/session-resume` requires `path` and `session` inputs. Session choices come from live Codex `thread/list` scoped to the selected path; there is no configured workdir picker in the normal user flow.
+  `/session-new` `path` autocomplete starts from `~/` and behaves like a lightweight directory browser.
+  Evidence: `README.md`, `src/discord/commands.ts`, `src/index.ts`, `tests/discord/commands.test.ts`, `tests/index.test.ts`
+- `BL-CMD-003` `/session-resume` requires `path` and `session` inputs. `path` autocomplete starts from `~/`, behaves like a lightweight directory browser, and lets the user choose the current directory at any level. Session choices only appear after the selected path resolves to a valid directory; they come from live Codex `thread/list` scoped to that path and use relative times derived from normalized provider timestamps. There is no configured workdir picker in the normal user flow.
   Evidence: `README.md`, `src/discord/commands.ts`, `src/index.ts`, `tests/discord/commands.test.ts`, `tests/index.test.ts`
 - `BL-CMD-004` `/session-resume` only attaches when the selected Codex thread cwd matches the selected path. It can reuse an active attachment, reopen an archived one, create a new Discord thread for an unmanaged session, or create a replacement thread when the old Discord container is deleted or unusable.
   Evidence: `README.md`, `src/index.ts`, `tests/index.test.ts`
@@ -214,12 +215,14 @@ Preconditions:
 
 Steps:
 1. Run `/session-resume` from the control channel.
-2. Fill the `path` option with a valid absolute path or `~/...` path.
-3. Open the `session` autocomplete list.
+2. Open the `path` autocomplete and browse from `~/` to the target directory, or type a valid absolute path or `~/...` path directly.
+3. Open the `session` autocomplete list only after the selected `path` resolves to a valid directory.
 
 Expected:
-- Discord shows `session` suggestions only after the `path` is provided.
-- The suggestions correspond to live Codex threads for the selected path.
+- Discord shows `path` suggestions as a lightweight directory browser rooted at `~/`.
+- The browser lets the user choose the current directory at any level before submitting.
+- Discord shows `session` suggestions only after the selected `path` resolves to a valid directory.
+- The suggestions correspond to live Codex threads for the selected path and use relative times derived from normalized provider timestamps.
 - The command uses real slash-command options rather than raw text.
 
 Coverage:

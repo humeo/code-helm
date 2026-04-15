@@ -66,6 +66,10 @@ Normal session entry is path-first:
 
 - `/session-new` takes a `path`
 - `/session-resume` takes `path` and a path-scoped `session` choice
+- `path` autocomplete starts from `~/` and behaves like a lightweight directory browser
+- every browser level includes a `Select <current-directory>` choice alongside child directories
+- `/session-resume` only shows `session` choices after the selected `path` resolves to a valid directory
+- session picker labels use relative times derived from normalized provider timestamps
 - users can enter absolute paths or `~/...`
 - there is no configured workdir picker in the normal user flow
 
@@ -99,6 +103,12 @@ Use the control channel for session management, not for normal conversation.
 - `session-sync` is the manual recovery path for degraded managed session threads
 
 Session discovery lives inside `/session-resume`, not in separate list/import commands.
+The shared `path` autocomplete starts from `~/` and behaves like a lightweight directory browser:
+
+- child directories appear with trailing `/`
+- each level includes a `Select <current-directory>` option
+- `/session-resume` only opens `session` suggestions once the selected path resolves to a real directory
+- `session` suggestions use relative times derived from normalized provider timestamps
 
 Session creation creates a new Codex App Server thread first, then binds it to a new Discord thread.
 
@@ -186,6 +196,10 @@ Verified in the current repo state:
 - the user-facing command surface is `session-new`, `session-resume`, `session-close`, and `session-sync`
 - `/session-new` takes `path`
 - `/session-resume` uses required `path + session` autocomplete instead of separate list/import commands
+- `path` autocomplete starts from `~/` and behaves like a lightweight directory browser
+- users can choose the current directory at any level before submitting
+- `/session-resume` only shows `session` choices after the selected `path` resolves to a valid directory
+- `session` picker labels use relative times derived from normalized provider timestamps
 - `/session-resume` rejects Codex threads whose cwd does not match the selected path
 - there is no configured workdir picker in the normal user flow
 - managed thread creation starts with `session-id`
