@@ -57,6 +57,20 @@ export const formatSessionPathForDisplay = (
   return normalizedPath;
 };
 
+export const formatSessionPathForAutocompleteValue = (
+  value: string,
+  homeDir: string = homedir(),
+  trailingSlash: boolean = false,
+) => {
+  const displayPath = formatSessionPathForDisplay(value, homeDir);
+
+  if (!trailingSlash || displayPath === "~" || displayPath.endsWith("/")) {
+    return displayPath;
+  }
+
+  return `${displayPath}/`;
+};
+
 export const normalizeBootstrapThreadTitle = (value: string) => {
   const normalized = normalizeWhitespace(value);
 
