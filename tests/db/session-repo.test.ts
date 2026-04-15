@@ -196,8 +196,18 @@ test("lists persisted sessions with runtime, lifecycle, degradation, and cwd sem
   repo.markDeleted("deleted-session");
   repo.markExternallyModified("deleted-session", "native_cli_write");
 
-  expect(repo.listArchived().map((session) => session.discordThreadId)).toEqual([
-    "archived-session",
+  expect(repo.listArchived()).toEqual([
+    {
+      discordThreadId: "archived-session",
+      codexThreadId: "codex-archived",
+      ownerDiscordUserId: "u2",
+      cwd: "/tmp/ws1/app",
+      state: "running",
+      lifecycleState: "archived",
+      degradationReason: null,
+      createdAt: expect.any(String),
+      updatedAt: expect.any(String),
+    },
   ]);
   expect(
     repo.listAll().map((session) => ({
