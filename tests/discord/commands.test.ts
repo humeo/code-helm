@@ -1,9 +1,10 @@
-import { expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 import * as discordCommands from "../../src/discord/commands";
 import {
   buildControlChannelCommands,
   controlChannelCommands,
   handleControlChannelCommand,
+  resetAutocompletePathMemoryForTests,
   replyWithCommandError,
   type DiscordCommandResult,
   type DiscordCommandServices,
@@ -158,6 +159,10 @@ const getHandleControlChannelAutocomplete = () => {
   return (discordCommands as Record<string, unknown>)
     .handleControlChannelAutocomplete;
 };
+
+beforeEach(() => {
+  resetAutocompletePathMemoryForTests();
+});
 
 test("/session-new forwards path", async () => {
   const { calls, services } = createServices();
@@ -412,6 +417,79 @@ test("/session-resume session autocomplete still uses the session service", asyn
     },
   ]);
   expect(calls.autocompleteSessionPaths).toEqual([]);
+  expect(responses).toEqual([
+    [{ name: "codex-thread-7", value: "codex-thread-7" }],
+  ]);
+});
+
+test("/session-resume session autocomplete falls back to the recent path when Discord omits it", async () => {
+  const pathCalls = [] as Array<Record<string, string>>;
+  const sessionCalls = [] as Array<Record<string, string>>;
+  const services = {
+    autocompleteSessionPaths(input: Record<string, string>) {
+      pathCalls.push(input);
+      return [
+        {
+          name: "path:/tmp/workspace/example",
+          value: "/tmp/workspace/example",
+        },
+      ];
+    },
+    autocompleteResumeSessions(input: Record<string, string>) {
+      sessionCalls.push(input);
+      return [
+        { name: "codex-thread-7", value: "codex-thread-7" },
+      ];
+    },
+  };
+  const handleControlChannelAutocomplete =
+    getHandleControlChannelAutocomplete();
+
+  expect(typeof handleControlChannelAutocomplete).toBe("function");
+  if (typeof handleControlChannelAutocomplete !== "function") {
+    throw new Error("handleControlChannelAutocomplete export is missing");
+  }
+
+  const { interaction: pathInteraction } = createAutocompleteInteraction({
+    focusedOption: "path",
+    focusedValue: "/tmp/workspace/example",
+    options: {},
+  });
+
+  await handleControlChannelAutocomplete(
+    { ...pathInteraction, commandName: "session-resume" } as never,
+    services as never,
+  );
+
+  const { interaction: sessionInteraction, responses } = createAutocompleteInteraction({
+    focusedOption: "session",
+    focusedValue: "codex",
+    options: {},
+  });
+
+  await handleControlChannelAutocomplete(
+    { ...sessionInteraction, commandName: "session-resume" } as never,
+    services as never,
+  );
+
+  expect(pathCalls).toEqual([
+    {
+      actorId: "u1",
+      guildId: "g1",
+      channelId: "c1",
+      path: "/tmp/workspace/example",
+      query: "/tmp/workspace/example",
+    },
+  ]);
+  expect(sessionCalls).toEqual([
+    {
+      actorId: "u1",
+      guildId: "g1",
+      channelId: "c1",
+      path: "/tmp/workspace/example",
+      query: "codex",
+    },
+  ]);
   expect(responses).toEqual([
     [{ name: "codex-thread-7", value: "codex-thread-7" }],
   ]);

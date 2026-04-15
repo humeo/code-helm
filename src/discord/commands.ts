@@ -143,6 +143,86 @@ const controlCommandNames = new Set([
   "session-resume",
 ]);
 
+const autocompletePathMemoryTtlMs = 5 * 60 * 1000;
+
+type AutocompletePathMemoryEntry = {
+  path: string;
+  updatedAt: number;
+};
+
+const autocompletePathMemory = new Map<string, AutocompletePathMemoryEntry>();
+
+const buildAutocompletePathMemoryKey = (
+  interaction: Pick<AutocompleteInteraction, "commandName" | "guildId" | "channelId" | "user">,
+) => {
+  return [
+    interaction.commandName,
+    interaction.guildId ?? "",
+    interaction.channelId,
+    interaction.user.id,
+  ].join(":");
+};
+
+const pruneAutocompletePathMemory = (now: number = Date.now()) => {
+  for (const [key, entry] of autocompletePathMemory.entries()) {
+    if (now - entry.updatedAt > autocompletePathMemoryTtlMs) {
+      autocompletePathMemory.delete(key);
+    }
+  }
+};
+
+const rememberAutocompletePath = (
+  interaction: Pick<AutocompleteInteraction, "commandName" | "guildId" | "channelId" | "user">,
+  path?: string | null,
+) => {
+  const normalizedPath = path?.trim();
+
+  if (!normalizedPath) {
+    return;
+  }
+
+  pruneAutocompletePathMemory();
+  autocompletePathMemory.set(buildAutocompletePathMemoryKey(interaction), {
+    path: normalizedPath,
+    updatedAt: Date.now(),
+  });
+};
+
+const recallAutocompletePath = (
+  interaction: Pick<AutocompleteInteraction, "commandName" | "guildId" | "channelId" | "user">,
+) => {
+  pruneAutocompletePathMemory();
+  return autocompletePathMemory.get(buildAutocompletePathMemoryKey(interaction))?.path;
+};
+
+const resolveAutocompletePath = ({
+  interaction,
+  focusedOption,
+  query,
+}: {
+  interaction: AutocompleteInteraction;
+  focusedOption: string;
+  query: string;
+}) => {
+  const optionPath = interaction.options.getString("path");
+
+  if (optionPath) {
+    rememberAutocompletePath(interaction, optionPath);
+    return optionPath;
+  }
+
+  if (focusedOption === "path") {
+    rememberAutocompletePath(interaction, query);
+    return query;
+  }
+
+  return recallAutocompletePath(interaction);
+};
+
+export const resetAutocompletePathMemoryForTests = () => {
+  autocompletePathMemory.clear();
+};
+
 export const isControlChannelCommandName = (commandName: string) => {
   return controlCommandNames.has(commandName);
 };
@@ -259,6 +339,11 @@ export const handleControlChannelAutocomplete = async (
   const { name: focusedOption, value } = interaction.options.getFocused(true);
   const context = autocompleteContext(interaction);
   const query = String(value ?? "");
+  const path = resolveAutocompletePath({
+    interaction,
+    focusedOption,
+    query,
+  });
 
   let choices: DiscordAutocompleteChoice[] = [];
 
@@ -271,7 +356,7 @@ export const handleControlChannelAutocomplete = async (
 
       choices = await services.autocompleteSessionPaths({
         ...context,
-        path: interaction.options.getString("path") ?? undefined,
+        path,
         query,
       });
       break;
@@ -280,14 +365,14 @@ export const handleControlChannelAutocomplete = async (
         case "path":
           choices = await services.autocompleteSessionPaths({
             ...context,
-            path: interaction.options.getString("path") ?? undefined,
+            path,
             query,
           });
           break;
         case "session":
           choices = await services.autocompleteResumeSessions({
             ...context,
-            path: interaction.options.getString("path") ?? undefined,
+            path,
             query,
           });
           break;
