@@ -13,17 +13,15 @@ export const normalizeThreadTimestamp = (value?: number) => {
     return null;
   }
 
-  if (value === 0) {
-    return 0;
-  }
+  let normalized = Math.trunc(value);
 
-  let normalized = value;
+  while (Math.abs(normalized) >= MIN_PLAUSIBLE_THREAD_TIMESTAMP_MICROSECONDS) {
+    normalized = Math.trunc(normalized / 1_000);
+  }
 
   const magnitude = Math.abs(normalized);
 
-  if (magnitude >= MIN_PLAUSIBLE_THREAD_TIMESTAMP_MICROSECONDS) {
-    normalized = Math.trunc(normalized / 1_000);
-  } else if (magnitude >= MIN_PLAUSIBLE_THREAD_TIMESTAMP_MS) {
+  if (magnitude >= MIN_PLAUSIBLE_THREAD_TIMESTAMP_MS) {
     // Already milliseconds.
   } else if (magnitude >= MIN_PLAUSIBLE_THREAD_TIMESTAMP_SECONDS) {
     normalized = Math.trunc(normalized * 1_000);
@@ -31,10 +29,7 @@ export const normalizeThreadTimestamp = (value?: number) => {
     return null;
   }
 
-  if (
-    normalized !== 0
-    && Math.abs(normalized) > MAX_PLAUSIBLE_THREAD_TIMESTAMP_MS
-  ) {
+  if (Math.abs(normalized) > MAX_PLAUSIBLE_THREAD_TIMESTAMP_MS) {
     return null;
   }
 

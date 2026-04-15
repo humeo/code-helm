@@ -21,9 +21,16 @@ test("normalizeThreadTimestamp returns null for undefined provider timestamps", 
 });
 
 test("normalizeThreadTimestamp returns null for implausible provider timestamps", () => {
+  expect(normalizeThreadTimestamp(0)).toBeNull();
   expect(normalizeThreadTimestamp(12)).toBeNull();
   expect(normalizeThreadTimestamp(123_456_789)).toBeNull();
   expect(normalizeThreadTimestamp(4_102_444_800_001)).toBeNull();
+});
+
+test("normalizeThreadTimestamp collapses nanosecond-like provider timestamps to milliseconds", () => {
+  expect(normalizeThreadTimestamp(1_744_750_000_123_000_000)).toBe(
+    1_744_750_000_123,
+  );
 });
 
 test("formatRelativeThreadTime renders the expected relative labels", () => {
