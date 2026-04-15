@@ -132,8 +132,8 @@ const createResumePickerThread = (
   cwd: "/tmp/workspace/api",
   preview: "",
   status: { type: "idle" },
-  createdAt: 1_000,
-  updatedAt: 1_000,
+  createdAt: 1_700_000_000_000,
+  updatedAt: 1_700_000_000_000,
   ...overrides,
 });
 
@@ -529,30 +529,31 @@ const createControlChannelServicesFixture = ({
 };
 
 test("resume picker threads sort by updatedAt, createdAt, then id", () => {
+  const baseTimestamp = 1_700_000_000_000;
   const oldest = createResumePickerThread({
     id: "thread-e",
-    createdAt: 1_000,
-    updatedAt: 1_000,
+    createdAt: baseTimestamp + 1_000,
+    updatedAt: baseTimestamp + 1_000,
   });
   const sameUpdatedOlderCreated = createResumePickerThread({
     id: "thread-c",
-    createdAt: 2_000,
-    updatedAt: 3_000,
+    createdAt: baseTimestamp + 2_000,
+    updatedAt: baseTimestamp + 3_000,
   });
   const sameUpdatedNewerCreated = createResumePickerThread({
     id: "thread-d",
-    createdAt: 3_000,
-    updatedAt: 3_000,
+    createdAt: baseTimestamp + 3_000,
+    updatedAt: baseTimestamp + 3_000,
   });
   const sameTimestampsEarlierId = createResumePickerThread({
     id: "thread-a",
-    createdAt: 4_000,
-    updatedAt: 4_000,
+    createdAt: baseTimestamp + 4_000,
+    updatedAt: baseTimestamp + 4_000,
   });
   const sameTimestampsLaterId = createResumePickerThread({
     id: "thread-b",
-    createdAt: 4_000,
-    updatedAt: 4_000,
+    createdAt: baseTimestamp + 4_000,
+    updatedAt: baseTimestamp + 4_000,
   });
 
   expect(
@@ -572,14 +573,38 @@ test("resume picker threads sort by updatedAt, createdAt, then id", () => {
   ]);
 });
 
+test("resume picker threads sort by normalized provider timestamps", () => {
+  const newerThreadWithSecondBasedTimestamp = createResumePickerThread({
+    id: "thread-newer-seconds",
+    createdAt: 1_700_000_090,
+    updatedAt: 1_700_000_100,
+  });
+  const olderThreadWithMillisecondTimestamp = createResumePickerThread({
+    id: "thread-older-milliseconds",
+    createdAt: 1_700_000_040_000,
+    updatedAt: 1_700_000_050_000,
+  });
+
+  expect(
+    sortResumePickerThreads([
+      olderThreadWithMillisecondTimestamp,
+      newerThreadWithSecondBasedTimestamp,
+    ]).map((thread) => thread.id),
+  ).toEqual([
+    "thread-newer-seconds",
+    "thread-older-milliseconds",
+  ]);
+});
+
 test("resume session autocomplete pipeline scopes threads, sorts them, formats labels, and truncates to 25", async () => {
+  const baseTimestamp = 1_700_000_000_000;
   const calls: Array<Record<string, unknown>> = [];
   const firstPageThreads = Array.from({ length: 13 }, (_, index) =>
     createResumePickerThread({
       id: `codex-thread-${String(index).padStart(2, "0")}`,
       preview: `Preview ${index}`,
-      updatedAt: index,
-      createdAt: index,
+      updatedAt: baseTimestamp + index,
+      createdAt: baseTimestamp + index,
     })
   );
   const secondPageThreads = [
@@ -588,14 +613,14 @@ test("resume session autocomplete pipeline scopes threads, sorts them, formats l
       preview:
         "This preview is intentionally long so the autocomplete helper has to " +
         "truncate it before Discord rejects the choice label.",
-      updatedAt: 5_000,
+      updatedAt: baseTimestamp + 5_000,
     }),
     ...Array.from({ length: 13 }, (_, index) =>
       createResumePickerThread({
         id: `codex-thread-late-${String(index).padStart(2, "0")}`,
         preview: `Late preview ${index}`,
-        updatedAt: 100 + index,
-        createdAt: 100 + index,
+        updatedAt: baseTimestamp + 100 + index,
+        createdAt: baseTimestamp + 100 + index,
       })
     ),
   ];
@@ -617,7 +642,7 @@ test("resume session autocomplete pipeline scopes threads, sorts them, formats l
     } as never,
     query: "  plan  ",
     cwd: defaultSessionPath,
-    now: 7_200_000,
+    now: baseTimestamp + 7_200_000,
   });
 
   expect(calls).toEqual([
@@ -641,13 +666,14 @@ test("resume session autocomplete pipeline scopes threads, sorts them, formats l
 });
 
 test("resume session autocomplete labels include updated time, preview or name, and the full thread id when it fits", () => {
+  const baseTimestamp = 1_700_000_000_000;
   expect(
     formatResumeSessionAutocompleteChoice(createResumePickerThread({
       id: "019d8bbd-8bb5-73b1-b6d7-aec5b95c5c1e",
       preview: "  Draft plan  ",
       name: "Ignored name",
-      updatedAt: 3_600_000,
-    }), 7_200_000),
+      updatedAt: baseTimestamp + 3_600_000,
+    }), baseTimestamp + 7_200_000),
   ).toEqual({
     name: "1 hour ago · Draft plan · 019d8bbd-8bb5-73b1-b6d7-aec5b95c5c1e",
     value: "019d8bbd-8bb5-73b1-b6d7-aec5b95c5c1e",
@@ -658,8 +684,8 @@ test("resume session autocomplete labels include updated time, preview or name, 
       id: "019d8e05-3a03-7da2-8af6-b7fb52dc4929",
       preview: "   ",
       name: "Named fallback",
-      updatedAt: 0,
-    }), 7_200_000),
+      updatedAt: baseTimestamp,
+    }), baseTimestamp + 7_200_000),
   ).toEqual({
     name: "2 hours ago · Named fallback · 019d8e05-3a03-7da2-8af6-b7fb52dc4929",
     value: "019d8e05-3a03-7da2-8af6-b7fb52dc4929",
@@ -670,13 +696,22 @@ test("resume session autocomplete labels include updated time, preview or name, 
     preview:
       "This preview is intentionally long so the autocomplete helper has to " +
       "truncate it before Discord rejects the choice label.",
-    updatedAt: 3_600_000,
-  }), 7_200_000);
+    updatedAt: baseTimestamp + 3_600_000,
+  }), baseTimestamp + 7_200_000);
 
   expect(longChoice.value).toBe("codex-thread-12345678901");
   expect(longChoice.name.length).toBeLessThanOrEqual(100);
   expect(longChoice.name.startsWith("1 hour ago · ")).toBe(true);
   expect(longChoice.name.endsWith(" · codex-thread-12345678901")).toBe(true);
+});
+
+test("resume session autocomplete labels normalize second-based provider timestamps", () => {
+  expect(
+    formatResumeSessionAutocompleteChoice(
+      createResumePickerThread({ updatedAt: 1_700_000_000 }),
+      1_700_003_600_000,
+    ).name.startsWith("1 hour ago · "),
+  ).toBe(true);
 });
 
 test("create session persists and displays the authoritative cwd returned by Codex", async () => {

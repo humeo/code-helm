@@ -55,6 +55,11 @@ import {
   normalizeBootstrapThreadTitle,
   normalizeSessionPathInput,
 } from "./domain/session-paths";
+import {
+  formatRelativeThreadTime,
+  getNormalizedThreadActivityTime,
+  normalizeThreadTimestamp,
+} from "./domain/session-time";
 import type {
   SessionLifecycleState,
   SessionPersistedRuntimeState,
@@ -2441,15 +2446,19 @@ const resolveSessionPathForAutocomplete = (path?: string) => {
 
 export const sortResumePickerThreads = (threads: CodexThread[]) => {
   return [...threads].sort((left, right) => {
-    const leftUpdatedAt = left.updatedAt ?? Number.NEGATIVE_INFINITY;
-    const rightUpdatedAt = right.updatedAt ?? Number.NEGATIVE_INFINITY;
+    const leftUpdatedAt =
+      getNormalizedThreadActivityTime(left) ?? Number.NEGATIVE_INFINITY;
+    const rightUpdatedAt =
+      getNormalizedThreadActivityTime(right) ?? Number.NEGATIVE_INFINITY;
 
     if (leftUpdatedAt !== rightUpdatedAt) {
       return rightUpdatedAt - leftUpdatedAt;
     }
 
-    const leftCreatedAt = left.createdAt ?? Number.NEGATIVE_INFINITY;
-    const rightCreatedAt = right.createdAt ?? Number.NEGATIVE_INFINITY;
+    const leftCreatedAt =
+      normalizeThreadTimestamp(left.createdAt) ?? Number.NEGATIVE_INFINITY;
+    const rightCreatedAt =
+      normalizeThreadTimestamp(right.createdAt) ?? Number.NEGATIVE_INFINITY;
 
     if (leftCreatedAt !== rightCreatedAt) {
       return rightCreatedAt - leftCreatedAt;
@@ -2545,33 +2554,7 @@ const formatResumeThreadIdSuffix = (threadId: string) => {
 };
 
 const formatResumeThreadUpdatedAt = (thread: CodexThread, now: number) => {
-  const updatedAt = thread.updatedAt ?? thread.createdAt;
-
-  if (updatedAt === undefined) {
-    return "unknown time";
-  }
-
-  const diffMs = Math.max(0, now - updatedAt);
-
-  if (diffMs < 60_000) {
-    return "just now";
-  }
-
-  const diffMinutes = Math.floor(diffMs / 60_000);
-
-  if (diffMinutes < 60) {
-    return diffMinutes === 1 ? "1 minute ago" : `${diffMinutes} minutes ago`;
-  }
-
-  const diffHours = Math.floor(diffMs / 3_600_000);
-
-  if (diffHours < 24) {
-    return diffHours === 1 ? "1 hour ago" : `${diffHours} hours ago`;
-  }
-
-  const diffDays = Math.floor(diffMs / 86_400_000);
-
-  return diffDays === 1 ? "1 day ago" : `${diffDays} days ago`;
+  return formatRelativeThreadTime(getNormalizedThreadActivityTime(thread), now);
 };
 
 export const formatResumeSessionAutocompleteChoice = (
