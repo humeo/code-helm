@@ -5,7 +5,7 @@ CodeHelm v1 is a local daemon that bridges a Discord control surface to Codex Ap
 - one Discord bot connects to one local CodeHelm daemon
 - one Discord server maps to one workspace container
 - one Discord thread maps to one Codex session
-- one session belongs to one workdir for its entire lifetime
+- one session belongs to one `cwd` for its entire lifetime
 
 Discord is the remote UI. The Codex App Server thread is the session source of truth.
 
@@ -44,34 +44,30 @@ CODEX_APP_SERVER_URL=
 DATABASE_PATH=
 WORKSPACE_ID=
 WORKSPACE_NAME=
+```
+
+Optional legacy bootstrap env vars still exist for importing old configured-workdir data on first boot:
+
+```bash
 WORKSPACE_ROOT=
 WORKDIRS_JSON=
 ```
 
-`WORKDIRS_JSON` must be valid JSON and each entry must look like:
-
-```json
-{"id":"main","label":"Main","absolutePath":"/absolute/path/to/workspace"}
-```
-
-Rules enforced by the config parser:
-
-- `WORKSPACE_ROOT` must be absolute
-- every workdir path must be absolute
-- every workdir path must live under `WORKSPACE_ROOT`
-- workdir ids must be unique
-- workdir paths must be unique
+They are not required for the normal user flow.
 
 ## Workspace Model
 
-CodeHelm v1 uses one workspace per daemon. The daemon does not auto-discover workdirs.
+CodeHelm v1 still uses one workspace container per daemon:
 
 - `WORKSPACE_ID` identifies the workspace container
 - `WORKSPACE_NAME` is the display name for that workspace
-- `WORKSPACE_ROOT` is the absolute root that contains all configured workdirs
-- `WORKDIRS_JSON` is the explicit registry of allowed workdirs
 
-If you need a different workspace root, run a different daemon instance.
+Normal session entry is path-first:
+
+- `/session-new` takes a `path`
+- `/session-resume` takes `path` and a path-scoped `session` choice
+- users can enter absolute paths or `~/...`
+- there is no configured workdir picker in the normal user flow
 
 ## Run It
 
@@ -87,7 +83,7 @@ Then start the daemon:
 bun run dev
 ```
 
-`bun run dev` starts the full CodeHelm daemon entrypoint in `src/index.ts`. That path parses config, applies migrations, seeds the configured workspace/workdirs, initializes the Codex App Server client, registers guild commands, starts the Discord bot, subscribes to Codex events, and installs shutdown hooks.
+`bun run dev` starts the full CodeHelm daemon entrypoint in `src/index.ts`. That path parses config, applies migrations, optionally seeds legacy workspace/workdir rows for older installs, initializes the Codex App Server client, registers guild commands, starts the Discord bot, subscribes to Codex events, and installs shutdown hooks.
 
 ## Regression Baseline
 
@@ -97,8 +93,8 @@ The current product baseline and executable end-to-end regression checklist live
 
 Use the control channel for session management, not for normal conversation.
 
-- `session-new --workdir <id>` creates a fresh Codex session in that workdir
-- `session-resume --workdir <id> --session <thread-id>` attaches Discord to an existing Codex session chosen from the selected workdir's live Codex thread list
+- `session-new --path <absolute-or-tilde-path>` creates a fresh Codex session in that directory
+- `session-resume --path <absolute-or-tilde-path> --session <thread-id>` attaches Discord to an existing Codex session chosen from the selected path's live Codex thread list
 - `session-close` archives the current managed Discord thread without destroying the Codex session
 - `session-sync` is the manual recovery path for degraded managed session threads
 
@@ -106,9 +102,14 @@ Session discovery lives inside `/session-resume`, not in separate list/import co
 
 Session creation creates a new Codex App Server thread first, then binds it to a new Discord thread.
 
+New managed-thread naming is bootstrap-based:
+
+- thread creation starts with `session-id`
+- the first completed reply renames the thread to the first user message
+
 `/session-resume` is the only attach path for existing Codex sessions:
 
-- the selected Codex thread must belong to the selected workdir
+- the selected Codex thread must belong to the selected path
 - if the session already has an active usable Discord thread, CodeHelm reuses that thread
 - if the session has an archived Discord thread, CodeHelm syncs first and reopens that same thread
 - if the session has no Discord attachment yet, CodeHelm creates a new Discord thread and binds it
@@ -180,12 +181,15 @@ CodeHelm treats unsupported external modification as a read-only condition in th
 
 Verified in the current repo state:
 
-- config parsing requires the documented env vars and validates `WORKDIRS_JSON`
-- `WORKDIRS_JSON` paths must be absolute and under `WORKSPACE_ROOT`
+- config parsing requires the documented env vars for Discord, Codex, database, and workspace identity
 - Discord control commands are guild-only and DM-disabled
 - the user-facing command surface is `session-new`, `session-resume`, `session-close`, and `session-sync`
-- `/session-resume` uses required `workdir + session` autocomplete instead of separate list/import commands
-- `/session-resume` rejects Codex threads whose cwd does not match the selected workdir
+- `/session-new` takes `path`
+- `/session-resume` uses required `path + session` autocomplete instead of separate list/import commands
+- `/session-resume` rejects Codex threads whose cwd does not match the selected path
+- there is no configured workdir picker in the normal user flow
+- managed thread creation starts with `session-id`
+- the first completed reply renames the thread to the first user message
 - `/session-resume` can attach unmanaged Codex sessions, reuse active Discord attachments, reopen archived ones, and replace deleted or unusable Discord thread containers
 - waiting-approval attaches use resume semantics so approval state can be restored on the attached Discord surface
 - live app-server transcript sync relays Discord-originated user messages once, labels live non-Discord user input as `Codex CLI`, keeps commentary durable only when no final reply exists, and omits successful command executions from the main transcript

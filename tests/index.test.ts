@@ -29,6 +29,7 @@ import {
   handleArchivedManagedSessionThreadMessage,
   handleManagedThreadDeletion,
   markTranscriptItemsSeen,
+  maybeBootstrapManagedThreadTitle,
   pollSessionRecovery,
   readThreadForSnapshotReconciliation,
   shouldLogSnapshotReconciliationWarning,
@@ -616,6 +617,7 @@ test("resume session autocomplete pipeline scopes threads, sorts them, formats l
     } as never,
     query: "  plan  ",
     cwd: defaultSessionPath,
+    now: 7_200_000,
   });
 
   expect(calls).toEqual([
@@ -634,38 +636,33 @@ test("resume session autocomplete pipeline scopes threads, sorts them, formats l
   expect(choices).toHaveLength(25);
   expect(choices[0]?.value).toBe("codex-thread-12345678901");
   expect(choices[0]?.name.length).toBeLessThanOrEqual(100);
-  expect(choices[0]?.name.endsWith(" · …345678901")).toBe(true);
+  expect(choices[0]?.name.endsWith(" · codex-thread-12345678901")).toBe(true);
   expect(choices.at(-1)?.value).toBe("codex-thread-02");
 });
 
-test("resume session autocomplete labels include status, preview or name, and a short thread id", () => {
+test("resume session autocomplete labels include updated time, preview or name, and the full thread id when it fits", () => {
   expect(
     formatResumeSessionAutocompleteChoice(createResumePickerThread({
-      id: "codex-thread-123456789",
+      id: "019d8bbd-8bb5-73b1-b6d7-aec5b95c5c1e",
       preview: "  Draft plan  ",
       name: "Ignored name",
-      status: {
-        type: "active",
-        activeFlags: ["waitingOnApproval"],
-      },
-    })),
+      updatedAt: 3_600_000,
+    }), 7_200_000),
   ).toEqual({
-    name: "active(waitingOnApproval) · Draft plan · …123456789",
-    value: "codex-thread-123456789",
+    name: "1 hour ago · Draft plan · 019d8bbd-8bb5-73b1-b6d7-aec5b95c5c1e",
+    value: "019d8bbd-8bb5-73b1-b6d7-aec5b95c5c1e",
   });
 
   expect(
     formatResumeSessionAutocompleteChoice(createResumePickerThread({
-      id: "codex-thread-000000002",
+      id: "019d8e05-3a03-7da2-8af6-b7fb52dc4929",
       preview: "   ",
       name: "Named fallback",
-      status: {
-        type: "idle",
-      },
-    })),
+      updatedAt: 0,
+    }), 7_200_000),
   ).toEqual({
-    name: "idle · Named fallback · …000000002",
-    value: "codex-thread-000000002",
+    name: "2 hours ago · Named fallback · 019d8e05-3a03-7da2-8af6-b7fb52dc4929",
+    value: "019d8e05-3a03-7da2-8af6-b7fb52dc4929",
   });
 
   const longChoice = formatResumeSessionAutocompleteChoice(createResumePickerThread({
@@ -673,15 +670,13 @@ test("resume session autocomplete labels include status, preview or name, and a 
     preview:
       "This preview is intentionally long so the autocomplete helper has to " +
       "truncate it before Discord rejects the choice label.",
-    status: {
-      type: "idle",
-    },
-  }));
+    updatedAt: 3_600_000,
+  }), 7_200_000);
 
   expect(longChoice.value).toBe("codex-thread-12345678901");
   expect(longChoice.name.length).toBeLessThanOrEqual(100);
-  expect(longChoice.name.startsWith("idle · ")).toBe(true);
-  expect(longChoice.name.endsWith(" · …345678901")).toBe(true);
+  expect(longChoice.name.startsWith("1 hour ago · ")).toBe(true);
+  expect(longChoice.name.endsWith(" · codex-thread-12345678901")).toBe(true);
 });
 
 test("create session persists and displays the authoritative cwd returned by Codex", async () => {
@@ -709,7 +704,7 @@ test("create session persists and displays the authoritative cwd returned by Cod
   ]);
   expect(calls.createVisibleSessionThread).toEqual([
     {
-      title: "session",
+      title: "codex-thread-1",
       starterText: `Opening session for \`${authoritativeCwd}\`.`,
     },
   ]);
@@ -896,7 +891,12 @@ test("unmanaged session with matching workdir creates a new Discord thread and s
   });
 
   expect(calls.readThreadIds).toEqual(["codex-thread-1"]);
-  expect(calls.createVisibleSessionThread).toHaveLength(1);
+  expect(calls.createVisibleSessionThread).toEqual([
+    {
+      title: "codex-thread-1",
+      starterText: "Attaching Codex session `codex-thread-1` for `/tmp/workspace/api`.",
+    },
+  ]);
   expect(calls.insertedSessions).toEqual([
     {
       discordThreadId: "discord-thread-new-1",
@@ -992,7 +992,12 @@ test("deleted or unusable managed thread creates a replacement Discord thread th
   });
 
   expect(calls.usabilityChecks).toEqual(["discord-thread-deleted"]);
-  expect(calls.createVisibleSessionThread).toHaveLength(1);
+  expect(calls.createVisibleSessionThread).toEqual([
+    {
+      title: "codex-thread-1",
+      starterText: "Attaching Codex session `codex-thread-1` for `/tmp/workspace/api`.",
+    },
+  ]);
   expect(calls.reboundThreads).toEqual([
     {
       currentDiscordThreadId: "discord-thread-deleted",
@@ -2581,6 +2586,125 @@ test("turn completion only projects transcript and status into active Discord th
   expect(archivedCalls).toEqual([
     "idle",
   ]);
+});
+
+test("bootstrap thread title renames once and accepts short first messages", async () => {
+  for (const firstMessage of ["hi", "1", "继续"]) {
+    const renames: string[] = [];
+    const thread = {
+      name: "codex-thread-1",
+      async setName(nextName: string) {
+        renames.push(nextName);
+        this.name = nextName;
+      },
+    };
+
+    await maybeBootstrapManagedThreadTitle({
+      client: {
+        channels: {
+          fetch: async () => thread,
+        },
+      } as never,
+      session: createSessionRecord({
+        discordThreadId: "discord-thread-1",
+        codexThreadId: "codex-thread-1",
+      }),
+      readThreadSnapshot: async () => ({
+        thread: createResumePickerThread({
+          turns: [
+            {
+              id: "turn-1",
+              items: [
+                {
+                  type: "userMessage",
+                  id: "item-user-1",
+                  content: [{ type: "text", text: firstMessage }],
+                },
+              ],
+            },
+          ],
+        }),
+      }),
+    });
+
+    await maybeBootstrapManagedThreadTitle({
+      client: {
+        channels: {
+          fetch: async () => thread,
+        },
+      } as never,
+      session: createSessionRecord({
+        discordThreadId: "discord-thread-1",
+        codexThreadId: "codex-thread-1",
+      }),
+      readThreadSnapshot: async () => {
+        throw new Error("should not read snapshot after the bootstrap rename is complete");
+      },
+    });
+
+    expect(renames).toEqual([firstMessage]);
+  }
+});
+
+test("bootstrap thread title uses the first thread message from snapshot, not a later completed turn", async () => {
+  const renames: string[] = [];
+  const thread = {
+    name: "codex-thread-1",
+    async setName(nextName: string) {
+      renames.push(nextName);
+      this.name = nextName;
+    },
+  };
+
+  await maybeBootstrapManagedThreadTitle({
+    client: {
+      channels: {
+        fetch: async () => thread,
+      },
+    } as never,
+    session: createSessionRecord({
+      discordThreadId: "discord-thread-1",
+      codexThreadId: "codex-thread-1",
+    }),
+    completedTurn: {
+      id: "turn-2",
+      items: [
+        {
+          type: "userMessage",
+          id: "item-user-2",
+          content: [{ type: "text", text: "later turn title" }],
+        },
+      ],
+    },
+    readThreadSnapshot: async () => ({
+      thread: createResumePickerThread({
+        turns: [
+          {
+            id: "turn-1",
+            items: [
+              {
+                type: "userMessage",
+                id: "item-user-1",
+                content: [{ type: "text", text: "first thread title" }],
+              },
+            ],
+          },
+          {
+            id: "turn-2",
+            items: [
+              {
+                type: "userMessage",
+                id: "item-user-2",
+                content: [{ type: "text", text: "later turn title" }],
+              },
+            ],
+          },
+        ],
+      }),
+    }),
+  });
+
+  expect(renames).toEqual(["first thread title"]);
 });
 
 test("approval resolution updates DM and existing lifecycle message even while the thread is archived", async () => {
@@ -4336,7 +4460,7 @@ test("status card reuse only matches clear operational status messages", () => {
       messages: [
         {
           id: "m4",
-          content: "Session started for `api`.\nCodex thread: `codex-thread-1`.",
+          content: "Session started.\nPath: `~/code-github/code-helm`.\nCodex thread: `codex-thread-1`.",
           editable: true,
           author: { bot: true, id: "bot-1" },
         },

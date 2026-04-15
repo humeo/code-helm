@@ -50,7 +50,11 @@ import {
   resolveSyncSessionState,
   resolveSessionAccessMode,
 } from "./domain/session-service";
-import { normalizeSessionPathInput } from "./domain/session-paths";
+import {
+  formatSessionPathForDisplay,
+  normalizeBootstrapThreadTitle,
+  normalizeSessionPathInput,
+} from "./domain/session-paths";
 import type {
   SessionLifecycleState,
   SessionPersistedRuntimeState,
@@ -237,6 +241,10 @@ type ThreadStarterMessage = Message<boolean> & {
 };
 type ArchiveableThreadChannel = {
   setArchived(archived?: boolean, reason?: string): Promise<unknown>;
+};
+type RenamableThreadChannel = {
+  name: string | null;
+  setName(name: string, reason?: string): Promise<unknown>;
 };
 type TranscriptRuntime = {
   seenItemIds: Set<string>;
@@ -1643,6 +1651,19 @@ const isArchiveableThreadChannel = (
   );
 };
 
+const isRenamableThreadChannel = (
+  value: unknown,
+): value is RenamableThreadChannel => {
+  return (
+    !!value
+    && typeof value === "object"
+    && "name" in value
+    && typeof (value as { name?: unknown }).name === "string"
+    && "setName" in value
+    && typeof (value as { setName?: unknown }).setName === "function"
+  );
+};
+
 const buildApprovalKey = ({
   turnId,
   itemId,
@@ -1800,11 +1821,13 @@ export const applyManagedTurnCompletion = async ({
   markIdle,
   updateStatusCard,
   syncTranscriptSnapshot,
+  bootstrapThreadTitle,
 }: {
   session: Pick<SessionRecord, "lifecycleState">;
   markIdle: () => void;
   updateStatusCard: () => Promise<void>;
   syncTranscriptSnapshot: () => Promise<void>;
+  bootstrapThreadTitle?: () => Promise<void>;
 }) => {
   markIdle();
 
@@ -1814,6 +1837,7 @@ export const applyManagedTurnCompletion = async ({
 
   await updateStatusCard();
   await syncTranscriptSnapshot();
+  await bootstrapThreadTitle?.();
 };
 
 const formatManagedSessionThreadReference = (
@@ -2442,6 +2466,74 @@ const formatResumeThreadTitle = (thread: CodexThread) => {
   return preview || name || thread.id;
 };
 
+const truncateWithEllipsis = (value: string, maxLength: number) => {
+  if (maxLength <= 0) {
+    return "";
+  }
+
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  if (maxLength === 1) {
+    return "…";
+  }
+
+  return `${value.slice(0, maxLength - 1)}…`;
+};
+
+const maxDiscordThreadNameLength = 100;
+
+const formatBootstrapThreadTitleCandidate = (value: string) => {
+  const normalized = normalizeBootstrapThreadTitle(value);
+
+  return normalized
+    ? truncateWithEllipsis(normalized, maxDiscordThreadNameLength)
+    : null;
+};
+
+const extractBootstrapThreadTitleFromTurn = (turn?: CodexTurn) => {
+  if (!turn) {
+    return null;
+  }
+
+  for (const item of turn.items) {
+    if (item.type !== "userMessage") {
+      continue;
+    }
+
+    const userMessage = item as CodexUserMessageItem;
+    const content = Array.isArray(userMessage.content) ? userMessage.content : [];
+    const text = content
+      .filter((part) => part.type === "text" && typeof part.text === "string")
+      .map((part) => part.text)
+      .join("\n");
+    const title = formatBootstrapThreadTitleCandidate(text);
+
+    if (title) {
+      return title;
+    }
+  }
+
+  return null;
+};
+
+const extractBootstrapThreadTitleFromTurns = (turns?: CodexTurn[]) => {
+  if (!turns) {
+    return null;
+  }
+
+  for (const turn of turns) {
+    const title = extractBootstrapThreadTitleFromTurn(turn);
+
+    if (title) {
+      return title;
+    }
+  }
+
+  return null;
+};
+
 const formatResumeThreadIdSuffix = (threadId: string) => {
   const shortIdLength = 9;
 
@@ -2452,28 +2544,80 @@ const formatResumeThreadIdSuffix = (threadId: string) => {
   return `…${threadId.slice(-shortIdLength)}`;
 };
 
-export const formatResumeSessionAutocompleteChoice = (thread: CodexThread) => {
-  const statusText = describeCodexThreadStatus(thread.status);
-  const threadIdSuffix = formatResumeThreadIdSuffix(thread.id);
+const formatResumeThreadUpdatedAt = (thread: CodexThread, now: number) => {
+  const updatedAt = thread.updatedAt ?? thread.createdAt;
+
+  if (updatedAt === undefined) {
+    return "unknown time";
+  }
+
+  const diffMs = Math.max(0, now - updatedAt);
+
+  if (diffMs < 60_000) {
+    return "just now";
+  }
+
+  const diffMinutes = Math.floor(diffMs / 60_000);
+
+  if (diffMinutes < 60) {
+    return diffMinutes === 1 ? "1 minute ago" : `${diffMinutes} minutes ago`;
+  }
+
+  const diffHours = Math.floor(diffMs / 3_600_000);
+
+  if (diffHours < 24) {
+    return diffHours === 1 ? "1 hour ago" : `${diffHours} hours ago`;
+  }
+
+  const diffDays = Math.floor(diffMs / 86_400_000);
+
+  return diffDays === 1 ? "1 day ago" : `${diffDays} days ago`;
+};
+
+export const formatResumeSessionAutocompleteChoice = (
+  thread: CodexThread,
+  now: number = Date.now(),
+) => {
+  const updatedAtText = formatResumeThreadUpdatedAt(thread, now);
+  const conversation = formatResumeThreadTitle(thread);
+  const fullThreadId = thread.id;
   const maxNameLength = 100;
   const separator = " · ";
-  const titlePrefix = `${statusText}${separator}`;
-  const titleSuffix = `${separator}${threadIdSuffix}`;
-  const maxTitleLength = maxNameLength - titlePrefix.length - titleSuffix.length;
-  const title = formatResumeThreadTitle(thread);
-  const safeTitle =
-    maxTitleLength <= 0
-      ? ""
-      : title.length <= maxTitleLength
-        ? title
-        : maxTitleLength === 1
-          ? "…"
-          : `${title.slice(0, maxTitleLength - 1)}…`;
+  const fullPrefix = `${updatedAtText}${separator}`;
+  const fullSuffix = `${separator}${fullThreadId}`;
+  const maxConversationLengthWithFullId =
+    maxNameLength - fullPrefix.length - fullSuffix.length;
+
+  if (maxConversationLengthWithFullId > 0) {
+    return {
+      name: `${fullPrefix}${truncateWithEllipsis(
+        conversation,
+        maxConversationLengthWithFullId,
+      )}${fullSuffix}`,
+      value: thread.id,
+    };
+  }
+
+  const shortThreadId = formatResumeThreadIdSuffix(thread.id);
+  const shortSuffix = `${separator}${shortThreadId}`;
+  const maxConversationLengthWithShortId =
+    maxNameLength - fullPrefix.length - shortSuffix.length;
+
+  if (maxConversationLengthWithShortId > 0) {
+    return {
+      name: `${fullPrefix}${truncateWithEllipsis(
+        conversation,
+        maxConversationLengthWithShortId,
+      )}${shortSuffix}`,
+      value: thread.id,
+    };
+  }
 
   return {
-    name: safeTitle.length > 0
-      ? `${titlePrefix}${safeTitle}${titleSuffix}`
-      : `${statusText}${titleSuffix}`,
+    name: truncateWithEllipsis(
+      `${updatedAtText}${separator}${shortThreadId}`,
+      maxNameLength,
+    ),
     value: thread.id,
   };
 };
@@ -2504,10 +2648,12 @@ export const buildResumeSessionAutocompleteChoices = async ({
   codexClient,
   query,
   cwd,
+  now = Date.now(),
 }: {
   codexClient: Pick<JsonRpcClient, "listThreads">;
   query: string;
   cwd?: string;
+  now?: number;
 }) => {
   if (!cwd) {
     return [];
@@ -2531,7 +2677,39 @@ export const buildResumeSessionAutocompleteChoices = async ({
 
   return sortResumePickerThreads(threads)
     .slice(0, 25)
-    .map(formatResumeSessionAutocompleteChoice);
+    .map((thread) => formatResumeSessionAutocompleteChoice(thread, now));
+};
+
+export const maybeBootstrapManagedThreadTitle = async ({
+  client,
+  session,
+  readThreadSnapshot,
+  completedTurn,
+}: {
+  client: Client;
+  session: Pick<SessionRecord, "codexThreadId" | "discordThreadId">;
+  readThreadSnapshot: () => Promise<ThreadReadResult>;
+  completedTurn?: CodexTurn;
+}) => {
+  const channel = await client.channels.fetch(session.discordThreadId);
+
+  if (!isRenamableThreadChannel(channel) || channel.name !== session.codexThreadId) {
+    return;
+  }
+
+  const snapshot = await readThreadSnapshot();
+  const nextTitle =
+    extractBootstrapThreadTitleFromTurns(snapshot.thread.turns)
+    ?? extractBootstrapThreadTitleFromTurn(completedTurn);
+
+  if (!nextTitle || nextTitle === channel.name) {
+    return;
+  }
+
+  await channel.setName(
+    nextTitle,
+    "CodeHelm bootstrapped the thread title from the first user message",
+  );
 };
 
 const attachedSessionErrorSurfaceText =
@@ -2552,8 +2730,8 @@ const describeAttachedSessionResult = (result: SessionResumeState) => {
   }
 };
 
-const sessionThreadTitle = () => {
-  return "session";
+const sessionThreadTitle = (codexThreadId: string) => {
+  return codexThreadId;
 };
 
 type BoundSessionThread = {
@@ -2614,7 +2792,7 @@ const createAttachedSessionThread = async ({
   client,
   controlChannelId,
   createVisibleSessionThread,
-  sessionPathLabel,
+  sessionPath,
   codexThreadId,
   title,
   starterText,
@@ -2624,7 +2802,7 @@ const createAttachedSessionThread = async ({
   client: Client;
   controlChannelId: string;
   createVisibleSessionThread: CreateControlChannelServicesDeps["createVisibleSessionThread"];
-  sessionPathLabel: string;
+  sessionPath: string;
   codexThreadId: string;
   title: string;
   starterText: string;
@@ -2645,7 +2823,7 @@ const createAttachedSessionThread = async ({
       ...renderSessionStartedPayload({
         type: "session.started",
         params: {
-          workdirLabel: sessionPathLabel,
+          path: sessionPath,
           codexThreadId,
         },
       }),
@@ -2706,6 +2884,7 @@ export const createControlChannelServices = ({
         cwd: resolvedPath.cwd,
       });
       const authoritativeCwd = started.cwd;
+      const displayPath = formatSessionPathForDisplay(authoritativeCwd);
       const codexThreadId = started.thread.id;
       const discord = getDiscordClient();
       let thread: BoundSessionThread | undefined;
@@ -2718,9 +2897,9 @@ export const createControlChannelServices = ({
           client: discord,
           controlChannelId: config.discord.controlChannelId,
           createVisibleSessionThread,
-          sessionPathLabel: authoritativeCwd,
+          sessionPath: displayPath,
           codexThreadId,
-          title: sessionThreadTitle(),
+          title: sessionThreadTitle(codexThreadId),
           starterText: `Opening session for \`${authoritativeCwd}\`.`,
           onBound: async (boundThread) => {
             sessionRepo.insert({
@@ -2938,13 +3117,14 @@ export const createControlChannelServices = ({
           const rollbackBinding = async (thread: BoundSessionThread) => {
             sessionRepo.markDeleted(thread.id);
           };
+          const displayPath = formatSessionPathForDisplay(resolvedPath.cwd);
           const thread = await createAttachedSessionThread({
             client: discord,
             controlChannelId: config.discord.controlChannelId,
             createVisibleSessionThread,
-            sessionPathLabel: resolvedPath.cwd,
+            sessionPath: displayPath,
             codexThreadId,
-            title: sessionThreadTitle(),
+            title: sessionThreadTitle(codexThreadId),
             starterText: `Attaching Codex session \`${codexThreadId}\` for \`${resolvedPath.cwd}\`.`,
             onBound: async (boundThread) => {
               sessionRepo.insert({
@@ -2981,13 +3161,14 @@ export const createControlChannelServices = ({
               sessionRepo.updateLifecycleState(previousThreadId, previousLifecycleState);
             }
           };
+          const displayPath = formatSessionPathForDisplay(resolvedPath.cwd);
           const thread = await createAttachedSessionThread({
             client: discord,
             controlChannelId: config.discord.controlChannelId,
             createVisibleSessionThread,
-            sessionPathLabel: resolvedPath.cwd,
+            sessionPath: displayPath,
             codexThreadId,
-            title: sessionThreadTitle(),
+            title: sessionThreadTitle(codexThreadId),
             starterText: `Attaching Codex session \`${codexThreadId}\` for \`${resolvedPath.cwd}\`.`,
             onBound: async (boundThread) => {
               sessionRepo.rebindDiscordThread({
@@ -4793,6 +4974,18 @@ export const startCodeHelm = async (
             discord: bot.client,
             session,
             degradeOnUnexpectedItems: false,
+          });
+        },
+        bootstrapThreadTitle: async () => {
+          await maybeBootstrapManagedThreadTitle({
+            client: bot.client,
+            session,
+            completedTurn: params.turn,
+            readThreadSnapshot: async () =>
+              readThreadForSnapshotReconciliation({
+                codexClient,
+                threadId: session.codexThreadId,
+              }),
           });
         },
       });

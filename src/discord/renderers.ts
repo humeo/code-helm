@@ -10,7 +10,7 @@ export type StatusCardState = {
 export type SessionStartedEvent = {
   type: "session.started";
   params: {
-    workdirLabel: string;
+    path: string;
     codexThreadId: string;
   };
 };
@@ -129,19 +129,19 @@ export const renderDegradationActionText = ({
 export const renderSessionStartedText = ({
   params,
 }: SessionStartedEvent) => {
-  const { workdirLabel, codexThreadId } = params;
+  const { path, codexThreadId } = params;
 
-  return `Session started for \`${workdirLabel}\`.\nCodex thread: \`${codexThreadId}\`.`;
+  return `Session started.\nPath: \`${path}\`.\nCodex thread: \`${codexThreadId}\`.`;
 };
 
 export const renderSessionStartedPayload = ({
   params,
 }: SessionStartedEvent): DiscordMessagePayload => {
-  const { workdirLabel, codexThreadId } = params;
+  const { path, codexThreadId } = params;
 
   return buildEmbedPayload({
     title: "Session started",
-    description: `Session: \`${workdirLabel}\`\nCodex thread: \`${codexThreadId}\``,
+    description: `Path: \`${path}\`\nCodex thread: \`${codexThreadId}\``,
     color: startedNoticeColor,
   });
 };

@@ -174,18 +174,18 @@ test("session started renderer returns stable Discord text", () => {
     renderSessionStartedText({
       type: "session.started",
       params: {
-        workdirLabel: "api",
+        path: "~/code-github/code-helm",
         codexThreadId: "codex-thread-1",
       },
     }),
-  ).toBe("Session started for `api`.\nCodex thread: `codex-thread-1`.");
+  ).toBe("Session started.\nPath: `~/code-github/code-helm`.\nCodex thread: `codex-thread-1`.");
 });
 
 test("session started renderer returns a structured system card payload", () => {
   const payload = renderSessionStartedPayload({
     type: "session.started",
     params: {
-      workdirLabel: "api",
+      path: "~/code-github/code-helm",
       codexThreadId: "codex-thread-1",
     },
   });
@@ -195,7 +195,7 @@ test("session started renderer returns a structured system card payload", () => 
     embeds: [
       {
         title: "Session started",
-        description: "Session: `api`\nCodex thread: `codex-thread-1`",
+        description: "Path: `~/code-github/code-helm`\nCodex thread: `codex-thread-1`",
         color: 0x2563eb,
       },
     ],
