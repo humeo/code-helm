@@ -68,6 +68,20 @@ const directorySortCollator = new Intl.Collator(undefined, {
 const currentDirectoryChoiceName = ".";
 const parentDirectoryChoiceName = "..";
 
+const formatPathBrowserChoiceName = (path: string, homeDir: string) => {
+  const displayPath = formatSessionPathForDisplay(path, homeDir);
+
+  if (displayPath.startsWith("~/")) {
+    return `${displayPath.slice(2)}/`;
+  }
+
+  if (displayPath === "~") {
+    return "./";
+  }
+
+  return `${displayPath}/`;
+};
+
 const isReadableDirectory = (path: string, fs: PathBrowserFs) => {
   try {
     if (!fs.statSync(path).isDirectory()) {
@@ -309,7 +323,7 @@ export const listPathBrowserDirectoryChoices = ({
     }))
     .filter(({ childPath }) => isReadableDirectory(childPath, fs))
     .map(({ entry, childPath }) => ({
-      name: `${entry.name}/`,
+      name: formatPathBrowserChoiceName(childPath, homeDir),
       value: formatSessionPathForAutocompleteValue(childPath, homeDir, true),
     }));
 

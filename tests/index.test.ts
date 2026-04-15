@@ -956,8 +956,14 @@ test("path autocomplete starts from home directory choices", async () => {
     })).toEqual([
       { name: ".", value: "~/code-github" },
       { name: "..", value: "~" },
-      { name: "code-helm/", value: "~/code-github/code-helm/" },
-      { name: "codex/", value: "~/code-github/codex/" },
+      {
+        name: "code-github/code-helm/",
+        value: "~/code-github/code-helm/",
+      },
+      {
+        name: "code-github/codex/",
+        value: "~/code-github/codex/",
+      },
     ]);
 
     expect(await services.autocompleteSessionPaths({

@@ -41,8 +41,14 @@ describe("buildPathBrowserChoices", () => {
       })).toEqual([
         { name: ".", value: "~/code-github" },
         { name: "..", value: "~" },
-        { name: "code-helm/", value: "~/code-github/code-helm/" },
-        { name: "codex/", value: "~/code-github/codex/" },
+        {
+          name: "code-github/code-helm/",
+          value: "~/code-github/code-helm/",
+        },
+        {
+          name: "code-github/codex/",
+          value: "~/code-github/codex/",
+        },
       ]);
     } finally {
       rmSync(homeDir, { recursive: true, force: true });
@@ -84,8 +90,14 @@ describe("buildPathBrowserChoices", () => {
       })).toEqual([
         { name: ".", value: "~/code-github" },
         { name: "..", value: "~" },
-        { name: "code-helm/", value: "~/code-github/code-helm/" },
-        { name: "codex/", value: "~/code-github/codex/" },
+        {
+          name: "code-github/code-helm/",
+          value: "~/code-github/code-helm/",
+        },
+        {
+          name: "code-github/codex/",
+          value: "~/code-github/codex/",
+        },
       ]);
     } finally {
       rmSync(homeDir, { recursive: true, force: true });
@@ -113,7 +125,10 @@ describe("buildPathBrowserChoices", () => {
       })).toEqual([
         { name: ".", value: "~/code-github" },
         { name: "..", value: "~" },
-        { name: "code-helm/", value: "~/code-github/code-helm/" },
+        {
+          name: "code-github/code-helm/",
+          value: "~/code-github/code-helm/",
+        },
       ]);
     } finally {
       rmSync(homeDir, { recursive: true, force: true });
@@ -133,8 +148,14 @@ describe("buildPathBrowserChoices", () => {
       })).toEqual([
         { name: ".", value: "~/code-github" },
         { name: "..", value: "~" },
-        { name: "code-helm/", value: "~/code-github/code-helm/" },
-        { name: "codex/", value: "~/code-github/codex/" },
+        {
+          name: "code-github/code-helm/",
+          value: "~/code-github/code-helm/",
+        },
+        {
+          name: "code-github/codex/",
+          value: "~/code-github/codex/",
+        },
       ]);
     } finally {
       rmSync(homeDir, { recursive: true, force: true });
@@ -170,7 +191,10 @@ describe("buildPathBrowserChoices", () => {
       expect(choices).toEqual([
         { name: ".", value: "~/code-github" },
         { name: "..", value: "~" },
-        { name: "code-helm/", value: "~/code-github/code-helm/" },
+        {
+          name: "code-github/code-helm/",
+          value: "~/code-github/code-helm/",
+        },
       ]);
     } finally {
       rmSync(homeDir, { recursive: true, force: true });
@@ -282,7 +306,7 @@ describe("buildPathBrowserChoices", () => {
       })).toEqual([
         { name: ".", value: "~/workspace" },
         { name: "..", value: "~" },
-        { name: "visible/", value: "~/workspace/visible/" },
+        { name: "workspace/visible/", value: "~/workspace/visible/" },
       ]);
     } finally {
       rmSync(homeDir, { recursive: true, force: true });
