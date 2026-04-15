@@ -121,7 +121,13 @@ export const resolvePathBrowserState = ({
   const shouldStayWithinHome = isPathWithinHome(requestedPath, normalizedHomeDir);
   let candidatePath = requestedPath;
 
-  while (!isReadableDirectory(candidatePath, fs) || pathContainsHiddenDirectory(candidatePath)) {
+  while (
+    !isReadableDirectory(candidatePath, fs)
+    || (
+      candidatePath !== normalizedHomeDir
+      && pathContainsHiddenDirectory(candidatePath)
+    )
+  ) {
     if (shouldStayWithinHome && candidatePath === normalizedHomeDir) {
       return null;
     }

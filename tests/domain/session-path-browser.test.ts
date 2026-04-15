@@ -217,4 +217,20 @@ describe("buildPathBrowserChoices", () => {
       rmSync(homeDir, { recursive: true, force: true });
     }
   });
+
+  test("hidden home directory still works as the browser root", () => {
+    const homeDir = mkdtempSync(join(tmpdir(), ".codehelm-hidden-home-"));
+
+    try {
+      mkdirSync(join(homeDir, "visible"));
+      mkdirSync(join(homeDir, ".hidden"));
+
+      expect(buildPathBrowserChoices({ homeDir })).toEqual([
+        { name: "Select ~", value: "~" },
+        { name: "visible/", value: "~/visible/" },
+      ]);
+    } finally {
+      rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
 });
