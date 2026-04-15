@@ -18,7 +18,7 @@ describe("buildPathBrowserChoices", () => {
       writeFileSync(join(homeDir, "notes.txt"), "hello");
 
       expect(buildPathBrowserChoices({ homeDir })).toEqual([
-        { name: "Select ~", value: "~" },
+        { name: ".", value: "~" },
         { name: "code-github/", value: "~/code-github/" },
         { name: "Downloads/", value: "~/Downloads/" },
       ]);
@@ -39,8 +39,8 @@ describe("buildPathBrowserChoices", () => {
         inputPath: "~/code-github/",
         homeDir,
       })).toEqual([
-        { name: "Select ~/code-github", value: "~/code-github" },
-        { name: "../", value: "~" },
+        { name: ".", value: "~/code-github" },
+        { name: "..", value: "~" },
         { name: "code-helm/", value: "~/code-github/code-helm/" },
         { name: "codex/", value: "~/code-github/codex/" },
       ]);
@@ -60,8 +60,8 @@ describe("buildPathBrowserChoices", () => {
         inputPath: "~/code-github/missing/nested/",
         homeDir,
       })).toEqual([
-        { name: "Select ~/code-github", value: "~/code-github" },
-        { name: "../", value: "~" },
+        { name: ".", value: "~/code-github" },
+        { name: "..", value: "~" },
         { name: "code-helm/", value: "~/code-github/code-helm/" },
         { name: "codex/", value: "~/code-github/codex/" },
       ]);
@@ -97,8 +97,8 @@ describe("buildPathBrowserChoices", () => {
       });
 
       expect(choices).toEqual([
-        { name: "Select ~/code-github", value: "~/code-github" },
-        { name: "../", value: "~" },
+        { name: ".", value: "~/code-github" },
+        { name: "..", value: "~" },
         { name: "code-helm/", value: "~/code-github/code-helm/" },
       ]);
     } finally {
@@ -143,7 +143,7 @@ describe("buildPathBrowserChoices", () => {
       const choices = buildPathBrowserChoices({ homeDir });
 
       expect(choices).toHaveLength(25);
-      expect(choices[0]).toEqual({ name: "Select ~", value: "~" });
+      expect(choices[0]).toEqual({ name: ".", value: "~" });
       expect(choices.at(-1)).toEqual({
         name: "dir-23/",
         value: "~/dir-23/",
@@ -168,7 +168,7 @@ describe("buildPathBrowserChoices", () => {
         homeDir,
         limit: 5,
       })).toEqual([
-        { name: "Select ~", value: "~" },
+        { name: ".", value: "~" },
         { name: "code-github/", value: "~/code-github/" },
         { name: "Downloads/", value: "~/Downloads/" },
       ]);
@@ -188,7 +188,7 @@ describe("buildPathBrowserChoices", () => {
         inputPath: "~/.hidden/nested/",
         homeDir,
       })).toEqual([
-        { name: "Select ~", value: "~" },
+        { name: ".", value: "~" },
         { name: "code-github/", value: "~/code-github/" },
       ]);
     } finally {
@@ -209,8 +209,8 @@ describe("buildPathBrowserChoices", () => {
         inputPath: `${workspaceDir}/.hidden/nested/`,
         homeDir,
       })).toEqual([
-        { name: "Select ~/workspace", value: "~/workspace" },
-        { name: "../", value: "~" },
+        { name: ".", value: "~/workspace" },
+        { name: "..", value: "~" },
         { name: "visible/", value: "~/workspace/visible/" },
       ]);
     } finally {
@@ -226,7 +226,7 @@ describe("buildPathBrowserChoices", () => {
       mkdirSync(join(homeDir, ".hidden"));
 
       expect(buildPathBrowserChoices({ homeDir })).toEqual([
-        { name: "Select ~", value: "~" },
+        { name: ".", value: "~" },
         { name: "visible/", value: "~/visible/" },
       ]);
     } finally {

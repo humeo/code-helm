@@ -63,6 +63,8 @@ const directorySortCollator = new Intl.Collator(undefined, {
   numeric: true,
   sensitivity: "base",
 });
+const currentDirectoryChoiceName = ".";
+const parentDirectoryChoiceName = "..";
 
 const isReadableDirectory = (path: string, fs: PathBrowserFs) => {
   try {
@@ -178,14 +180,14 @@ export const listPathBrowserDirectoryChoices = ({
 
   const choices: PathBrowserChoice[] = [
     {
-      name: `Select ${state.currentLabel}`,
+      name: currentDirectoryChoiceName,
       value: state.currentValue,
     },
   ];
 
   if (state.parentValue) {
     choices.push({
-      name: "../",
+      name: parentDirectoryChoiceName,
       value: state.parentValue,
     });
   }

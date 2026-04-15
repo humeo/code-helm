@@ -918,7 +918,7 @@ test("path autocomplete starts from home directory choices", async () => {
     });
 
     expect(choices).toEqual([
-      { name: "Select ~", value: "~" },
+      { name: ".", value: "~" },
       { name: "code-github/", value: "~/code-github/" },
       { name: "Downloads/", value: "~/Downloads/" },
     ]);
@@ -931,8 +931,8 @@ test("path autocomplete starts from home directory choices", async () => {
       path: "~/code-github/",
       query: "~/code-github/",
     })).toEqual([
-      { name: "Select ~/code-github", value: "~/code-github" },
-      { name: "../", value: "~" },
+      { name: ".", value: "~/code-github" },
+      { name: "..", value: "~" },
       { name: "code-helm/", value: "~/code-github/code-helm/" },
       { name: "codex/", value: "~/code-github/codex/" },
     ]);
