@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, test } from "bun:test";
@@ -84,18 +84,14 @@ describe("buildPathBrowserChoices", () => {
         homeDir,
         fs: {
           statSync(path) {
-            return {
-              isDirectory() {
-                return path !== join(homeDir, "notes.txt");
-              },
-            };
+            return statSync(path);
           },
           readdirSync(path, options) {
             if (path === privateDir) {
               throw new Error("EACCES");
             }
 
-            return require("node:fs").readdirSync(path, options);
+            return readdirSync(path, options);
           },
         },
       });
@@ -104,8 +100,32 @@ describe("buildPathBrowserChoices", () => {
         { name: "Select ~/code-github", value: "~/code-github" },
         { name: "../", value: "~" },
         { name: "code-helm/", value: "~/code-github/code-helm/" },
-        { name: "private/", value: "~/code-github/private/" },
       ]);
+    } finally {
+      rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  test("home-rooted fallback does not escape above the home directory", () => {
+    const homeDir = createTempHomeDir();
+
+    try {
+      expect(buildPathBrowserChoices({
+        inputPath: "~/private/",
+        homeDir,
+        fs: {
+          statSync(path) {
+            return statSync(path);
+          },
+          readdirSync(path, options) {
+            if (path === homeDir) {
+              throw new Error("EACCES");
+            }
+
+            return readdirSync(path, options);
+          },
+        },
+      })).toEqual([]);
     } finally {
       rmSync(homeDir, { recursive: true, force: true });
     }

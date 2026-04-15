@@ -1,5 +1,5 @@
 import { readdirSync, statSync, type Dirent } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, relative } from "node:path";
 import { homedir } from "node:os";
 import {
   formatSessionPathForAutocompleteValue,
@@ -93,18 +93,37 @@ const normalizeRequestedBrowserPath = ({
   }
 };
 
+const isPathWithinHome = (path: string, homeDir: string) => {
+  const homeRelativePath = relative(homeDir, path);
+
+  return (
+    homeRelativePath === ""
+    || (
+      homeRelativePath.length > 0
+      && !homeRelativePath.startsWith("..")
+      && !isAbsolute(homeRelativePath)
+    )
+  );
+};
+
 export const resolvePathBrowserState = ({
   inputPath,
   homeDir = homedir(),
   fs = defaultPathBrowserFs,
 }: ResolvePathBrowserStateInput): PathBrowserState | null => {
   const normalizedHomeDir = normalizeSessionPathInput("~", homeDir);
-  let candidatePath = normalizeRequestedBrowserPath({
+  const requestedPath = normalizeRequestedBrowserPath({
     inputPath,
     homeDir: normalizedHomeDir,
   });
+  const shouldStayWithinHome = isPathWithinHome(requestedPath, normalizedHomeDir);
+  let candidatePath = requestedPath;
 
   while (!isReadableDirectory(candidatePath, fs)) {
+    if (shouldStayWithinHome && candidatePath === normalizedHomeDir) {
+      return null;
+    }
+
     const parentPath = dirname(candidatePath);
 
     if (parentPath === candidatePath) {
@@ -178,14 +197,15 @@ export const listPathBrowserDirectoryChoices = ({
   const childChoices = entries
     .filter((entry) => entry.isDirectory())
     .sort((left, right) => directorySortCollator.compare(left.name, right.name))
-    .map((entry) => {
-      const childPath = join(state.currentPath, entry.name);
-
-      return {
-        name: `${entry.name}/`,
-        value: formatSessionPathForAutocompleteValue(childPath, homeDir, true),
-      };
-    });
+    .map((entry) => ({
+      entry,
+      childPath: join(state.currentPath, entry.name),
+    }))
+    .filter(({ childPath }) => isReadableDirectory(childPath, fs))
+    .map(({ entry, childPath }) => ({
+      name: `${entry.name}/`,
+      value: formatSessionPathForAutocompleteValue(childPath, homeDir, true),
+    }));
 
   return choices.concat(childChoices).slice(0, limit);
 };
