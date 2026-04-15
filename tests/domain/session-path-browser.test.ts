@@ -152,4 +152,30 @@ describe("buildPathBrowserChoices", () => {
       rmSync(homeDir, { recursive: true, force: true });
     }
   });
+
+  test("non-hidden directories are prioritized ahead of hidden directories", () => {
+    const homeDir = createTempHomeDir();
+
+    try {
+      mkdirSync(join(homeDir, "code-github"));
+      mkdirSync(join(homeDir, "Downloads"));
+
+      for (let index = 0; index < 30; index += 1) {
+        mkdirSync(join(homeDir, `.hidden-${String(index).padStart(2, "0")}`));
+      }
+
+      expect(buildPathBrowserChoices({
+        homeDir,
+        limit: 5,
+      })).toEqual([
+        { name: "Select ~", value: "~" },
+        { name: "code-github/", value: "~/code-github/" },
+        { name: "Downloads/", value: "~/Downloads/" },
+        { name: ".hidden-00/", value: "~/.hidden-00/" },
+        { name: ".hidden-01/", value: "~/.hidden-01/" },
+      ]);
+    } finally {
+      rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
 });

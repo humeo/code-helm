@@ -62,6 +62,17 @@ const directorySortCollator = new Intl.Collator(undefined, {
   sensitivity: "base",
 });
 
+const compareDirectoryNames = (left: string, right: string) => {
+  const leftHidden = left.startsWith(".");
+  const rightHidden = right.startsWith(".");
+
+  if (leftHidden !== rightHidden) {
+    return leftHidden ? 1 : -1;
+  }
+
+  return directorySortCollator.compare(left, right);
+};
+
 const isReadableDirectory = (path: string, fs: PathBrowserFs) => {
   try {
     if (!fs.statSync(path).isDirectory()) {
@@ -196,7 +207,7 @@ export const listPathBrowserDirectoryChoices = ({
 
   const childChoices = entries
     .filter((entry) => entry.isDirectory())
-    .sort((left, right) => directorySortCollator.compare(left.name, right.name))
+    .sort((left, right) => compareDirectoryNames(left.name, right.name))
     .map((entry) => ({
       entry,
       childPath: join(state.currentPath, entry.name),
