@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { isAbsolute } from "node:path";
+import { isAbsolute, relative } from "node:path";
 import {
   ActionRowBuilder,
   ButtonBuilder,
@@ -142,6 +142,17 @@ const parseLegacyWorkspaceBootstrap = (
   for (const workdir of workdirs) {
     if (!isAbsolute(workdir.absolutePath)) {
       throw new Error("WORKDIRS_JSON paths must be absolute");
+    }
+
+    const workspaceRelativePath = relative(workspaceRoot, workdir.absolutePath);
+
+    if (
+      workspaceRelativePath !== ""
+      && (workspaceRelativePath.startsWith("..") || isAbsolute(workspaceRelativePath))
+    ) {
+      throw new Error(
+        `WORKDIRS_JSON contains a workdir outside WORKSPACE_ROOT: ${workdir.absolutePath}`,
+      );
     }
 
     if (seenIds.has(workdir.id)) {

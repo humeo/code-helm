@@ -198,6 +198,16 @@ test("legacy workspace bootstrap seeds workdirs on a fresh database", () => {
   db.close();
 });
 
+test("legacy workspace bootstrap rejects workdirs outside the workspace root", () => {
+  expect(() =>
+    resolveLegacyWorkspaceBootstrap({
+      WORKSPACE_ROOT: "/tmp/workspace",
+      WORKDIRS_JSON:
+        '[{"id":"api","label":"API","absolutePath":"/tmp/other/api"}]',
+    }),
+  ).toThrow(/outside WORKSPACE_ROOT/);
+});
+
 const createResumeOutcome = (
   kind: SessionResumeState["kind"],
 ): SessionResumeState => {
