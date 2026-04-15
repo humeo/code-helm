@@ -20,13 +20,12 @@ CREATE TABLE IF NOT EXISTS sessions (
   discord_thread_id TEXT PRIMARY KEY,
   codex_thread_id TEXT NOT NULL UNIQUE,
   owner_discord_user_id TEXT NOT NULL,
-  workdir_id TEXT NOT NULL,
+  cwd TEXT NOT NULL,
   state TEXT NOT NULL,
   lifecycle_state TEXT NOT NULL DEFAULT 'active' CHECK (lifecycle_state IN ('active', 'archived', 'deleted')),
   degradation_reason TEXT,
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  FOREIGN KEY (workdir_id) REFERENCES workdirs(id)
+  updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS approvals (

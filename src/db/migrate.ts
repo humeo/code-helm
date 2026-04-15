@@ -55,6 +55,31 @@ const approvalsTableHasStableIdentityColumns = (db: Database) => {
     && hasColumn(db, "approvals", "codex_thread_id");
 };
 
+const assertLegacySessionsCanBackfillCwd = (
+  db: Database,
+  hasCwdColumn: boolean,
+) => {
+  const orphan = hasCwdColumn
+    ? db.prepare(
+        `SELECT rowid
+          FROM sessions
+          WHERE NULLIF(TRIM(cwd), '') IS NULL
+          LIMIT 1`,
+      ).get()
+    : db.prepare(
+        `SELECT sessions.rowid
+          FROM sessions
+          LEFT JOIN workdirs
+            ON sessions.workdir_id = workdirs.id
+          WHERE NULLIF(TRIM(workdirs.absolute_path), '') IS NULL
+          LIMIT 1`,
+      ).get();
+
+  if (orphan) {
+    throw new Error("sessions rebuild could not backfill cwd");
+  }
+};
+
 const assertNoForeignKeyViolations = (db: Database, tableName: string) => {
   const violations = db
     .prepare(`PRAGMA foreign_key_check(${tableName})`)
@@ -69,12 +94,23 @@ const rebuildSessionsTableWithLifecycleConstraint = (
   db: Database,
   hasLifecycleStateColumn: boolean,
 ) => {
+  const hasCwdColumn = hasColumn(db, "sessions", "cwd");
+  const cwdSelect = hasCwdColumn
+    ? "sessions.cwd"
+    : "workdirs.absolute_path";
+  const sessionsSource = hasCwdColumn
+    ? "FROM sessions"
+    : `FROM sessions
+        JOIN workdirs
+          ON sessions.workdir_id = workdirs.id`;
   const lifecycleStateSelect = hasLifecycleStateColumn
     ? `CASE
-        WHEN lifecycle_state IN ('active', 'archived', 'deleted') THEN lifecycle_state
+        WHEN sessions.lifecycle_state IN ('active', 'archived', 'deleted') THEN sessions.lifecycle_state
         ELSE 'active'
       END`
     : "'active'";
+
+  assertLegacySessionsCanBackfillCwd(db, hasCwdColumn);
 
   db.exec("PRAGMA foreign_keys = OFF");
   db.exec("BEGIN");
@@ -84,13 +120,12 @@ const rebuildSessionsTableWithLifecycleConstraint = (
         discord_thread_id TEXT PRIMARY KEY,
         codex_thread_id TEXT NOT NULL UNIQUE,
         owner_discord_user_id TEXT NOT NULL,
-        workdir_id TEXT NOT NULL,
+        cwd TEXT NOT NULL,
         state TEXT NOT NULL,
         lifecycle_state TEXT NOT NULL DEFAULT 'active' ${lifecycleConstraintSql},
         degradation_reason TEXT,
         created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        FOREIGN KEY (workdir_id) REFERENCES workdirs(id)
+        updated_at TEXT NOT NULL
       )
     `);
     db.exec(`
@@ -98,7 +133,7 @@ const rebuildSessionsTableWithLifecycleConstraint = (
         discord_thread_id,
         codex_thread_id,
         owner_discord_user_id,
-        workdir_id,
+        cwd,
         state,
         lifecycle_state,
         degradation_reason,
@@ -106,16 +141,16 @@ const rebuildSessionsTableWithLifecycleConstraint = (
         updated_at
       )
       SELECT
-        discord_thread_id,
-        codex_thread_id,
-        owner_discord_user_id,
-        workdir_id,
-        state,
+        sessions.discord_thread_id,
+        sessions.codex_thread_id,
+        sessions.owner_discord_user_id,
+        ${cwdSelect},
+        sessions.state,
         ${lifecycleStateSelect},
-        degradation_reason,
-        created_at,
-        updated_at
-      FROM sessions
+        sessions.degradation_reason,
+        sessions.created_at,
+        sessions.updated_at
+      ${sessionsSource}
     `);
     db.exec("DROP TABLE sessions");
     db.exec("ALTER TABLE sessions_next RENAME TO sessions");

@@ -97,7 +97,7 @@ const createSessionRecord = (
   discordThreadId: "discord-thread-1",
   codexThreadId: "codex-thread-1",
   ownerDiscordUserId: "owner-1",
-  workdirId: "api",
+  cwd: "/tmp/workspace/api",
   state: "idle",
   lifecycleState: "active",
   degradationReason: null,
@@ -304,7 +304,7 @@ const createControlChannelServicesFixture = ({
       discordThreadId: string;
       codexThreadId: string;
       ownerDiscordUserId: string;
-      workdirId: string;
+      cwd: string;
       state: string;
     }>,
     deletedSessions: [] as string[],
@@ -379,7 +379,7 @@ const createControlChannelServicesFixture = ({
           discordThreadId: input.discordThreadId,
           codexThreadId: input.codexThreadId,
           ownerDiscordUserId: input.ownerDiscordUserId,
-          workdirId: input.workdirId,
+          cwd: input.cwd,
           state: input.state,
           lifecycleState: "active",
         });
@@ -782,7 +782,7 @@ test("unmanaged session with matching workdir creates a new Discord thread and s
       discordThreadId: "discord-thread-new-1",
       codexThreadId: "codex-thread-1",
       ownerDiscordUserId: "owner-1",
-      workdirId: "api",
+      cwd: "/tmp/workspace/api",
       state: "idle",
     },
   ]);
@@ -791,7 +791,7 @@ test("unmanaged session with matching workdir creates a new Discord thread and s
     discordThreadId: "discord-thread-new-1",
     codexThreadId: "codex-thread-1",
     ownerDiscordUserId: "owner-1",
-    workdirId: "api",
+    cwd: "/tmp/workspace/api",
   });
   expect(result).toEqual({
     reply: {
@@ -1060,7 +1060,7 @@ test("waiting-approval create attach resumes the Discord thread instead of doing
       discordThreadId: "discord-thread-new-1",
       codexThreadId: "codex-thread-1",
       ownerDiscordUserId: "owner-1",
-      workdirId: "api",
+      cwd: "/tmp/workspace/api",
       state: "waiting-approval",
     },
   ]);
@@ -1278,7 +1278,7 @@ test("archived managed sessions are surfaced as inactive instead of writable", (
       {
         discordThreadId: "discord-thread-1",
         codexThreadId: "codex-thread-1",
-        workdirId: "api",
+        cwd: "/tmp/workspace/api",
         lifecycleState: "archived",
         state: "idle",
       },

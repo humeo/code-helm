@@ -1830,7 +1830,7 @@ export const formatManagedSessionList = (
       SessionRecord,
       "discordThreadId"
       | "codexThreadId"
-      | "workdirId"
+      | "cwd"
       | "lifecycleState"
       | "state"
     >
@@ -1842,10 +1842,10 @@ export const formatManagedSessionList = (
 
   return sessions
     .map((session) =>
-      [
+        [
         `- Discord ${formatManagedSessionThreadReference(session)}`,
         `Codex \`${session.codexThreadId}\``,
-        `workdir \`${session.workdirId}\``,
+        `workdir \`${session.cwd}\``,
         `lifecycle \`${session.lifecycleState}\``,
         `runtime \`${session.state}\``,
         `access \`${describeSessionAccessMode(session)}\``,
@@ -2665,7 +2665,7 @@ export const createControlChannelServices = ({
               discordThreadId: boundThread.id,
               codexThreadId,
               ownerDiscordUserId: actorId,
-              workdirId: workdir.id,
+              cwd: workdir.absolutePath,
               state: "idle",
             });
             ensureTranscriptRuntime(codexThreadId);
@@ -2912,7 +2912,7 @@ export const createControlChannelServices = ({
                 discordThreadId: boundThread.id,
                 codexThreadId,
                 ownerDiscordUserId: actorId,
-                workdirId: workdir.id,
+                cwd: workdir.absolutePath,
                 state: inferSessionStateFromThreadStatus(snapshot.thread.status),
               });
               ensureTranscriptRuntime(codexThreadId);

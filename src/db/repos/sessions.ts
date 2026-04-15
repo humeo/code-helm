@@ -7,7 +7,7 @@ export type SessionRecord = {
   discordThreadId: string;
   codexThreadId: string;
   ownerDiscordUserId: string;
-  workdirId: string;
+  cwd: string;
   state: SessionState;
   lifecycleState: SessionLifecycleState;
   degradationReason: string | null;
@@ -19,7 +19,7 @@ export type InsertSessionInput = {
   discordThreadId: string;
   codexThreadId: string;
   ownerDiscordUserId: string;
-  workdirId: string;
+  cwd: string;
   state: SessionState;
 };
 
@@ -27,7 +27,7 @@ type SessionRow = {
   discord_thread_id: string;
   codex_thread_id: string;
   owner_discord_user_id: string;
-  workdir_id: string;
+  cwd: string;
   state: string;
   lifecycle_state: SessionLifecycleState;
   degradation_reason: string | null;
@@ -48,7 +48,7 @@ const mapSession = (row: SessionRow | null): SessionRecord | null => {
     discordThreadId: row.discord_thread_id,
     codexThreadId: row.codex_thread_id,
     ownerDiscordUserId: row.owner_discord_user_id,
-    workdirId: row.workdir_id,
+    cwd: row.cwd,
     state: row.state,
     lifecycleState: row.lifecycle_state,
     degradationReason: row.degradation_reason,
@@ -76,7 +76,7 @@ export const createSessionRepo = (db: Database) => {
       discord_thread_id,
       codex_thread_id,
       owner_discord_user_id,
-      workdir_id,
+      cwd,
       state,
       degradation_reason,
       created_at,
@@ -132,7 +132,7 @@ export const createSessionRepo = (db: Database) => {
         input.discordThreadId,
         input.codexThreadId,
         input.ownerDiscordUserId,
-        input.workdirId,
+        input.cwd,
         input.state,
         timestamp,
         timestamp,

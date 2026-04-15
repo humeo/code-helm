@@ -38,7 +38,7 @@ const insertSession = (db: Database, overrides: Record<string, string> = {}) => 
     discordThreadId: "123",
     codexThreadId: "abc",
     ownerDiscordUserId: "u1",
-    workdirId: "wd1",
+    cwd: "/tmp/ws1/app",
     state: "idle",
     ...overrides,
   });
@@ -58,28 +58,32 @@ test("repo creation does not apply migrations implicitly", () => {
 
 test("stores Discord thread to Codex session binding and supports lookups", () => {
   const db = createMigratedDb();
-  seedWorkspaceGraph(db);
   const repo = insertSession(db);
 
   expect(repo.getByDiscordThreadId("123")?.codexThreadId).toBe("abc");
   expect(repo.getByCodexThreadId("abc")?.discordThreadId).toBe("123");
+  expect(repo.getByDiscordThreadId("123")?.cwd).toBe("/tmp/ws1/app");
 
   db.close();
 });
 
-test("rejects sessions for unknown workdirs", () => {
+test("inserts a session row with cwd and no seeded workdir", () => {
   const db = createMigratedDb();
   const repo = createSessionRepo(db);
 
-  expect(() =>
-    repo.insert({
-      discordThreadId: "123",
-      codexThreadId: "abc",
-      ownerDiscordUserId: "u1",
-      workdirId: "missing-workdir",
-      state: "idle",
-    }),
-  ).toThrow(/FOREIGN KEY constraint failed/);
+  repo.insert({
+    discordThreadId: "123",
+    codexThreadId: "abc",
+    ownerDiscordUserId: "u1",
+    cwd: "/tmp/ws1/app",
+    state: "idle",
+  });
+
+  expect(repo.getByDiscordThreadId("123")).toMatchObject({
+    discordThreadId: "123",
+    codexThreadId: "abc",
+    cwd: "/tmp/ws1/app",
+  });
 
   db.close();
 });
@@ -126,6 +130,7 @@ test("archives and unarchives sessions without overwriting runtime state", () =>
     discordThreadId: "archive-me",
     state: "running",
     lifecycleState: "archived",
+    cwd: "/tmp/ws1/app",
   });
 
   repo.updateLifecycleState("archive-me", "active");
@@ -134,6 +139,7 @@ test("archives and unarchives sessions without overwriting runtime state", () =>
     discordThreadId: "archive-me",
     state: "running",
     lifecycleState: "active",
+    cwd: "/tmp/ws1/app",
   });
 
   db.close();
@@ -154,12 +160,13 @@ test("marks deleted Discord thread containers without erasing runtime state", ()
     discordThreadId: "deleted-thread",
     state: "waiting-approval",
     lifecycleState: "deleted",
+    cwd: "/tmp/ws1/app",
   });
 
   db.close();
 });
 
-test("lists persisted sessions with runtime, lifecycle, and degradation semantics intact", () => {
+test("lists persisted sessions with runtime, lifecycle, degradation, and cwd semantics intact", () => {
   const db = createMigratedDb();
   seedWorkspaceGraph(db);
   const repo = createSessionRepo(db);
@@ -168,21 +175,21 @@ test("lists persisted sessions with runtime, lifecycle, and degradation semantic
     discordThreadId: "active-session",
     codexThreadId: "codex-active",
     ownerDiscordUserId: "u1",
-    workdirId: "wd1",
+    cwd: "/tmp/ws1/app",
     state: "idle",
   });
   repo.insert({
     discordThreadId: "archived-session",
     codexThreadId: "codex-archived",
     ownerDiscordUserId: "u2",
-    workdirId: "wd1",
+    cwd: "/tmp/ws1/app",
     state: "running",
   });
   repo.insert({
     discordThreadId: "deleted-session",
     codexThreadId: "codex-deleted",
     ownerDiscordUserId: "u3",
-    workdirId: "wd1",
+    cwd: "/tmp/ws1/app",
     state: "degraded",
   });
   repo.updateLifecycleState("archived-session", "archived");
@@ -195,6 +202,7 @@ test("lists persisted sessions with runtime, lifecycle, and degradation semantic
   expect(
     repo.listAll().map((session) => ({
       discordThreadId: session.discordThreadId,
+      cwd: session.cwd,
       state: session.state,
       lifecycleState: session.lifecycleState,
       degradationReason: session.degradationReason,
@@ -202,18 +210,21 @@ test("lists persisted sessions with runtime, lifecycle, and degradation semantic
   ).toEqual([
     {
       discordThreadId: "active-session",
+      cwd: "/tmp/ws1/app",
       state: "idle",
       lifecycleState: "active",
       degradationReason: null,
     },
     {
       discordThreadId: "archived-session",
+      cwd: "/tmp/ws1/app",
       state: "running",
       lifecycleState: "archived",
       degradationReason: null,
     },
     {
       discordThreadId: "deleted-session",
+      cwd: "/tmp/ws1/app",
       state: "degraded",
       lifecycleState: "deleted",
       degradationReason: "native_cli_write",
@@ -234,6 +245,7 @@ test("marks externally modified sessions as degraded with a reason", () => {
   expect(session?.state).toBe("degraded");
   expect(session?.lifecycleState).toBe("active");
   expect(session?.degradationReason).toBe("native_cli_write");
+  expect(session?.cwd).toBe("/tmp/ws1/app");
 
   db.close();
 });
@@ -261,7 +273,7 @@ test("rebinds a managed session to a replacement Discord thread without changing
     discordThreadId: "replacement-thread",
     codexThreadId: "codex-thread-1",
     ownerDiscordUserId: "u1",
-    workdirId: "wd1",
+    cwd: "/tmp/ws1/app",
     state: "idle",
     lifecycleState: "active",
   });
@@ -463,6 +475,178 @@ test("upgrades legacy lifecycle values by normalizing invalid states to active",
     state: "running",
     lifecycleState: "active",
   });
+
+  db.close();
+});
+
+test("rebuilds legacy sessions and backfills cwd from workdirs.absolute_path", () => {
+  const db = createDatabaseClient(":memory:");
+
+  db.exec(`
+    CREATE TABLE workspaces (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      root_path TEXT NOT NULL UNIQUE,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE workdirs (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      label TEXT NOT NULL,
+      absolute_path TEXT NOT NULL UNIQUE,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (workspace_id) REFERENCES workspaces(id)
+    );
+
+    CREATE TABLE sessions (
+      discord_thread_id TEXT PRIMARY KEY,
+      codex_thread_id TEXT NOT NULL UNIQUE,
+      owner_discord_user_id TEXT NOT NULL,
+      workdir_id TEXT NOT NULL,
+      state TEXT NOT NULL,
+      lifecycle_state TEXT NOT NULL DEFAULT 'active',
+      degradation_reason TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (workdir_id) REFERENCES workdirs(id)
+    );
+
+    CREATE TABLE approvals (
+      request_id TEXT PRIMARY KEY,
+      discord_thread_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      resolved_by_discord_user_id TEXT,
+      resolution TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (discord_thread_id) REFERENCES sessions(discord_thread_id)
+    );
+  `);
+
+  db.exec(`
+    INSERT INTO workspaces (id, name, root_path, created_at, updated_at)
+    VALUES ('ws1', 'Main Workspace', '/tmp/ws1', '2026-04-09T00:00:00.000Z', '2026-04-09T00:00:00.000Z');
+
+    INSERT INTO workdirs (id, workspace_id, label, absolute_path, created_at, updated_at)
+    VALUES ('wd1', 'ws1', 'App', '/tmp/ws1/app', '2026-04-09T00:00:00.000Z', '2026-04-09T00:00:00.000Z');
+
+    INSERT INTO sessions (
+      discord_thread_id,
+      codex_thread_id,
+      owner_discord_user_id,
+      workdir_id,
+      state,
+      lifecycle_state,
+      degradation_reason,
+      created_at,
+      updated_at
+    ) VALUES (
+      'legacy-thread',
+      'legacy-codex',
+      'legacy-user',
+      'wd1',
+      'running',
+      'active',
+      NULL,
+      '2026-04-09T00:00:00.000Z',
+      '2026-04-09T00:00:00.000Z'
+    );
+  `);
+
+  applyMigrations(db);
+
+  expect(createSessionRepo(db).getByDiscordThreadId("legacy-thread")).toMatchObject({
+    discordThreadId: "legacy-thread",
+    codexThreadId: "legacy-codex",
+    cwd: "/tmp/ws1/app",
+    state: "running",
+    lifecycleState: "active",
+  });
+
+  db.close();
+});
+
+test("fails legacy session rebuild when cwd cannot be backfilled to a non-empty path", () => {
+  const db = createDatabaseClient(":memory:");
+
+  db.exec(`
+    CREATE TABLE workspaces (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      root_path TEXT NOT NULL UNIQUE,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE workdirs (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      label TEXT NOT NULL,
+      absolute_path TEXT NOT NULL UNIQUE,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (workspace_id) REFERENCES workspaces(id)
+    );
+
+    CREATE TABLE sessions (
+      discord_thread_id TEXT PRIMARY KEY,
+      codex_thread_id TEXT NOT NULL UNIQUE,
+      owner_discord_user_id TEXT NOT NULL,
+      workdir_id TEXT NOT NULL,
+      state TEXT NOT NULL,
+      lifecycle_state TEXT NOT NULL DEFAULT 'active',
+      degradation_reason TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (workdir_id) REFERENCES workdirs(id)
+    );
+
+    CREATE TABLE approvals (
+      request_id TEXT PRIMARY KEY,
+      discord_thread_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      resolved_by_discord_user_id TEXT,
+      resolution TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (discord_thread_id) REFERENCES sessions(discord_thread_id)
+    );
+  `);
+
+  db.exec(`
+    INSERT INTO workspaces (id, name, root_path, created_at, updated_at)
+    VALUES ('ws1', 'Main Workspace', '/tmp/ws1', '2026-04-09T00:00:00.000Z', '2026-04-09T00:00:00.000Z');
+
+    INSERT INTO workdirs (id, workspace_id, label, absolute_path, created_at, updated_at)
+    VALUES ('wd1', 'ws1', 'App', '', '2026-04-09T00:00:00.000Z', '2026-04-09T00:00:00.000Z');
+
+    INSERT INTO sessions (
+      discord_thread_id,
+      codex_thread_id,
+      owner_discord_user_id,
+      workdir_id,
+      state,
+      lifecycle_state,
+      degradation_reason,
+      created_at,
+      updated_at
+    ) VALUES (
+      'legacy-thread',
+      'legacy-codex',
+      'legacy-user',
+      'wd1',
+      'running',
+      'active',
+      NULL,
+      '2026-04-09T00:00:00.000Z',
+      '2026-04-09T00:00:00.000Z'
+    );
+  `);
+
+  expect(() => applyMigrations(db)).toThrow(/backfill cwd/i);
 
   db.close();
 });
