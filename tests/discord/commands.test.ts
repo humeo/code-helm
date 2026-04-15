@@ -42,11 +42,6 @@ const createServices = () => {
       calls.resumeSession.push(input);
       return okResult("session resumed");
     },
-    autocompleteResumeWorkdirs(input) {
-      return [
-        { name: `workdir:${input.query}`, value: "example" },
-      ];
-    },
     autocompleteResumeSessions(input) {
       return [
         { name: `session:${input.query}`, value: "codex-thread-7" },
@@ -159,7 +154,7 @@ test("/session-new forwards path", async () => {
   const { calls, services } = createServices();
   const { interaction, replies, followsUps, defers } = createInteraction({
     commandName: "session-new",
-    options: { path: "wd-42" },
+    options: { path: "/tmp/workspace/api" },
   });
 
   const handled = await handleControlChannelCommand(interaction as never, services);
@@ -170,7 +165,7 @@ test("/session-new forwards path", async () => {
       actorId: "u1",
       guildId: "g1",
       channelId: "c1",
-      path: "wd-42",
+      path: "/tmp/workspace/api",
     },
   ]);
   expect(defers).toEqual([null]);
@@ -266,7 +261,7 @@ test("/session-resume path autocomplete reads the typed path", async () => {
   const { interaction, responses } = createAutocompleteInteraction({
     focusedOption: "session",
     focusedValue: "exa",
-    options: { path: "workspace/example" },
+    options: { path: "/tmp/workspace/example" },
   });
   const calls = {
     autocompleteResumeSessions: [] as Array<Record<string, string>>,
@@ -297,7 +292,7 @@ test("/session-resume path autocomplete reads the typed path", async () => {
       actorId: "u1",
       guildId: "g1",
       channelId: "c1",
-      path: "workspace/example",
+      path: "/tmp/workspace/example",
       query: "exa",
     },
   ]);
@@ -310,7 +305,7 @@ test("/session-resume session autocomplete uses the selected path", async () => 
   const { interaction, responses } = createAutocompleteInteraction({
     focusedOption: "session",
     focusedValue: "codex",
-    options: { path: "example" },
+    options: { path: "/tmp/workspace/example" },
   });
   const calls = {
     autocompleteResumeSessions: [] as Array<Record<string, string>>,
@@ -341,7 +336,7 @@ test("/session-resume session autocomplete uses the selected path", async () => 
       actorId: "u1",
       guildId: "g1",
       channelId: "c1",
-      path: "example",
+      path: "/tmp/workspace/example",
       query: "codex",
     },
   ]);
@@ -396,7 +391,7 @@ test("/session-resume forwards path and codexThreadId", async () => {
   const { calls, services } = createServices();
   const { interaction, replies, followsUps, defers } = createInteraction({
     commandName: "session-resume",
-    options: { path: "example", session: "codex-thread-7" },
+    options: { path: "/tmp/workspace/example", session: "codex-thread-7" },
   });
 
   const handled = await handleControlChannelCommand(interaction as never, services);
@@ -407,7 +402,7 @@ test("/session-resume forwards path and codexThreadId", async () => {
       actorId: "u1",
       guildId: "g1",
       channelId: "c1",
-      path: "example",
+      path: "/tmp/workspace/example",
       codexThreadId: "codex-thread-7",
     },
   ]);

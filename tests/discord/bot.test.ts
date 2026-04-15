@@ -9,9 +9,6 @@ const createServices = () => {
       closeSession: () => ({ reply: { content: "session closed" } }),
       syncSession: () => ({ reply: { content: "session synced" } }),
       resumeSession: () => ({ reply: { content: "session resumed" } }),
-      autocompleteResumeWorkdirs() {
-        return [{ name: "Code Agent Helm Example (example)", value: "example" }];
-      },
       autocompleteResumeSessions() {
         return [{ name: "codex-thread-7", value: "codex-thread-7" }];
       },
@@ -90,7 +87,7 @@ test("createDiscordBot routes autocomplete interactions to the autocomplete hand
           : "exa";
       },
       getString(name: string) {
-        return name === "path" ? "workspace/example" : null;
+        return name === "path" ? "/tmp/workspace/example" : null;
       },
     },
     async respond(payload: unknown) {

@@ -79,9 +79,6 @@ export type DiscordCommandServices = {
   resumeSession(
     input: ResumeSessionInput,
   ): Promise<DiscordCommandResult> | DiscordCommandResult;
-  autocompleteResumeWorkdirs(
-    input: ResumeSessionAutocompleteInput,
-  ): Promise<DiscordAutocompleteChoice[]> | DiscordAutocompleteChoice[];
   autocompleteResumeSessions(
     input: ResumeSessionAutocompleteInput,
   ): Promise<DiscordAutocompleteChoice[]> | DiscordAutocompleteChoice[];

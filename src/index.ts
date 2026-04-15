@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
-import { isAbsolute, relative } from "node:path";
+import { existsSync, statSync } from "node:fs";
+import { basename, isAbsolute, relative } from "node:path";
 import {
   ActionRowBuilder,
   ButtonBuilder,
@@ -49,6 +50,7 @@ import {
   resolveSyncSessionState,
   resolveSessionAccessMode,
 } from "./domain/session-service";
+import { normalizeSessionPathInput } from "./domain/session-paths";
 import type {
   SessionLifecycleState,
   SessionPersistedRuntimeState,
@@ -2319,36 +2321,98 @@ const requireConfiguredGuild = (
   return null;
 };
 
-const findConfiguredWorkdir = (
-  workdirs: WorkdirConfig[],
-  workdirId: string,
-) => {
-  return workdirs.find((workdir) => workdir.id === workdirId);
+const formatPathValidationMessage = (message: string) => {
+  return message.endsWith(".") ? message : `${message}.`;
 };
 
-export const filterConfiguredWorkdirs = (
-  workdirs: WorkdirConfig[],
-  query: string,
-) => {
-  const normalizedQuery = query.trim().toLowerCase();
+const resolveSessionPathValidationError = (message: string): DiscordCommandResult => {
+  return {
+    reply: {
+      content: formatPathValidationMessage(message),
+      ephemeral: true,
+    },
+  };
+};
 
-  return workdirs
-    .filter((workdir) => {
-      if (!normalizedQuery) {
-        return true;
-      }
+const normalizeSessionPathForRuntime = (path: string) => {
+  try {
+    return {
+      ok: true as const,
+      cwd: normalizeSessionPathInput(path),
+    };
+  } catch (error) {
+    return {
+      ok: false as const,
+      message:
+        error instanceof Error
+          ? formatPathValidationMessage(error.message)
+          : "Session path is invalid.",
+    };
+  }
+};
 
-      return (
-        workdir.id.toLowerCase().includes(normalizedQuery)
-        || workdir.label.toLowerCase().includes(normalizedQuery)
-        || workdir.absolutePath.toLowerCase().includes(normalizedQuery)
-      );
-    })
-    .slice(0, 25)
-    .map((workdir) => ({
-      name: `${workdir.label} (${workdir.id})`,
-      value: workdir.id,
-    }));
+const validateSessionPathDirectory = (cwd: string) => {
+  if (!existsSync(cwd)) {
+    return {
+      ok: false as const,
+      message: `Directory does not exist: \`${cwd}\`.`,
+    };
+  }
+
+  const stats = statSync(cwd);
+
+  if (!stats.isDirectory()) {
+    return {
+      ok: false as const,
+      message: `Path is not a directory: \`${cwd}\`.`,
+    };
+  }
+
+  return {
+    ok: true as const,
+    cwd,
+  };
+};
+
+const resolveSessionPathForCommand = (path: string) => {
+  const normalized = normalizeSessionPathForRuntime(path);
+
+  if (!normalized.ok) {
+    return {
+      ok: false as const,
+      result: resolveSessionPathValidationError(normalized.message),
+    };
+  }
+
+  const directory = validateSessionPathDirectory(normalized.cwd);
+
+  if (!directory.ok) {
+    return {
+      ok: false as const,
+      result: resolveSessionPathValidationError(directory.message),
+    };
+  }
+
+  return {
+    ok: true as const,
+    cwd: directory.cwd,
+  };
+};
+
+const resolveSessionPathForAutocomplete = (path?: string) => {
+  if (!path) {
+    return undefined;
+  }
+
+  const normalized = normalizeSessionPathForRuntime(path);
+
+  if (!normalized.ok) {
+    return undefined;
+  }
+
+  const directory = validateSessionPathDirectory(normalized.cwd);
+
+  return directory.ok ? directory.cwd : undefined;
 };
 
 export const sortResumePickerThreads = (threads: CodexThread[]) => {
@@ -2439,13 +2503,13 @@ export const resolveResumeAttachmentKind = ({
 export const buildResumeSessionAutocompleteChoices = async ({
   codexClient,
   query,
-  workdir,
+  cwd,
 }: {
   codexClient: Pick<JsonRpcClient, "listThreads">;
   query: string;
-  workdir?: WorkdirConfig;
+  cwd?: string;
 }) => {
-  if (!workdir) {
+  if (!cwd) {
     return [];
   }
 
@@ -2455,7 +2519,7 @@ export const buildResumeSessionAutocompleteChoices = async ({
 
   do {
     const result = await codexClient.listThreads({
-      cwd: workdir.absolutePath,
+      cwd,
       searchTerm,
       limit: 100,
       ...(cursor ? { cursor } : {}),
@@ -2488,6 +2552,16 @@ const describeAttachedSessionResult = (result: SessionResumeState) => {
   }
 };
 
+const formatSessionThreadTitle = (cwd: string) => {
+  const leaf = basename(cwd);
+
+  if (leaf.length === 0 || leaf === "/") {
+    return "session";
+  }
+
+  return `${leaf}-session`;
+};
+
 type BoundSessionThread = {
   id: string;
   send(payload: DiscordChannelMessagePayload): Promise<unknown>;
@@ -2496,7 +2570,6 @@ type BoundSessionThread = {
 
 type CreateControlChannelServicesDeps = {
   config: AppConfig;
-  configuredWorkdirs: WorkdirConfig[];
   codexClient: Pick<JsonRpcClient, "listThreads" | "startThread">;
   sessionRepo: Pick<
     ReturnType<typeof createSessionRepo>,
@@ -2547,7 +2620,7 @@ const createAttachedSessionThread = async ({
   client,
   controlChannelId,
   createVisibleSessionThread,
-  workdir,
+  sessionPathLabel,
   codexThreadId,
   title,
   starterText,
@@ -2557,7 +2630,7 @@ const createAttachedSessionThread = async ({
   client: Client;
   controlChannelId: string;
   createVisibleSessionThread: CreateControlChannelServicesDeps["createVisibleSessionThread"];
-  workdir: WorkdirConfig;
+  sessionPathLabel: string;
   codexThreadId: string;
   title: string;
   starterText: string;
@@ -2578,7 +2651,7 @@ const createAttachedSessionThread = async ({
       ...renderSessionStartedPayload({
         type: "session.started",
         params: {
-          workdirLabel: workdir.label,
+          workdirLabel: sessionPathLabel,
           codexThreadId,
         },
       }),
@@ -2608,7 +2681,6 @@ const createAttachedSessionThread = async ({
 
 export const createControlChannelServices = ({
   config,
-  configuredWorkdirs,
   codexClient,
   sessionRepo,
   getDiscordClient,
@@ -2630,19 +2702,14 @@ export const createControlChannelServices = ({
         return contextError;
       }
 
-      const workdir = findConfiguredWorkdir(configuredWorkdirs, path);
+      const resolvedPath = resolveSessionPathForCommand(path);
 
-      if (!workdir) {
-        return {
-          reply: {
-            content: `Unknown workdir \`${path}\`.`,
-            ephemeral: true,
-          },
-        };
+      if (!resolvedPath.ok) {
+        return resolvedPath.result;
       }
 
       const started = await codexClient.startThread({
-        cwd: workdir.absolutePath,
+        cwd: resolvedPath.cwd,
       });
       const codexThreadId = started.thread.id;
       const discord = getDiscordClient();
@@ -2656,16 +2723,16 @@ export const createControlChannelServices = ({
           client: discord,
           controlChannelId: config.discord.controlChannelId,
           createVisibleSessionThread,
-          workdir,
+          sessionPathLabel: resolvedPath.cwd,
           codexThreadId,
-          title: `${workdir.label}-session`,
-          starterText: `Opening session for \`${workdir.label}\`.`,
+          title: formatSessionThreadTitle(resolvedPath.cwd),
+          starterText: `Opening session for \`${resolvedPath.cwd}\`.`,
           onBound: async (boundThread) => {
             sessionRepo.insert({
               discordThreadId: boundThread.id,
               codexThreadId,
               ownerDiscordUserId: actorId,
-              cwd: workdir.absolutePath,
+              cwd: resolvedPath.cwd,
               state: "idle",
             });
             ensureTranscriptRuntime(codexThreadId);
@@ -2692,7 +2759,7 @@ export const createControlChannelServices = ({
 
       return {
         reply: {
-          content: `Created session <#${thread.id}> for \`${workdir.label}\`.`,
+          content: `Created session <#${thread.id}> for \`${resolvedPath.cwd}\`.`,
         },
       };
     },
@@ -2797,15 +2864,6 @@ export const createControlChannelServices = ({
         },
       };
     },
-    async autocompleteResumeWorkdirs({ guildId, channelId, query }) {
-      const contextError = requireConfiguredControlChannel(config, guildId, channelId);
-
-      if (contextError) {
-        return [];
-      }
-
-      return filterConfiguredWorkdirs(configuredWorkdirs, query);
-    },
     async autocompleteResumeSessions({ guildId, channelId, path, query }) {
       const contextError = requireConfiguredControlChannel(config, guildId, channelId);
 
@@ -2813,14 +2871,10 @@ export const createControlChannelServices = ({
         return [];
       }
 
-      const workdir = path
-        ? findConfiguredWorkdir(configuredWorkdirs, path)
-        : undefined;
-
       return buildResumeSessionAutocompleteChoices({
         codexClient,
         query,
-        workdir,
+        cwd: resolveSessionPathForAutocomplete(path),
       });
     },
     async resumeSession({ actorId, guildId, channelId, path, codexThreadId }) {
@@ -2830,15 +2884,10 @@ export const createControlChannelServices = ({
         return contextError;
       }
 
-      const workdir = findConfiguredWorkdir(configuredWorkdirs, path);
+      const resolvedPath = resolveSessionPathForCommand(path);
 
-      if (!workdir) {
-        return {
-          reply: {
-            content: `Unknown workdir \`${path}\`.`,
-            ephemeral: true,
-          },
-        };
+      if (!resolvedPath.ok) {
+        return resolvedPath.result;
       }
 
       try {
@@ -2846,12 +2895,12 @@ export const createControlChannelServices = ({
           threadId: codexThreadId,
         });
 
-        if (snapshot.thread.cwd !== workdir.absolutePath) {
+        if (snapshot.thread.cwd !== resolvedPath.cwd) {
           return {
             reply: {
               content:
                 `Session \`${codexThreadId}\` belongs to \`${snapshot.thread.cwd}\`, ` +
-                `not workdir \`${workdir.id}\`.`,
+                `not \`${resolvedPath.cwd}\`.`,
               ephemeral: true,
             },
           };
@@ -2898,16 +2947,16 @@ export const createControlChannelServices = ({
             client: discord,
             controlChannelId: config.discord.controlChannelId,
             createVisibleSessionThread,
-            workdir,
+            sessionPathLabel: resolvedPath.cwd,
             codexThreadId,
-            title: `${workdir.label}-session`,
-            starterText: `Attaching Codex session \`${codexThreadId}\` for \`${workdir.label}\`.`,
+            title: formatSessionThreadTitle(resolvedPath.cwd),
+            starterText: `Attaching Codex session \`${codexThreadId}\` for \`${resolvedPath.cwd}\`.`,
             onBound: async (boundThread) => {
               sessionRepo.insert({
                 discordThreadId: boundThread.id,
                 codexThreadId,
                 ownerDiscordUserId: actorId,
-                cwd: workdir.absolutePath,
+                cwd: resolvedPath.cwd,
                 state: inferSessionStateFromThreadStatus(snapshot.thread.status),
               });
               ensureTranscriptRuntime(codexThreadId);
@@ -2941,10 +2990,10 @@ export const createControlChannelServices = ({
             client: discord,
             controlChannelId: config.discord.controlChannelId,
             createVisibleSessionThread,
-            workdir,
+            sessionPathLabel: resolvedPath.cwd,
             codexThreadId,
-            title: `${workdir.label}-session`,
-            starterText: `Attaching Codex session \`${codexThreadId}\` for \`${workdir.label}\`.`,
+            title: formatSessionThreadTitle(resolvedPath.cwd),
+            starterText: `Attaching Codex session \`${codexThreadId}\` for \`${resolvedPath.cwd}\`.`,
             onBound: async (boundThread) => {
               sessionRepo.rebindDiscordThread({
                 currentDiscordThreadId: previousThreadId,
@@ -4046,7 +4095,6 @@ export const startCodeHelm = async (
 
   const services = createControlChannelServices({
     config,
-    configuredWorkdirs,
     codexClient,
     sessionRepo,
     getDiscordClient: () => requireDiscordClient(discordClient),
