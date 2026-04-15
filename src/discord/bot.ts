@@ -1,5 +1,6 @@
 import {
   Client,
+  DiscordjsErrorCodes,
   Events,
   GatewayIntentBits,
   type Awaitable,
@@ -51,6 +52,30 @@ const isControlAutocompleteInteraction = (
   return interaction.isAutocomplete();
 };
 
+const isIgnorableInteractionResponseError = (error: unknown) => {
+  if (typeof error !== "object" || error === null || !("code" in error)) {
+    return false;
+  }
+
+  return error.code === 10062
+    || error.code === DiscordjsErrorCodes.InteractionAlreadyReplied;
+};
+
+const safelyRespondToAutocompleteInteraction = async (
+  interaction: AutocompleteInteraction,
+  choices: Array<{ name: string; value: string }>,
+) => {
+  try {
+    await interaction.respond(choices);
+  } catch (error) {
+    if (isIgnorableInteractionResponseError(error)) {
+      return;
+    }
+
+    throw error;
+  }
+};
+
 export const createDiscordBot = ({
   token,
   services,
@@ -74,7 +99,7 @@ export const createDiscordBot = ({
         await handleControlChannelAutocomplete(interaction, services);
       } catch (error) {
         logger.error("Discord autocomplete failed", error);
-        await interaction.respond([]);
+        await safelyRespondToAutocompleteInteraction(interaction, []);
       }
       return;
     }

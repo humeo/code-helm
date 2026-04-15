@@ -602,7 +602,7 @@ test("resume picker threads sort by normalized provider timestamps", () => {
 test("resume session autocomplete pipeline scopes threads, sorts them, formats labels, and truncates to 25", async () => {
   const baseTimestamp = 1_700_000_000_000;
   const calls: Array<Record<string, unknown>> = [];
-  const firstPageThreads = Array.from({ length: 13 }, (_, index) =>
+  const activeThreads = Array.from({ length: 13 }, (_, index) =>
     createResumePickerThread({
       id: `codex-thread-${String(index).padStart(2, "0")}`,
       preview: `Preview ${index}`,
@@ -610,7 +610,7 @@ test("resume session autocomplete pipeline scopes threads, sorts them, formats l
       createdAt: baseTimestamp + index,
     })
   );
-  const secondPageThreads = [
+  const archivedThreads = [
     createResumePickerThread({
       id: "codex-thread-12345678901",
       preview:
@@ -632,14 +632,14 @@ test("resume session autocomplete pipeline scopes threads, sorts them, formats l
     codexClient: {
       async listThreads(params: ThreadListParams) {
         calls.push(params as Record<string, unknown>);
-        return params.cursor === "cursor-2"
+        return params.archived
           ? {
-              data: secondPageThreads,
+              data: archivedThreads,
               nextCursor: null,
             }
           : {
-              data: firstPageThreads,
-              nextCursor: "cursor-2",
+              data: activeThreads,
+              nextCursor: null,
             };
       },
     } as never,
@@ -652,13 +652,16 @@ test("resume session autocomplete pipeline scopes threads, sorts them, formats l
     {
       cwd: defaultSessionPath,
       searchTerm: "plan",
-      limit: 100,
+      limit: 25,
+      sortKey: "updated_at",
+      archived: false,
     },
     {
       cwd: defaultSessionPath,
       searchTerm: "plan",
-      limit: 100,
-      cursor: "cursor-2",
+      limit: 25,
+      sortKey: "updated_at",
+      archived: true,
     },
   ]);
   expect(choices).toHaveLength(25);
@@ -1003,7 +1006,16 @@ test("resume session autocomplete stays empty until the selected path is a valid
       {
         cwd: join(homeDir, "code-github"),
         searchTerm: "codex",
-        limit: 100,
+        limit: 25,
+        sortKey: "updated_at",
+        archived: false,
+      },
+      {
+        cwd: join(homeDir, "code-github"),
+        searchTerm: "codex",
+        limit: 25,
+        sortKey: "updated_at",
+        archived: true,
       },
     ]);
   } finally {
@@ -1058,7 +1070,16 @@ test("resume session autocomplete scopes Codex threads by the normalized path", 
     {
       cwd: defaultSessionPath,
       searchTerm: "codex",
-      limit: 100,
+      limit: 25,
+      sortKey: "updated_at",
+      archived: false,
+    },
+    {
+      cwd: defaultSessionPath,
+      searchTerm: "codex",
+      limit: 25,
+      sortKey: "updated_at",
+      archived: true,
     },
   ]);
 });

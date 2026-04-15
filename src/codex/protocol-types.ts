@@ -58,6 +58,7 @@ export type ThreadListParams = {
   cwd?: string | null;
   limit?: number | null;
   searchTerm?: string | null;
+  sortKey?: "created_at" | "updated_at" | null;
 };
 
 export type ResumeThreadParams = {

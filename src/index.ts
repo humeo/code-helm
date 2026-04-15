@@ -2680,20 +2680,26 @@ export const buildResumeSessionAutocompleteChoices = async ({
   }
 
   const searchTerm = query.trim() || null;
-  const threads: CodexThread[] = [];
-  let cursor: string | null = null;
-
-  do {
-    const result = await codexClient.listThreads({
-      cwd,
-      searchTerm,
-      limit: 100,
-      ...(cursor ? { cursor } : {}),
-    });
-
-    threads.push(...result.data);
-    cursor = result.nextCursor;
-  } while (cursor);
+  const listParams = {
+    cwd,
+    searchTerm,
+    limit: 25,
+    sortKey: "updated_at" as const,
+  };
+  const [activeThreads, archivedThreads] = await Promise.all([
+    codexClient.listThreads({
+      ...listParams,
+      archived: false,
+    }),
+    codexClient.listThreads({
+      ...listParams,
+      archived: true,
+    }),
+  ]);
+  const threads = [
+    ...activeThreads.data,
+    ...archivedThreads.data,
+  ];
 
   return sortResumePickerThreads(threads)
     .slice(0, 25)
