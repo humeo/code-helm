@@ -52,7 +52,7 @@ export const normalizeSessionPathInput = (
   }
 
   if (!isAbsolute(trimmed)) {
-    throw new Error("Session path must be absolute or start with ~/");
+    return resolve(homeDir, trimmed);
   }
 
   return resolve(trimmed);

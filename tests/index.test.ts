@@ -794,24 +794,42 @@ test("create session expands ~/ paths before starting Codex", async () => {
   }
 });
 
-test("create session rejects relative paths with an ephemeral validation error", async () => {
-  const { services, calls } = createControlChannelServicesFixture();
+test("create session treats bare relative paths as home-relative shorthand", async () => {
+  const pathInsideHome = mkdtempSync(join(homedir(), "codehelm-session-shorthand-"));
 
-  const result = await services.createSession({
-    actorId: "owner-1",
-    guildId: "guild-1",
-    channelId: "control-1",
-    path: "workspace/api",
-  });
+  try {
+    const { services, calls, getSessionByCodexThreadId } = createControlChannelServicesFixture();
+    const homePrefix = `${homedir()}/`;
+    const shorthandPath = pathInsideHome.startsWith(homePrefix)
+      ? pathInsideHome.slice(homePrefix.length)
+      : ".";
 
-  expect(calls.startThread).toEqual([]);
-  expect(calls.createVisibleSessionThread).toEqual([]);
-  expect(result).toEqual({
-    reply: {
-      content: "Session path must be absolute or start with ~/.",
-      ephemeral: true,
-    },
-  });
+    const result = await services.createSession({
+      actorId: "owner-1",
+      guildId: "guild-1",
+      channelId: "control-1",
+      path: shorthandPath,
+    });
+
+    expect(calls.startThread).toEqual([pathInsideHome]);
+    expect(calls.insertedSessions.at(-1)).toEqual({
+      discordThreadId: "discord-thread-new-1",
+      codexThreadId: "codex-thread-1",
+      ownerDiscordUserId: "owner-1",
+      cwd: pathInsideHome,
+      state: "idle",
+    });
+    expect(getSessionByCodexThreadId("codex-thread-1")).toMatchObject({
+      cwd: pathInsideHome,
+    });
+    expect(result).toEqual({
+      reply: {
+        content: `Created session <#discord-thread-new-1> for \`${pathInsideHome}\`.`,
+      },
+    });
+  } finally {
+    rmSync(pathInsideHome, { recursive: true, force: true });
+  }
 });
 
 test("create session rejects hidden paths with an ephemeral validation error", async () => {
@@ -930,6 +948,18 @@ test("path autocomplete starts from home directory choices", async () => {
       channelId: "control-1",
       path: "~/code-github/",
       query: "~/code-github/",
+    })).toEqual([
+      { name: ".", value: "~/code-github" },
+      { name: "..", value: "~" },
+      { name: "code-helm/", value: "~/code-github/code-helm/" },
+      { name: "codex/", value: "~/code-github/codex/" },
+    ]);
+
+    expect(await services.autocompleteSessionPaths({
+      actorId: "owner-1",
+      guildId: "guild-1",
+      channelId: "control-1",
+      query: "code-github/",
     })).toEqual([
       { name: ".", value: "~/code-github" },
       { name: "..", value: "~" },

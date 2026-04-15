@@ -22,6 +22,14 @@ describe("normalizeSessionPathInput", () => {
     );
   });
 
+  test("treats bare relative paths as home-relative shorthand", () => {
+    const homeDir = join("/Users", "koltenluca");
+
+    expect(normalizeSessionPathInput("code-helm", homeDir)).toBe(
+      "/Users/koltenluca/code-helm",
+    );
+  });
+
   test("preserves hidden directories as normalized paths", () => {
     const homeDir = join("/Users", "koltenluca");
 
@@ -37,11 +45,6 @@ describe("normalizeSessionPathInput", () => {
     expect(pathContainsHiddenDirectory("/Users/koltenluca/work")).toBe(false);
   });
 
-  test("rejects relative paths", () => {
-    expect(() => normalizeSessionPathInput("code-helm")).toThrow(
-      /absolute|~\//i,
-    );
-  });
 });
 
 describe("formatSessionPathForDisplay", () => {
