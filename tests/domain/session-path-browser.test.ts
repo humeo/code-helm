@@ -153,7 +153,7 @@ describe("buildPathBrowserChoices", () => {
     }
   });
 
-  test("non-hidden directories are prioritized ahead of hidden directories", () => {
+  test("hidden directories are excluded from browser choices", () => {
     const homeDir = createTempHomeDir();
 
     try {
@@ -171,8 +171,25 @@ describe("buildPathBrowserChoices", () => {
         { name: "Select ~", value: "~" },
         { name: "code-github/", value: "~/code-github/" },
         { name: "Downloads/", value: "~/Downloads/" },
-        { name: ".hidden-00/", value: "~/.hidden-00/" },
-        { name: ".hidden-01/", value: "~/.hidden-01/" },
+      ]);
+    } finally {
+      rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  test("hidden directory input falls back to the nearest visible parent", () => {
+    const homeDir = createTempHomeDir();
+
+    try {
+      mkdirSync(join(homeDir, ".hidden", "nested"), { recursive: true });
+      mkdirSync(join(homeDir, "code-github"));
+
+      expect(buildPathBrowserChoices({
+        inputPath: "~/.hidden/nested/",
+        homeDir,
+      })).toEqual([
+        { name: "Select ~", value: "~" },
+        { name: "code-github/", value: "~/code-github/" },
       ]);
     } finally {
       rmSync(homeDir, { recursive: true, force: true });

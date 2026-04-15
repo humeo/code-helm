@@ -1,5 +1,5 @@
 import { readdirSync, statSync, type Dirent } from "node:fs";
-import { dirname, isAbsolute, join, relative } from "node:path";
+import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { homedir } from "node:os";
 import {
   formatSessionPathForAutocompleteValue,
@@ -62,15 +62,28 @@ const directorySortCollator = new Intl.Collator(undefined, {
   sensitivity: "base",
 });
 
-const compareDirectoryNames = (left: string, right: string) => {
-  const leftHidden = left.startsWith(".");
-  const rightHidden = right.startsWith(".");
+const isHiddenDirectoryName = (name: string) => {
+  return name.startsWith(".") && name !== "." && name !== "..";
+};
 
-  if (leftHidden !== rightHidden) {
-    return leftHidden ? 1 : -1;
+const pathContainsHiddenDirectory = (path: string) => {
+  let currentPath = path;
+
+  while (true) {
+    const currentName = basename(currentPath);
+
+    if (isHiddenDirectoryName(currentName)) {
+      return true;
+    }
+
+    const parentPath = dirname(currentPath);
+
+    if (parentPath === currentPath) {
+      return false;
+    }
+
+    currentPath = parentPath;
   }
-
-  return directorySortCollator.compare(left, right);
 };
 
 const isReadableDirectory = (path: string, fs: PathBrowserFs) => {
@@ -130,7 +143,7 @@ export const resolvePathBrowserState = ({
   const shouldStayWithinHome = isPathWithinHome(requestedPath, normalizedHomeDir);
   let candidatePath = requestedPath;
 
-  while (!isReadableDirectory(candidatePath, fs)) {
+  while (!isReadableDirectory(candidatePath, fs) || pathContainsHiddenDirectory(candidatePath)) {
     if (shouldStayWithinHome && candidatePath === normalizedHomeDir) {
       return null;
     }
@@ -207,7 +220,8 @@ export const listPathBrowserDirectoryChoices = ({
 
   const childChoices = entries
     .filter((entry) => entry.isDirectory())
-    .sort((left, right) => compareDirectoryNames(left.name, right.name))
+    .filter((entry) => !isHiddenDirectoryName(entry.name))
+    .sort((left, right) => directorySortCollator.compare(left.name, right.name))
     .map((entry) => ({
       entry,
       childPath: join(state.currentPath, entry.name),
