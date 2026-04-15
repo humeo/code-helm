@@ -814,6 +814,26 @@ test("create session rejects relative paths with an ephemeral validation error",
   });
 });
 
+test("create session rejects hidden paths with an ephemeral validation error", async () => {
+  const { services, calls } = createControlChannelServicesFixture();
+
+  const result = await services.createSession({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
+    path: "~/.codex",
+  });
+
+  expect(calls.startThread).toEqual([]);
+  expect(calls.createVisibleSessionThread).toEqual([]);
+  expect(result).toEqual({
+    reply: {
+      content: "Session path must not include hidden directories.",
+      ephemeral: true,
+    },
+  });
+});
+
 test("resume session rejects nonexistent paths with an ephemeral validation error", async () => {
   const { services, calls } = createControlChannelServicesFixture();
   const missingPath = join(tmpdir(), `codehelm-missing-${Date.now()}`);
@@ -831,6 +851,27 @@ test("resume session rejects nonexistent paths with an ephemeral validation erro
   expect(result).toEqual({
     reply: {
       content: `Directory does not exist: \`${missingPath}\`.`,
+      ephemeral: true,
+    },
+  });
+});
+
+test("resume session rejects hidden paths with an ephemeral validation error", async () => {
+  const { services, calls } = createControlChannelServicesFixture();
+
+  const result = await services.resumeSession({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
+    path: "~/.codex",
+    codexThreadId: "codex-thread-1",
+  });
+
+  expect(calls.readThreadIds).toEqual([]);
+  expect(calls.createVisibleSessionThread).toEqual([]);
+  expect(result).toEqual({
+    reply: {
+      content: "Session path must not include hidden directories.",
       ephemeral: true,
     },
   });
@@ -913,6 +954,38 @@ test("resume session autocomplete stays empty until the selected path is a valid
         limit: 100,
       },
     ]);
+  } finally {
+    rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("resume session autocomplete returns no options for hidden paths", async () => {
+  const homeDir = mkdtempSync(join(tmpdir(), "codehelm-resume-hidden-home-"));
+
+  try {
+    mkdirSync(join(homeDir, ".codex", "work"), { recursive: true });
+
+    const { services, calls } = createControlChannelServicesFixture({
+      homeDir,
+    });
+
+    expect(await services.autocompleteResumeSessions({
+      actorId: "owner-1",
+      guildId: "guild-1",
+      channelId: "control-1",
+      path: "~/.codex",
+      query: "codex",
+    })).toEqual([]);
+
+    expect(await services.autocompleteResumeSessions({
+      actorId: "owner-1",
+      guildId: "guild-1",
+      channelId: "control-1",
+      path: "~/.codex/work",
+      query: "codex",
+    })).toEqual([]);
+
+    expect(calls.listThreads).toEqual([]);
   } finally {
     rmSync(homeDir, { recursive: true, force: true });
   }

@@ -21,6 +21,22 @@ describe("normalizeSessionPathInput", () => {
     );
   });
 
+  test("rejects hidden directories in home-relative paths", () => {
+    const homeDir = join("/Users", "koltenluca");
+
+    expect(() => normalizeSessionPathInput("~/.codex", homeDir)).toThrow(
+      /hidden directories/i,
+    );
+  });
+
+  test("rejects descendants inside hidden directories", () => {
+    const homeDir = join("/Users", "koltenluca");
+
+    expect(() => normalizeSessionPathInput("~/.codex/work", homeDir)).toThrow(
+      /hidden directories/i,
+    );
+  });
+
   test("rejects relative paths", () => {
     expect(() => normalizeSessionPathInput("code-helm")).toThrow(
       /absolute|~\//i,

@@ -1,8 +1,32 @@
 import { homedir } from "node:os";
-import { isAbsolute, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 
 const normalizeWhitespace = (value: string) => {
   return value.replace(/\s+/g, " ").trim();
+};
+
+const isHiddenDirectoryName = (name: string) => {
+  return name.startsWith(".") && name !== "." && name !== "..";
+};
+
+const pathContainsHiddenDirectory = (path: string) => {
+  let currentPath = path;
+
+  while (true) {
+    const currentName = basename(currentPath);
+
+    if (isHiddenDirectoryName(currentName)) {
+      return true;
+    }
+
+    const parentPath = dirname(currentPath);
+
+    if (parentPath === currentPath) {
+      return false;
+    }
+
+    currentPath = parentPath;
+  }
 };
 
 export const normalizeSessionPathInput = (
@@ -17,21 +41,39 @@ export const normalizeSessionPathInput = (
 
   if (trimmed.startsWith("~")) {
     if (trimmed === "~") {
-      return resolve(homeDir);
+      const resolvedHomeDir = resolve(homeDir);
+
+      if (pathContainsHiddenDirectory(resolvedHomeDir)) {
+        throw new Error("Session path must not include hidden directories");
+      }
+
+      return resolvedHomeDir;
     }
 
     if (!trimmed.startsWith("~/")) {
       throw new Error("Session path must be absolute or start with ~/");
     }
 
-    return resolve(homeDir, trimmed.slice(2));
+    const resolvedPath = resolve(homeDir, trimmed.slice(2));
+
+    if (pathContainsHiddenDirectory(resolvedPath)) {
+      throw new Error("Session path must not include hidden directories");
+    }
+
+    return resolvedPath;
   }
 
   if (!isAbsolute(trimmed)) {
     throw new Error("Session path must be absolute or start with ~/");
   }
 
-  return resolve(trimmed);
+  const resolvedPath = resolve(trimmed);
+
+  if (pathContainsHiddenDirectory(resolvedPath)) {
+    throw new Error("Session path must not include hidden directories");
+  }
+
+  return resolvedPath;
 };
 
 export const formatSessionPathForDisplay = (
