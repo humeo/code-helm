@@ -165,8 +165,13 @@ const rebuildSessionsTableWithLifecycleConstraint = (
 
 const upgradeSessionsLifecycleState = (db: Database) => {
   const hasLifecycleStateColumn = hasColumn(db, "sessions", "lifecycle_state");
+  const hasCwdColumn = hasColumn(db, "sessions", "cwd");
 
-  if (!hasLifecycleStateColumn || !sessionsTableHasLifecycleConstraint(db)) {
+  if (
+    !hasLifecycleStateColumn
+    || !hasCwdColumn
+    || !sessionsTableHasLifecycleConstraint(db)
+  ) {
     rebuildSessionsTableWithLifecycleConstraint(db, hasLifecycleStateColumn);
   }
 

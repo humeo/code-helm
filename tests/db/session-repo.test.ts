@@ -579,6 +579,96 @@ test("rebuilds legacy sessions and backfills cwd from workdirs.absolute_path", (
   db.close();
 });
 
+test("upgrades the pre-change init schema by backfilling cwd when lifecycle state already exists", () => {
+  const db = createDatabaseClient(":memory:");
+
+  db.exec(`
+    CREATE TABLE workspaces (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      root_path TEXT NOT NULL UNIQUE,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE workdirs (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      label TEXT NOT NULL,
+      absolute_path TEXT NOT NULL UNIQUE,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (workspace_id) REFERENCES workspaces(id)
+    );
+
+    CREATE TABLE sessions (
+      discord_thread_id TEXT PRIMARY KEY,
+      codex_thread_id TEXT NOT NULL UNIQUE,
+      owner_discord_user_id TEXT NOT NULL,
+      workdir_id TEXT NOT NULL,
+      state TEXT NOT NULL,
+      lifecycle_state TEXT NOT NULL DEFAULT 'active' CHECK (lifecycle_state IN ('active', 'archived', 'deleted')),
+      degradation_reason TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (workdir_id) REFERENCES workdirs(id)
+    );
+
+    CREATE TABLE approvals (
+      request_id TEXT PRIMARY KEY,
+      discord_thread_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      resolved_by_discord_user_id TEXT,
+      resolution TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (discord_thread_id) REFERENCES sessions(discord_thread_id)
+    );
+  `);
+
+  db.exec(`
+    INSERT INTO workspaces (id, name, root_path, created_at, updated_at)
+    VALUES ('ws1', 'Main Workspace', '/tmp/ws1', '2026-04-09T00:00:00.000Z', '2026-04-09T00:00:00.000Z');
+
+    INSERT INTO workdirs (id, workspace_id, label, absolute_path, created_at, updated_at)
+    VALUES ('wd1', 'ws1', 'App', '/tmp/ws1/app', '2026-04-09T00:00:00.000Z', '2026-04-09T00:00:00.000Z');
+
+    INSERT INTO sessions (
+      discord_thread_id,
+      codex_thread_id,
+      owner_discord_user_id,
+      workdir_id,
+      state,
+      lifecycle_state,
+      degradation_reason,
+      created_at,
+      updated_at
+    ) VALUES (
+      'legacy-thread',
+      'legacy-codex',
+      'legacy-user',
+      'wd1',
+      'running',
+      'archived',
+      NULL,
+      '2026-04-09T00:00:00.000Z',
+      '2026-04-09T00:00:00.000Z'
+    );
+  `);
+
+  applyMigrations(db);
+
+  expect(createSessionRepo(db).getByDiscordThreadId("legacy-thread")).toMatchObject({
+    discordThreadId: "legacy-thread",
+    codexThreadId: "legacy-codex",
+    cwd: "/tmp/ws1/app",
+    state: "running",
+    lifecycleState: "archived",
+  });
+
+  db.close();
+});
+
 test("fails legacy session rebuild when cwd cannot be backfilled to a non-empty path", () => {
   const db = createDatabaseClient(":memory:");
 
