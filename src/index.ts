@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { existsSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { isAbsolute, relative } from "node:path";
 import {
   ActionRowBuilder,
@@ -50,6 +51,9 @@ import {
   resolveSyncSessionState,
   resolveSessionAccessMode,
 } from "./domain/session-service";
+import {
+  buildPathBrowserChoices,
+} from "./domain/session-path-browser";
 import {
   formatSessionPathForDisplay,
   normalizeBootstrapThreadTitle,
@@ -2363,11 +2367,11 @@ const resolveSessionPathValidationError = (message: string): DiscordCommandResul
   };
 };
 
-const normalizeSessionPathForRuntime = (path: string) => {
+const normalizeSessionPathForRuntime = (path: string, homeDir: string = homedir()) => {
   try {
     return {
       ok: true as const,
-      cwd: normalizeSessionPathInput(path),
+      cwd: normalizeSessionPathInput(path, homeDir),
     };
   } catch (error) {
     return {
@@ -2403,8 +2407,8 @@ const validateSessionPathDirectory = (cwd: string) => {
   };
 };
 
-const resolveSessionPathForCommand = (path: string) => {
-  const normalized = normalizeSessionPathForRuntime(path);
+const resolveSessionPathForCommand = (path: string, homeDir: string = homedir()) => {
+  const normalized = normalizeSessionPathForRuntime(path, homeDir);
 
   if (!normalized.ok) {
     return {
@@ -2428,12 +2432,15 @@ const resolveSessionPathForCommand = (path: string) => {
   };
 };
 
-const resolveSessionPathForAutocomplete = (path?: string) => {
+const resolveSessionPathForAutocomplete = (
+  path?: string,
+  homeDir: string = homedir(),
+) => {
   if (!path) {
     return undefined;
   }
 
-  const normalized = normalizeSessionPathForRuntime(path);
+  const normalized = normalizeSessionPathForRuntime(path, homeDir);
 
   if (!normalized.ok) {
     return undefined;
@@ -2725,6 +2732,7 @@ type BoundSessionThread = {
 
 type CreateControlChannelServicesDeps = {
   config: AppConfig;
+  homeDir?: string;
   codexClient: Pick<JsonRpcClient, "listThreads" | "startThread">;
   sessionRepo: Pick<
     ReturnType<typeof createSessionRepo>,
@@ -2836,6 +2844,7 @@ const createAttachedSessionThread = async ({
 
 export const createControlChannelServices = ({
   config,
+  homeDir = homedir(),
   codexClient,
   sessionRepo,
   getDiscordClient,
@@ -2857,7 +2866,7 @@ export const createControlChannelServices = ({
         return contextError;
       }
 
-      const resolvedPath = resolveSessionPathForCommand(path);
+      const resolvedPath = resolveSessionPathForCommand(path, homeDir);
 
       if (!resolvedPath.ok) {
         return resolvedPath.result;
@@ -2867,7 +2876,7 @@ export const createControlChannelServices = ({
         cwd: resolvedPath.cwd,
       });
       const authoritativeCwd = started.cwd;
-      const displayPath = formatSessionPathForDisplay(authoritativeCwd);
+      const displayPath = formatSessionPathForDisplay(authoritativeCwd, homeDir);
       const codexThreadId = started.thread.id;
       const discord = getDiscordClient();
       let thread: BoundSessionThread | undefined;
@@ -3021,14 +3030,17 @@ export const createControlChannelServices = ({
         },
       };
     },
-    async autocompleteSessionPaths({ guildId, channelId }) {
+    async autocompleteSessionPaths({ guildId, channelId, path, query }) {
       const contextError = requireConfiguredControlChannel(config, guildId, channelId);
 
       if (contextError) {
         return [];
       }
 
-      return [];
+      return buildPathBrowserChoices({
+        inputPath: path ?? query,
+        homeDir,
+      });
     },
     async autocompleteResumeSessions({ guildId, channelId, path, query }) {
       const contextError = requireConfiguredControlChannel(config, guildId, channelId);
@@ -3040,7 +3052,7 @@ export const createControlChannelServices = ({
       return buildResumeSessionAutocompleteChoices({
         codexClient,
         query,
-        cwd: resolveSessionPathForAutocomplete(path),
+        cwd: resolveSessionPathForAutocomplete(path, homeDir),
       });
     },
     async resumeSession({ actorId, guildId, channelId, path, codexThreadId }) {
@@ -3050,7 +3062,7 @@ export const createControlChannelServices = ({
         return contextError;
       }
 
-      const resolvedPath = resolveSessionPathForCommand(path);
+      const resolvedPath = resolveSessionPathForCommand(path, homeDir);
 
       if (!resolvedPath.ok) {
         return resolvedPath.result;

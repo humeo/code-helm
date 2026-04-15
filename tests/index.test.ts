@@ -272,6 +272,7 @@ const createResumeOutcome = (
 
 const createControlChannelServicesFixture = ({
   existingSession,
+  homeDir = homedir(),
   discordThreadUsable = true,
   readThreadStatus = { type: "idle" } satisfies CodexThreadStatus,
   readThreadCwd = "/tmp/workspace/api",
@@ -284,6 +285,7 @@ const createControlChannelServicesFixture = ({
   resumeOutcome = createResumeOutcome("ready"),
 }: {
   existingSession?: SessionRecord | null;
+  homeDir?: string;
   discordThreadUsable?: boolean;
   readThreadStatus?: CodexThreadStatus;
   readThreadCwd?: string;
@@ -355,6 +357,7 @@ const createControlChannelServicesFixture = ({
 
   const services = createControlChannelServices({
     config,
+    homeDir,
     codexClient: {
       async startThread(params: { cwd: string }) {
         calls.startThread.push(params.cwd);
@@ -831,6 +834,88 @@ test("resume session rejects nonexistent paths with an ephemeral validation erro
       ephemeral: true,
     },
   });
+});
+
+test("path autocomplete starts from home directory choices", async () => {
+  const homeDir = mkdtempSync(join(tmpdir(), "codehelm-path-home-"));
+
+  try {
+    mkdirSync(join(homeDir, "code-github", "code-helm"), { recursive: true });
+    mkdirSync(join(homeDir, "code-github", "codex"), { recursive: true });
+    mkdirSync(join(homeDir, "Downloads"));
+
+    const { services, calls } = createControlChannelServicesFixture({
+      homeDir,
+    });
+
+    const choices = await services.autocompleteSessionPaths({
+      actorId: "owner-1",
+      guildId: "guild-1",
+      channelId: "control-1",
+      query: "",
+    });
+
+    expect(choices).toEqual([
+      { name: "Select ~", value: "~" },
+      { name: "code-github/", value: "~/code-github/" },
+      { name: "Downloads/", value: "~/Downloads/" },
+    ]);
+    expect(calls.listThreads).toEqual([]);
+
+    expect(await services.autocompleteSessionPaths({
+      actorId: "owner-1",
+      guildId: "guild-1",
+      channelId: "control-1",
+      path: "~/code-github/",
+      query: "~/code-github/",
+    })).toEqual([
+      { name: "Select ~/code-github", value: "~/code-github" },
+      { name: "../", value: "~" },
+      { name: "code-helm/", value: "~/code-github/code-helm/" },
+      { name: "codex/", value: "~/code-github/codex/" },
+    ]);
+  } finally {
+    rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("resume session autocomplete stays empty until the selected path is a valid directory", async () => {
+  const homeDir = mkdtempSync(join(tmpdir(), "codehelm-resume-home-"));
+
+  try {
+    mkdirSync(join(homeDir, "code-github"));
+
+    const { services, calls } = createControlChannelServicesFixture({
+      homeDir,
+    });
+
+    expect(await services.autocompleteResumeSessions({
+      actorId: "owner-1",
+      guildId: "guild-1",
+      channelId: "control-1",
+      path: "~/code-github/missing/",
+      query: "codex",
+    })).toEqual([]);
+    expect(calls.listThreads).toEqual([]);
+
+    await services.autocompleteResumeSessions({
+      actorId: "owner-1",
+      guildId: "guild-1",
+      channelId: "control-1",
+      path: "~/code-github/",
+      query: "codex",
+    });
+
+    expect(calls.listThreads).toEqual([
+      {
+        cwd: join(homeDir, "code-github"),
+        searchTerm: "codex",
+        limit: 100,
+      },
+    ]);
+  } finally {
+    rmSync(homeDir, { recursive: true, force: true });
+  }
 });
 
 test("resume session autocomplete scopes Codex threads by the normalized path", async () => {
