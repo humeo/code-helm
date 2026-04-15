@@ -163,15 +163,7 @@ const createAppConfig = (): AppConfig => ({
   workspace: {
     id: "workspace-1",
     name: "Workspace",
-    rootPath: "/tmp/workspace",
   },
-  workdirs: [
-    {
-      id: "api",
-      label: "API",
-      absolutePath: "/tmp/workspace/api",
-    },
-  ],
 });
 
 const createResumeOutcome = (
@@ -308,6 +300,13 @@ const createControlChannelServicesFixture = ({
 
   const services = createControlChannelServices({
     config,
+    configuredWorkdirs: [
+      {
+        id: "api",
+        label: "API",
+        absolutePath: "/tmp/workspace/api",
+      },
+    ],
     codexClient: {
       async startThread() {
         return {

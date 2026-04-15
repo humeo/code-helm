@@ -30,12 +30,11 @@ import type {
   StartTurnParams,
   ThreadReadResult,
 } from "./codex/protocol-types";
-import { type AppConfig, parseConfig, type WorkdirConfig } from "./config";
+import { type AppConfig, parseConfig } from "./config";
 import { createDatabaseClient } from "./db/client";
 import { applyMigrations } from "./db/migrate";
 import { createApprovalRepo, type ApprovalRecord } from "./db/repos/approvals";
 import { createSessionRepo, type SessionRecord } from "./db/repos/sessions";
-import { createWorkdirRepo } from "./db/repos/workdirs";
 import { createWorkspaceRepo } from "./db/repos/workspaces";
 import type { ApprovalStatus } from "./domain/approval-service";
 import { shouldDegradeDiscordToReadOnly } from "./domain/external-modification";
@@ -90,6 +89,11 @@ import {
 import { logger } from "./logger";
 
 const approvalButtonPrefix = "approval";
+type WorkdirConfig = {
+  id: string;
+  label: string;
+  absolutePath: string;
+};
 
 type ApprovalAction = "approve" | "decline" | "cancel";
 type DiscordMessageComponents = ActionRowBuilder<ButtonBuilder>[];
@@ -2160,26 +2164,30 @@ const ensureWorkspaceSeeded = (
   config: AppConfig,
 ) => {
   const workspaceRepo = createWorkspaceRepo(db);
-  const workdirRepo = createWorkdirRepo(db);
 
   if (!workspaceRepo.getById(config.workspace.id)) {
     workspaceRepo.insert({
       id: config.workspace.id,
       name: config.workspace.name,
-      rootPath: config.workspace.rootPath,
+      rootPath: "/",
     });
   }
+};
 
-  for (const workdir of config.workdirs) {
-    if (!workdirRepo.getById(workdir.id)) {
-      workdirRepo.insert({
-        id: workdir.id,
-        workspaceId: config.workspace.id,
-        label: workdir.label,
-        absolutePath: workdir.absolutePath,
-      });
-    }
-  }
+const loadConfiguredWorkdirs = (db: Database): WorkdirConfig[] => {
+  const rows = db.prepare(
+    "SELECT id, label, absolute_path FROM workdirs ORDER BY label, id",
+  ).all() as Array<{
+    id: string;
+    label: string;
+    absolute_path: string;
+  }>;
+
+  return rows.map((row) => ({
+    id: row.id,
+    label: row.label,
+    absolutePath: row.absolute_path,
+  }));
 };
 
 const requireConfiguredControlChannel = (
@@ -2224,12 +2232,15 @@ const requireConfiguredGuild = (
   return null;
 };
 
-const findConfiguredWorkdir = (config: AppConfig, workdirId: string) => {
-  return config.workdirs.find((workdir) => workdir.id === workdirId);
+const findConfiguredWorkdir = (
+  workdirs: WorkdirConfig[],
+  workdirId: string,
+) => {
+  return workdirs.find((workdir) => workdir.id === workdirId);
 };
 
 export const filterConfiguredWorkdirs = (
-  workdirs: AppConfig["workdirs"],
+  workdirs: WorkdirConfig[],
   query: string,
 ) => {
   const normalizedQuery = query.trim().toLowerCase();
@@ -2398,6 +2409,7 @@ type BoundSessionThread = {
 
 type CreateControlChannelServicesDeps = {
   config: AppConfig;
+  configuredWorkdirs: WorkdirConfig[];
   codexClient: Pick<JsonRpcClient, "listThreads" | "startThread">;
   sessionRepo: Pick<
     ReturnType<typeof createSessionRepo>,
@@ -2509,6 +2521,7 @@ const createAttachedSessionThread = async ({
 
 export const createControlChannelServices = ({
   config,
+  configuredWorkdirs,
   codexClient,
   sessionRepo,
   getDiscordClient,
@@ -2530,7 +2543,7 @@ export const createControlChannelServices = ({
         return contextError;
       }
 
-      const workdir = findConfiguredWorkdir(config, workdirId);
+      const workdir = findConfiguredWorkdir(configuredWorkdirs, workdirId);
 
       if (!workdir) {
         return {
@@ -2704,7 +2717,7 @@ export const createControlChannelServices = ({
         return [];
       }
 
-      return filterConfiguredWorkdirs(config.workdirs, query);
+      return filterConfiguredWorkdirs(configuredWorkdirs, query);
     },
     async autocompleteResumeSessions({
       guildId,
@@ -2719,7 +2732,7 @@ export const createControlChannelServices = ({
       }
 
       const workdir = workdirId
-        ? findConfiguredWorkdir(config, workdirId)
+        ? findConfiguredWorkdir(configuredWorkdirs, workdirId)
         : undefined;
 
       return buildResumeSessionAutocompleteChoices({
@@ -2735,7 +2748,7 @@ export const createControlChannelServices = ({
         return contextError;
       }
 
-      const workdir = findConfiguredWorkdir(config, workdirId);
+      const workdir = findConfiguredWorkdir(configuredWorkdirs, workdirId);
 
       if (!workdir) {
         return {
@@ -3388,6 +3401,7 @@ export const startCodeHelm = async (
 
   applyMigrations(db);
   ensureWorkspaceSeeded(db, config);
+  const configuredWorkdirs = loadConfiguredWorkdirs(db);
 
   const sessionRepo = createSessionRepo(db);
   const approvalRepo = createApprovalRepo(db);
@@ -3949,6 +3963,7 @@ export const startCodeHelm = async (
 
   const services = createControlChannelServices({
     config,
+    configuredWorkdirs,
     codexClient,
     sessionRepo,
     getDiscordClient: () => requireDiscordClient(discordClient),
@@ -4859,7 +4874,7 @@ export const startCodeHelm = async (
   await codexClient.initialize();
   await registerGuildCommands(
     config,
-    buildControlChannelCommands(config.workdirs),
+    buildControlChannelCommands(configuredWorkdirs),
   );
   await bot.start();
 

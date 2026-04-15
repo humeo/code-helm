@@ -1,0 +1,64 @@
+import { homedir } from "node:os";
+import { isAbsolute, relative, resolve } from "node:path";
+
+const normalizeWhitespace = (value: string) => {
+  return value.replace(/\s+/g, " ").trim();
+};
+
+export const normalizeSessionPathInput = (
+  value: string,
+  homeDir: string = homedir(),
+) => {
+  const trimmed = value.trim();
+
+  if (trimmed.length === 0) {
+    throw new Error("Session path must not be empty");
+  }
+
+  if (trimmed.startsWith("~")) {
+    if (trimmed === "~") {
+      return resolve(homeDir);
+    }
+
+    if (!trimmed.startsWith("~/")) {
+      throw new Error("Session path must be absolute or start with ~/");
+    }
+
+    return resolve(homeDir, trimmed.slice(2));
+  }
+
+  if (!isAbsolute(trimmed)) {
+    throw new Error("Session path must be absolute or start with ~/");
+  }
+
+  return resolve(trimmed);
+};
+
+export const formatSessionPathForDisplay = (
+  value: string,
+  homeDir: string = homedir(),
+) => {
+  const normalizedHomeDir = resolve(homeDir);
+  const normalizedPath = resolve(value);
+  const homeRelativePath = relative(normalizedHomeDir, normalizedPath);
+
+  if (homeRelativePath === "") {
+    return "~";
+  }
+
+  if (
+    homeRelativePath.length > 0
+    && !homeRelativePath.startsWith("..")
+    && !isAbsolute(homeRelativePath)
+  ) {
+    return `~/${homeRelativePath}`;
+  }
+
+  return normalizedPath;
+};
+
+export const normalizeBootstrapThreadTitle = (value: string) => {
+  const normalized = normalizeWhitespace(value);
+
+  return normalized.length > 0 ? normalized : null;
+};
