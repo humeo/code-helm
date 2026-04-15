@@ -175,16 +175,7 @@ test("/session-new forwards path", async () => {
 
 test("command registration removes deprecated command names and uses path options", () => {
   const commandsByName = new Map(
-    buildControlChannelCommands([
-      {
-        id: "example",
-        label: "Code Agent Helm Example",
-      },
-      {
-        id: "web",
-        label: "Web App",
-      },
-    ]).map((command) => [command.name, command]),
+    buildControlChannelCommands().map((command) => [command.name, command]),
   );
 
   expect(commandsByName.has("workdir-list")).toBe(false);

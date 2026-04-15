@@ -274,6 +274,7 @@ const createControlChannelServicesFixture = ({
   discordThreadUsable = true,
   readThreadStatus = { type: "idle" } satisfies CodexThreadStatus,
   readThreadCwd = "/tmp/workspace/api",
+  startThreadCwd,
   readThreadError,
   discordClientError,
   createThreadSendError,
@@ -285,6 +286,7 @@ const createControlChannelServicesFixture = ({
   discordThreadUsable?: boolean;
   readThreadStatus?: CodexThreadStatus;
   readThreadCwd?: string;
+  startThreadCwd?: string;
   readThreadError?: Error;
   discordClientError?: Error;
   createThreadSendError?: Error;
@@ -355,11 +357,12 @@ const createControlChannelServicesFixture = ({
     codexClient: {
       async startThread(params: { cwd: string }) {
         calls.startThread.push(params.cwd);
+        const authoritativeCwd = startThreadCwd ?? params.cwd;
         return {
           thread: createResumePickerThread({
-            cwd: params.cwd,
+            cwd: authoritativeCwd,
           }),
-          cwd: params.cwd,
+          cwd: authoritativeCwd,
         };
       },
       async listThreads(params: ThreadListParams) {
@@ -681,8 +684,11 @@ test("resume session autocomplete labels include status, preview or name, and a 
   expect(longChoice.name.endsWith(" · …345678901")).toBe(true);
 });
 
-test("create session accepts an absolute path and starts Codex in that normalized cwd", async () => {
-  const { services, calls, getSessionByCodexThreadId } = createControlChannelServicesFixture();
+test("create session persists and displays the authoritative cwd returned by Codex", async () => {
+  const authoritativeCwd = "/tmp/workspace/api-authoritative";
+  const { services, calls, getSessionByCodexThreadId } = createControlChannelServicesFixture({
+    startThreadCwd: authoritativeCwd,
+  });
 
   const result = await services.createSession({
     actorId: "owner-1",
@@ -697,16 +703,22 @@ test("create session accepts an absolute path and starts Codex in that normalize
       discordThreadId: "discord-thread-new-1",
       codexThreadId: "codex-thread-1",
       ownerDiscordUserId: "owner-1",
-      cwd: defaultSessionPath,
+      cwd: authoritativeCwd,
       state: "idle",
     },
   ]);
+  expect(calls.createVisibleSessionThread).toEqual([
+    {
+      title: "session",
+      starterText: `Opening session for \`${authoritativeCwd}\`.`,
+    },
+  ]);
   expect(getSessionByCodexThreadId("codex-thread-1")).toMatchObject({
-    cwd: defaultSessionPath,
+    cwd: authoritativeCwd,
   });
   expect(result).toEqual({
     reply: {
-      content: "Created session <#discord-thread-new-1> for `/tmp/workspace/api`.",
+      content: `Created session <#discord-thread-new-1> for \`${authoritativeCwd}\`.`,
     },
   });
 });

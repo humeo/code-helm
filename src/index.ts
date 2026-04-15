@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { existsSync, statSync } from "node:fs";
-import { basename, isAbsolute, relative } from "node:path";
+import { isAbsolute, relative } from "node:path";
 import {
   ActionRowBuilder,
   ButtonBuilder,
@@ -2552,14 +2552,8 @@ const describeAttachedSessionResult = (result: SessionResumeState) => {
   }
 };
 
-const formatSessionThreadTitle = (cwd: string) => {
-  const leaf = basename(cwd);
-
-  if (leaf.length === 0 || leaf === "/") {
-    return "session";
-  }
-
-  return `${leaf}-session`;
+const sessionThreadTitle = () => {
+  return "session";
 };
 
 type BoundSessionThread = {
@@ -2711,6 +2705,7 @@ export const createControlChannelServices = ({
       const started = await codexClient.startThread({
         cwd: resolvedPath.cwd,
       });
+      const authoritativeCwd = started.cwd;
       const codexThreadId = started.thread.id;
       const discord = getDiscordClient();
       let thread: BoundSessionThread | undefined;
@@ -2723,16 +2718,16 @@ export const createControlChannelServices = ({
           client: discord,
           controlChannelId: config.discord.controlChannelId,
           createVisibleSessionThread,
-          sessionPathLabel: resolvedPath.cwd,
+          sessionPathLabel: authoritativeCwd,
           codexThreadId,
-          title: formatSessionThreadTitle(resolvedPath.cwd),
-          starterText: `Opening session for \`${resolvedPath.cwd}\`.`,
+          title: sessionThreadTitle(),
+          starterText: `Opening session for \`${authoritativeCwd}\`.`,
           onBound: async (boundThread) => {
             sessionRepo.insert({
               discordThreadId: boundThread.id,
               codexThreadId,
               ownerDiscordUserId: actorId,
-              cwd: resolvedPath.cwd,
+              cwd: authoritativeCwd,
               state: "idle",
             });
             ensureTranscriptRuntime(codexThreadId);
@@ -2759,7 +2754,7 @@ export const createControlChannelServices = ({
 
       return {
         reply: {
-          content: `Created session <#${thread.id}> for \`${resolvedPath.cwd}\`.`,
+          content: `Created session <#${thread.id}> for \`${authoritativeCwd}\`.`,
         },
       };
     },
@@ -2949,7 +2944,7 @@ export const createControlChannelServices = ({
             createVisibleSessionThread,
             sessionPathLabel: resolvedPath.cwd,
             codexThreadId,
-            title: formatSessionThreadTitle(resolvedPath.cwd),
+            title: sessionThreadTitle(),
             starterText: `Attaching Codex session \`${codexThreadId}\` for \`${resolvedPath.cwd}\`.`,
             onBound: async (boundThread) => {
               sessionRepo.insert({
@@ -2992,7 +2987,7 @@ export const createControlChannelServices = ({
             createVisibleSessionThread,
             sessionPathLabel: resolvedPath.cwd,
             codexThreadId,
-            title: formatSessionThreadTitle(resolvedPath.cwd),
+            title: sessionThreadTitle(),
             starterText: `Attaching Codex session \`${codexThreadId}\` for \`${resolvedPath.cwd}\`.`,
             onBound: async (boundThread) => {
               sessionRepo.rebindDiscordThread({
@@ -5005,7 +5000,7 @@ export const startCodeHelm = async (
   await codexClient.initialize();
   await registerGuildCommands(
     config,
-    buildControlChannelCommands(configuredWorkdirs),
+    buildControlChannelCommands(),
   );
   await bot.start();
 

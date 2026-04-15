@@ -94,9 +94,7 @@ const guildOnlyCommand = (name: string, description: string) => {
 const pathOptionDescription = "Path to the workspace directory";
 const resumeOptionDescription = "Codex session identifier to attach";
 
-export const buildControlChannelCommands = (
-  _workdirs: Array<{ id: string; label: string }> = [],
-): RESTPostAPIChatInputApplicationCommandsJSONBody[] =>
+export const buildControlChannelCommands = (): RESTPostAPIChatInputApplicationCommandsJSONBody[] =>
   [
     guildOnlyCommand("session-new", "Create a new session for a path")
       .addStringOption((option) =>
