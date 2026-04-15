@@ -5,7 +5,7 @@ const normalizeWhitespace = (value: string) => {
   return value.replace(/\s+/g, " ").trim();
 };
 
-const isHiddenDirectoryName = (name: string) => {
+export const isHiddenDirectoryName = (name: string) => {
   return name.startsWith(".") && name !== "." && name !== "..";
 };
 

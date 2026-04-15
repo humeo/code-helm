@@ -834,6 +834,27 @@ test("create session rejects hidden paths with an ephemeral validation error", a
   });
 });
 
+test("create session rejects hidden absolute paths with an ephemeral validation error", async () => {
+  const { services, calls } = createControlChannelServicesFixture();
+  const hiddenAbsolutePath = join(tmpdir(), `.codehelm-hidden-${Date.now()}`, "nested");
+
+  const result = await services.createSession({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
+    path: hiddenAbsolutePath,
+  });
+
+  expect(calls.startThread).toEqual([]);
+  expect(calls.createVisibleSessionThread).toEqual([]);
+  expect(result).toEqual({
+    reply: {
+      content: "Session path must not include hidden directories.",
+      ephemeral: true,
+    },
+  });
+});
+
 test("resume session rejects nonexistent paths with an ephemeral validation error", async () => {
   const { services, calls } = createControlChannelServicesFixture();
   const missingPath = join(tmpdir(), `codehelm-missing-${Date.now()}`);

@@ -1,10 +1,12 @@
 import { readdirSync, statSync, type Dirent } from "node:fs";
-import { basename, dirname, isAbsolute, join, relative } from "node:path";
+import { dirname, isAbsolute, join, relative } from "node:path";
 import { homedir } from "node:os";
 import {
   formatSessionPathForAutocompleteValue,
   formatSessionPathForDisplay,
+  isHiddenDirectoryName,
   normalizeSessionPathInput,
+  pathContainsHiddenDirectory,
 } from "./session-paths";
 
 export type PathBrowserChoice = {
@@ -61,30 +63,6 @@ const directorySortCollator = new Intl.Collator(undefined, {
   numeric: true,
   sensitivity: "base",
 });
-
-const isHiddenDirectoryName = (name: string) => {
-  return name.startsWith(".") && name !== "." && name !== "..";
-};
-
-const pathContainsHiddenDirectory = (path: string) => {
-  let currentPath = path;
-
-  while (true) {
-    const currentName = basename(currentPath);
-
-    if (isHiddenDirectoryName(currentName)) {
-      return true;
-    }
-
-    const parentPath = dirname(currentPath);
-
-    if (parentPath === currentPath) {
-      return false;
-    }
-
-    currentPath = parentPath;
-  }
-};
 
 const isReadableDirectory = (path: string, fs: PathBrowserFs) => {
   try {
