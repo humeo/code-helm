@@ -9,6 +9,9 @@ const createServices = () => {
       closeSession: () => ({ reply: { content: "session closed" } }),
       syncSession: () => ({ reply: { content: "session synced" } }),
       resumeSession: () => ({ reply: { content: "session resumed" } }),
+      autocompleteSessionPaths() {
+        return [{ name: "/tmp/workspace/example", value: "/tmp/workspace/example" }];
+      },
       autocompleteResumeSessions() {
         return [{ name: "codex-thread-7", value: "codex-thread-7" }];
       },

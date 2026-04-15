@@ -3021,6 +3021,15 @@ export const createControlChannelServices = ({
         },
       };
     },
+    async autocompleteSessionPaths({ guildId, channelId }) {
+      const contextError = requireConfiguredControlChannel(config, guildId, channelId);
+
+      if (contextError) {
+        return [];
+      }
+
+      return [];
+    },
     async autocompleteResumeSessions({ guildId, channelId, path, query }) {
       const contextError = requireConfiguredControlChannel(config, guildId, channelId);
 
