@@ -37,6 +37,7 @@ type ListPathBrowserDirectoryChoicesInput = {
   homeDir?: string;
   fs?: PathBrowserFs;
   limit?: number;
+  resolvedState?: PathBrowserState;
 };
 
 type BuildPathBrowserChoicesInput = {
@@ -51,6 +52,7 @@ type PathBrowserState = {
   currentLabel: string;
   currentValue: string;
   parentValue: string | null;
+  nameFilter: string;
 };
 
 const defaultPathBrowserFs: PathBrowserFs = {
@@ -86,14 +88,51 @@ const normalizeRequestedBrowserPath = ({
   inputPath?: string;
   homeDir: string;
 }) => {
+  const normalizedHomeDir = normalizeSessionPathInput("~", homeDir);
+
   if (!inputPath || inputPath.trim().length === 0) {
-    return normalizeSessionPathInput("~", homeDir);
+    return {
+      requestedPath: normalizedHomeDir,
+      nameFilter: "",
+    };
   }
 
+  const trimmed = inputPath.trim();
+
+  if (trimmed === "~" || trimmed.endsWith("/")) {
+    try {
+      return {
+        requestedPath: normalizeSessionPathInput(trimmed, homeDir),
+        nameFilter: "",
+      };
+    } catch {
+      return {
+        requestedPath: normalizedHomeDir,
+        nameFilter: "",
+      };
+    }
+  }
+
+  const lastSlashIndex = trimmed.lastIndexOf("/");
+  const parentInput =
+    lastSlashIndex >= 0
+      ? trimmed.slice(0, lastSlashIndex + 1)
+      : "~";
+  const nameFilter =
+    lastSlashIndex >= 0
+      ? trimmed.slice(lastSlashIndex + 1)
+      : trimmed;
+
   try {
-    return normalizeSessionPathInput(inputPath, homeDir);
+    return {
+      requestedPath: normalizeSessionPathInput(parentInput, homeDir),
+      nameFilter,
+    };
   } catch {
-    return normalizeSessionPathInput("~", homeDir);
+    return {
+      requestedPath: normalizedHomeDir,
+      nameFilter,
+    };
   }
 };
 
@@ -116,7 +155,7 @@ export const resolvePathBrowserState = ({
   fs = defaultPathBrowserFs,
 }: ResolvePathBrowserStateInput): PathBrowserState | null => {
   const normalizedHomeDir = normalizeSessionPathInput("~", homeDir);
-  const requestedPath = normalizeRequestedBrowserPath({
+  const { requestedPath, nameFilter } = normalizeRequestedBrowserPath({
     inputPath,
     homeDir: normalizedHomeDir,
   });
@@ -159,6 +198,7 @@ export const resolvePathBrowserState = ({
     currentLabel,
     currentValue,
     parentValue,
+    nameFilter,
   };
 };
 
@@ -167,16 +207,20 @@ export const listPathBrowserDirectoryChoices = ({
   homeDir = homedir(),
   fs = defaultPathBrowserFs,
   limit = defaultPathBrowserChoiceLimit,
+  resolvedState,
 }: ListPathBrowserDirectoryChoicesInput): PathBrowserChoice[] => {
-  const state = resolvePathBrowserState({
-    inputPath: currentPath,
-    homeDir,
-    fs,
-  });
+  const state = resolvedState
+    ?? resolvePathBrowserState({
+      inputPath: currentPath,
+      homeDir,
+      fs,
+    });
 
   if (!state || limit <= 0) {
     return [];
   }
+
+  const normalizedNameFilter = state.nameFilter.toLocaleLowerCase();
 
   const choices: PathBrowserChoice[] = [
     {
@@ -207,6 +251,9 @@ export const listPathBrowserDirectoryChoices = ({
   const childChoices = entries
     .filter((entry) => entry.isDirectory())
     .filter((entry) => !isHiddenDirectoryName(entry.name))
+    .filter((entry) =>
+      normalizedNameFilter.length === 0
+      || entry.name.toLocaleLowerCase().includes(normalizedNameFilter))
     .sort((left, right) => directorySortCollator.compare(left.name, right.name))
     .map((entry) => ({
       entry,
@@ -242,5 +289,6 @@ export const buildPathBrowserChoices = ({
     homeDir,
     fs,
     limit,
+    resolvedState: state,
   });
 };

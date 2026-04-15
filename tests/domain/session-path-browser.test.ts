@@ -49,6 +49,49 @@ describe("buildPathBrowserChoices", () => {
     }
   });
 
+  test("partial home input filters matching child directories", () => {
+    const homeDir = createTempHomeDir();
+
+    try {
+      mkdirSync(join(homeDir, "code-github"));
+      mkdirSync(join(homeDir, "Downloads"));
+      mkdirSync(join(homeDir, "Music"));
+
+      expect(buildPathBrowserChoices({
+        inputPath: "d",
+        homeDir,
+      })).toEqual([
+        { name: ".", value: "~" },
+        { name: "code-github/", value: "~/code-github/" },
+        { name: "Downloads/", value: "~/Downloads/" },
+      ]);
+    } finally {
+      rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  test("partial nested input filters matching child directories", () => {
+    const homeDir = createTempHomeDir();
+
+    try {
+      mkdirSync(join(homeDir, "code-github", "code-helm"), { recursive: true });
+      mkdirSync(join(homeDir, "code-github", "codex"), { recursive: true });
+      mkdirSync(join(homeDir, "code-github", "docs"), { recursive: true });
+
+      expect(buildPathBrowserChoices({
+        inputPath: "code-github/co",
+        homeDir,
+      })).toEqual([
+        { name: ".", value: "~/code-github" },
+        { name: "..", value: "~" },
+        { name: "code-helm/", value: "~/code-github/code-helm/" },
+        { name: "codex/", value: "~/code-github/codex/" },
+      ]);
+    } finally {
+      rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
   test("nonexistent paths fall back to the nearest valid parent", () => {
     const homeDir = createTempHomeDir();
 

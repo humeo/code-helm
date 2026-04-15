@@ -923,6 +923,7 @@ test("path autocomplete starts from home directory choices", async () => {
     mkdirSync(join(homeDir, "code-github", "code-helm"), { recursive: true });
     mkdirSync(join(homeDir, "code-github", "codex"), { recursive: true });
     mkdirSync(join(homeDir, "Downloads"));
+    mkdirSync(join(homeDir, "Music"));
 
     const { services, calls } = createControlChannelServicesFixture({
       homeDir,
@@ -939,6 +940,7 @@ test("path autocomplete starts from home directory choices", async () => {
       { name: ".", value: "~" },
       { name: "code-github/", value: "~/code-github/" },
       { name: "Downloads/", value: "~/Downloads/" },
+      { name: "Music/", value: "~/Music/" },
     ]);
     expect(calls.listThreads).toEqual([]);
 
@@ -959,12 +961,11 @@ test("path autocomplete starts from home directory choices", async () => {
       actorId: "owner-1",
       guildId: "guild-1",
       channelId: "control-1",
-      query: "code-github/",
+      query: "d",
     })).toEqual([
-      { name: ".", value: "~/code-github" },
-      { name: "..", value: "~" },
-      { name: "code-helm/", value: "~/code-github/code-helm/" },
-      { name: "codex/", value: "~/code-github/codex/" },
+      { name: ".", value: "~" },
+      { name: "code-github/", value: "~/code-github/" },
+      { name: "Downloads/", value: "~/Downloads/" },
     ]);
   } finally {
     rmSync(homeDir, { recursive: true, force: true });
