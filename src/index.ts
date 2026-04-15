@@ -3121,7 +3121,7 @@ export const createControlChannelServices = ({
           const rollbackBinding = async (thread: BoundSessionThread) => {
             sessionRepo.markDeleted(thread.id);
           };
-          const displayPath = formatSessionPathForDisplay(resolvedPath.cwd);
+          const displayPath = formatSessionPathForDisplay(resolvedPath.cwd, homeDir);
           const thread = await createAttachedSessionThread({
             client: discord,
             controlChannelId: config.discord.controlChannelId,
@@ -3165,7 +3165,7 @@ export const createControlChannelServices = ({
               sessionRepo.updateLifecycleState(previousThreadId, previousLifecycleState);
             }
           };
-          const displayPath = formatSessionPathForDisplay(resolvedPath.cwd);
+          const displayPath = formatSessionPathForDisplay(resolvedPath.cwd, homeDir);
           const thread = await createAttachedSessionThread({
             client: discord,
             controlChannelId: config.discord.controlChannelId,
