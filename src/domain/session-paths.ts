@@ -9,7 +9,7 @@ const isHiddenDirectoryName = (name: string) => {
   return name.startsWith(".") && name !== "." && name !== "..";
 };
 
-const pathContainsHiddenDirectory = (path: string) => {
+export const pathContainsHiddenDirectory = (path: string) => {
   let currentPath = path;
 
   while (true) {
@@ -41,39 +41,21 @@ export const normalizeSessionPathInput = (
 
   if (trimmed.startsWith("~")) {
     if (trimmed === "~") {
-      const resolvedHomeDir = resolve(homeDir);
-
-      if (pathContainsHiddenDirectory(resolvedHomeDir)) {
-        throw new Error("Session path must not include hidden directories");
-      }
-
-      return resolvedHomeDir;
+      return resolve(homeDir);
     }
 
     if (!trimmed.startsWith("~/")) {
       throw new Error("Session path must be absolute or start with ~/");
     }
 
-    const resolvedPath = resolve(homeDir, trimmed.slice(2));
-
-    if (pathContainsHiddenDirectory(resolvedPath)) {
-      throw new Error("Session path must not include hidden directories");
-    }
-
-    return resolvedPath;
+    return resolve(homeDir, trimmed.slice(2));
   }
 
   if (!isAbsolute(trimmed)) {
     throw new Error("Session path must be absolute or start with ~/");
   }
 
-  const resolvedPath = resolve(trimmed);
-
-  if (pathContainsHiddenDirectory(resolvedPath)) {
-    throw new Error("Session path must not include hidden directories");
-  }
-
-  return resolvedPath;
+  return resolve(trimmed);
 };
 
 export const formatSessionPathForDisplay = (

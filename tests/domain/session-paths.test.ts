@@ -4,6 +4,7 @@ import {
   formatSessionPathForDisplay,
   normalizeBootstrapThreadTitle,
   normalizeSessionPathInput,
+  pathContainsHiddenDirectory,
 } from "../../src/domain/session-paths";
 
 describe("normalizeSessionPathInput", () => {
@@ -21,20 +22,19 @@ describe("normalizeSessionPathInput", () => {
     );
   });
 
-  test("rejects hidden directories in home-relative paths", () => {
+  test("preserves hidden directories as normalized paths", () => {
     const homeDir = join("/Users", "koltenluca");
 
-    expect(() => normalizeSessionPathInput("~/.codex", homeDir)).toThrow(
-      /hidden directories/i,
+    expect(normalizeSessionPathInput("~/.codex/work", homeDir)).toBe(
+      "/Users/koltenluca/.codex/work",
     );
   });
 
-  test("rejects descendants inside hidden directories", () => {
-    const homeDir = join("/Users", "koltenluca");
-
-    expect(() => normalizeSessionPathInput("~/.codex/work", homeDir)).toThrow(
-      /hidden directories/i,
+  test("detects hidden directory segments for policy checks", () => {
+    expect(pathContainsHiddenDirectory("/Users/koltenluca/.codex/work")).toBe(
+      true,
     );
+    expect(pathContainsHiddenDirectory("/Users/koltenluca/work")).toBe(false);
   });
 
   test("rejects relative paths", () => {

@@ -195,4 +195,26 @@ describe("buildPathBrowserChoices", () => {
       rmSync(homeDir, { recursive: true, force: true });
     }
   });
+
+  test("absolute hidden path input falls back to the nearest visible parent", () => {
+    const homeDir = createTempHomeDir();
+
+    try {
+      const workspaceDir = join(homeDir, "workspace");
+
+      mkdirSync(join(workspaceDir, ".hidden", "nested"), { recursive: true });
+      mkdirSync(join(workspaceDir, "visible"));
+
+      expect(buildPathBrowserChoices({
+        inputPath: `${workspaceDir}/.hidden/nested/`,
+        homeDir,
+      })).toEqual([
+        { name: "Select ~/workspace", value: "~/workspace" },
+        { name: "../", value: "~" },
+        { name: "visible/", value: "~/workspace/visible/" },
+      ]);
+    } finally {
+      rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
 });

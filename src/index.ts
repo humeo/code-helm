@@ -58,6 +58,7 @@ import {
   formatSessionPathForDisplay,
   normalizeBootstrapThreadTitle,
   normalizeSessionPathInput,
+  pathContainsHiddenDirectory,
 } from "./domain/session-paths";
 import {
   formatRelativeThreadTime,
@@ -2384,6 +2385,20 @@ const normalizeSessionPathForRuntime = (path: string, homeDir: string = homedir(
   }
 };
 
+const validateSessionPathPolicy = (cwd: string) => {
+  if (pathContainsHiddenDirectory(cwd)) {
+    return {
+      ok: false as const,
+      message: "Session path must not include hidden directories.",
+    };
+  }
+
+  return {
+    ok: true as const,
+    cwd,
+  };
+};
+
 const validateSessionPathDirectory = (cwd: string) => {
   if (!existsSync(cwd)) {
     return {
@@ -2417,7 +2432,16 @@ const resolveSessionPathForCommand = (path: string, homeDir: string = homedir())
     };
   }
 
-  const directory = validateSessionPathDirectory(normalized.cwd);
+  const policy = validateSessionPathPolicy(normalized.cwd);
+
+  if (!policy.ok) {
+    return {
+      ok: false as const,
+      result: resolveSessionPathValidationError(policy.message),
+    };
+  }
+
+  const directory = validateSessionPathDirectory(policy.cwd);
 
   if (!directory.ok) {
     return {
@@ -2446,7 +2470,13 @@ const resolveSessionPathForAutocomplete = (
     return undefined;
   }
 
-  const directory = validateSessionPathDirectory(normalized.cwd);
+  const policy = validateSessionPathPolicy(normalized.cwd);
+
+  if (!policy.ok) {
+    return undefined;
+  }
+
+  const directory = validateSessionPathDirectory(policy.cwd);
 
   return directory.ok ? directory.cwd : undefined;
 };
