@@ -6,6 +6,10 @@ import type {
 } from "../src/codex/protocol-types";
 import type { AppConfig } from "../src/config";
 import type { SessionResumeState } from "../src/domain/types";
+import { createDatabaseClient } from "../src/db/client";
+import { applyMigrations } from "../src/db/migrate";
+import { createWorkdirRepo } from "../src/db/repos/workdirs";
+import { createWorkspaceRepo } from "../src/db/repos/workspaces";
 import {
   applyManagedTurnCompletion,
   applyStatusCardUpdate,
@@ -48,6 +52,7 @@ import {
   upsertStreamingTranscriptMessage,
   buildResumeSessionAutocompleteChoices,
   describeCodexThreadStatus,
+  resolveLegacyWorkspaceBootstrap,
   type EditableStatusCardMessage,
   filterConfiguredWorkdirs,
   findReusableStatusCardMessage,
@@ -64,6 +69,7 @@ import {
   shouldShowDiscordTypingIndicator,
   shouldSkipStaleLiveTurnProcessUpdate,
   summarizeStatusActivity,
+  seedLegacyWorkspaceBootstrap,
   tryRecoverStatusCardMessage,
   upsertStatusCardMessage,
   handleApprovalInteraction,
@@ -164,6 +170,32 @@ const createAppConfig = (): AppConfig => ({
     id: "workspace-1",
     name: "Workspace",
   },
+});
+
+test("legacy workspace bootstrap seeds workdirs on a fresh database", () => {
+  const db = createDatabaseClient(":memory:");
+  applyMigrations(db);
+
+  const bootstrap = resolveLegacyWorkspaceBootstrap({
+    WORKSPACE_ROOT: "/tmp/workspace",
+    WORKDIRS_JSON:
+      '[{"id":"api","label":"API","absolutePath":"/tmp/workspace/api"}]',
+  });
+
+  seedLegacyWorkspaceBootstrap(db, createAppConfig(), bootstrap);
+
+  const workspaceRepo = createWorkspaceRepo(db);
+  const workdirRepo = createWorkdirRepo(db);
+
+  expect(workspaceRepo.getById("workspace-1")).toMatchObject({
+    rootPath: "/tmp/workspace",
+  });
+  expect(workdirRepo.getById("api")).toMatchObject({
+    workspaceId: "workspace-1",
+    absolutePath: "/tmp/workspace/api",
+  });
+
+  db.close();
 });
 
 const createResumeOutcome = (

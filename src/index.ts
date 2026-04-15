@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { isAbsolute } from "node:path";
 import {
   ActionRowBuilder,
   ButtonBuilder,
@@ -13,6 +14,7 @@ import {
   type Client,
   type RESTPostAPIChatInputApplicationCommandsJSONBody,
 } from "discord.js";
+import { z } from "zod";
 import { JsonRpcClient } from "./codex/jsonrpc-client";
 import {
   approvalRequestMethods,
@@ -35,6 +37,7 @@ import { createDatabaseClient } from "./db/client";
 import { applyMigrations } from "./db/migrate";
 import { createApprovalRepo, type ApprovalRecord } from "./db/repos/approvals";
 import { createSessionRepo, type SessionRecord } from "./db/repos/sessions";
+import { createWorkdirRepo } from "./db/repos/workdirs";
 import { createWorkspaceRepo } from "./db/repos/workspaces";
 import type { ApprovalStatus } from "./domain/approval-service";
 import { shouldDegradeDiscordToReadOnly } from "./domain/external-modification";
@@ -93,6 +96,78 @@ type WorkdirConfig = {
   id: string;
   label: string;
   absolutePath: string;
+};
+
+type LegacyWorkspaceBootstrap = {
+  workspaceRoot: string;
+  workdirs: WorkdirConfig[];
+};
+
+const parseLegacyWorkspaceBootstrap = (
+  env: Record<string, string | undefined>,
+): LegacyWorkspaceBootstrap | null => {
+  const workspaceRoot = env.WORKSPACE_ROOT;
+  const serializedWorkdirs = env.WORKDIRS_JSON;
+
+  if (workspaceRoot === undefined && serializedWorkdirs === undefined) {
+    return null;
+  }
+
+  if (workspaceRoot === undefined || serializedWorkdirs === undefined) {
+    throw new Error("WORKSPACE_ROOT and WORKDIRS_JSON must both be set");
+  }
+
+  if (!isAbsolute(workspaceRoot)) {
+    throw new Error("WORKSPACE_ROOT must be an absolute path");
+  }
+
+  let parsed: unknown;
+
+  try {
+    parsed = JSON.parse(serializedWorkdirs);
+  } catch {
+    throw new Error("WORKDIRS_JSON must be valid JSON");
+  }
+
+  const workdirs = z.array(
+    z.object({
+      id: z.string().min(1),
+      label: z.string().min(1),
+      absolutePath: z.string().min(1),
+    }),
+  ).min(1).parse(parsed);
+  const seenIds = new Set<string>();
+  const seenPaths = new Set<string>();
+
+  for (const workdir of workdirs) {
+    if (!isAbsolute(workdir.absolutePath)) {
+      throw new Error("WORKDIRS_JSON paths must be absolute");
+    }
+
+    if (seenIds.has(workdir.id)) {
+      throw new Error(`WORKDIRS_JSON contains duplicate workdir id: ${workdir.id}`);
+    }
+
+    if (seenPaths.has(workdir.absolutePath)) {
+      throw new Error(
+        `WORKDIRS_JSON contains duplicate workdir path: ${workdir.absolutePath}`,
+      );
+    }
+
+    seenIds.add(workdir.id);
+    seenPaths.add(workdir.absolutePath);
+  }
+
+  return {
+    workspaceRoot,
+    workdirs,
+  };
+};
+
+export const resolveLegacyWorkspaceBootstrap = (
+  env: Record<string, string | undefined>,
+) => {
+  return parseLegacyWorkspaceBootstrap(env);
 };
 
 type ApprovalAction = "approve" | "decline" | "cancel";
@@ -2159,35 +2234,36 @@ export const syncManagedSession = async ({
   return outcome;
 };
 
-const ensureWorkspaceSeeded = (
+export const seedLegacyWorkspaceBootstrap = (
   db: Database,
   config: AppConfig,
+  bootstrap: LegacyWorkspaceBootstrap | null,
 ) => {
   const workspaceRepo = createWorkspaceRepo(db);
+  const workdirRepo = createWorkdirRepo(db);
+
+  if (!bootstrap) {
+    return;
+  }
 
   if (!workspaceRepo.getById(config.workspace.id)) {
     workspaceRepo.insert({
       id: config.workspace.id,
       name: config.workspace.name,
-      rootPath: "/",
+      rootPath: bootstrap.workspaceRoot,
     });
   }
-};
 
-const loadConfiguredWorkdirs = (db: Database): WorkdirConfig[] => {
-  const rows = db.prepare(
-    "SELECT id, label, absolute_path FROM workdirs ORDER BY label, id",
-  ).all() as Array<{
-    id: string;
-    label: string;
-    absolute_path: string;
-  }>;
-
-  return rows.map((row) => ({
-    id: row.id,
-    label: row.label,
-    absolutePath: row.absolute_path,
-  }));
+  for (const workdir of bootstrap.workdirs) {
+    if (!workdirRepo.getById(workdir.id)) {
+      workdirRepo.insert({
+        id: workdir.id,
+        workspaceId: config.workspace.id,
+        label: workdir.label,
+        absolutePath: workdir.absolutePath,
+      });
+    }
+  }
 };
 
 const requireConfiguredControlChannel = (
@@ -3397,11 +3473,12 @@ export const startCodeHelm = async (
   env: Record<string, string | undefined> = Bun.env,
 ) => {
   const config = parseConfig(env);
+  const legacyWorkspaceBootstrap = resolveLegacyWorkspaceBootstrap(env);
   const db = createDatabaseClient(config.databasePath);
 
   applyMigrations(db);
-  ensureWorkspaceSeeded(db, config);
-  const configuredWorkdirs = loadConfiguredWorkdirs(db);
+  seedLegacyWorkspaceBootstrap(db, config, legacyWorkspaceBootstrap);
+  const configuredWorkdirs = legacyWorkspaceBootstrap?.workdirs ?? [];
 
   const sessionRepo = createSessionRepo(db);
   const approvalRepo = createApprovalRepo(db);
