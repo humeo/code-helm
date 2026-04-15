@@ -155,11 +155,11 @@ const getHandleControlChannelAutocomplete = () => {
     .handleControlChannelAutocomplete;
 };
 
-test("/session-new delegates with the configured workdir", async () => {
+test("/session-new forwards path", async () => {
   const { calls, services } = createServices();
   const { interaction, replies, followsUps, defers } = createInteraction({
     commandName: "session-new",
-    options: { workdir: "wd-42" },
+    options: { path: "wd-42" },
   });
 
   const handled = await handleControlChannelCommand(interaction as never, services);
@@ -170,7 +170,7 @@ test("/session-new delegates with the configured workdir", async () => {
       actorId: "u1",
       guildId: "g1",
       channelId: "c1",
-      workdirId: "wd-42",
+      path: "wd-42",
     },
   ]);
   expect(defers).toEqual([null]);
@@ -178,7 +178,7 @@ test("/session-new delegates with the configured workdir", async () => {
   expect(followsUps).toEqual([{ content: "session created" }]);
 });
 
-test("command registration removes deprecated command names and keeps session-new workdir choices", () => {
+test("command registration removes deprecated command names and uses path options", () => {
   const commandsByName = new Map(
     buildControlChannelCommands([
       {
@@ -199,24 +199,14 @@ test("command registration removes deprecated command names and keeps session-ne
   expect(commandsByName.get("session-new")?.options).toEqual([
     {
       type: 3,
-      name: "workdir",
-      description: "Configured workdir identifier",
+      name: "path",
+      description: "Path to the workspace directory",
       required: true,
-      choices: [
-        {
-          name: "Code Agent Helm Example (example)",
-          value: "example",
-        },
-        {
-          name: "Web App (web)",
-          value: "web",
-        },
-      ],
     },
   ]);
 });
 
-test("command registration locks /session-resume to workdir and session autocomplete", () => {
+test("command registration locks /session-resume to path and session autocomplete", () => {
   const commandsByName = new Map(
     controlChannelCommands.map((command) => [command.name, command]),
   );
@@ -228,10 +218,9 @@ test("command registration locks /session-resume to workdir and session autocomp
   expect(commandsByName.get("session-resume")?.options).toEqual([
     {
       type: 3,
-      name: "workdir",
-      description: "Configured workdir identifier",
+      name: "path",
+      description: "Path to the workspace directory",
       required: true,
-      autocomplete: true,
     },
     {
       type: 3,
@@ -243,53 +232,41 @@ test("command registration locks /session-resume to workdir and session autocomp
   ]);
 });
 
-test("/session-resume workdir autocomplete uses configured workdirs", async () => {
-  const { interaction, responses } = createAutocompleteInteraction({
-    focusedOption: "workdir",
-    focusedValue: "exa",
-  });
-  const calls = {
-    autocompleteResumeWorkdirs: [] as Array<Record<string, string>>,
-  };
-  const services = {
-    autocompleteResumeWorkdirs(input: Record<string, string>) {
-      calls.autocompleteResumeWorkdirs.push(input);
-      return [
-        { name: "Code Agent Helm Example (example)", value: "example" },
-      ];
-    },
-  };
-
-  const handleControlChannelAutocomplete =
-    getHandleControlChannelAutocomplete();
-  expect(typeof handleControlChannelAutocomplete).toBe("function");
-  if (typeof handleControlChannelAutocomplete !== "function") {
-    throw new Error("handleControlChannelAutocomplete export is missing");
-  }
-
-  await handleControlChannelAutocomplete(
-    { ...interaction, commandName: "session-resume" } as never,
-    services as never,
+test("only /session-resume session option uses autocomplete", async () => {
+  const commandsByName = new Map(
+    controlChannelCommands.map((command) => [command.name, command]),
   );
 
-  expect(calls.autocompleteResumeWorkdirs).toEqual([
+  expect(commandsByName.get("session-new")?.options).toEqual([
     {
-      actorId: "u1",
-      guildId: "g1",
-      channelId: "c1",
-      query: "exa",
+      type: 3,
+      name: "path",
+      description: "Path to the workspace directory",
+      required: true,
     },
   ]);
-  expect(responses).toEqual([
-    [{ name: "Code Agent Helm Example (example)", value: "example" }],
+  expect(commandsByName.get("session-resume")?.options).toEqual([
+    {
+      type: 3,
+      name: "path",
+      description: "Path to the workspace directory",
+      required: true,
+    },
+    {
+      type: 3,
+      name: "session",
+      description: "Codex session identifier to attach",
+      required: true,
+      autocomplete: true,
+    },
   ]);
 });
 
-test("/session-resume session autocomplete uses the selected workdir", async () => {
+test("/session-resume path autocomplete reads the typed path", async () => {
   const { interaction, responses } = createAutocompleteInteraction({
     focusedOption: "session",
-    focusedValue: "codex",
-    options: { workdir: "example" },
+    focusedValue: "exa",
+    options: { path: "workspace/example" },
   });
   const calls = {
     autocompleteResumeSessions: [] as Array<Record<string, string>>,
@@ -320,7 +297,51 @@ test("/session-resume session autocomplete uses the selected workdir", async () 
       actorId: "u1",
       guildId: "g1",
       channelId: "c1",
-      workdirId: "example",
+      path: "workspace/example",
+      query: "exa",
+    },
+  ]);
+  expect(responses).toEqual([
+    [{ name: "codex-thread-7", value: "codex-thread-7" }],
+  ]);
+});
+
+test("/session-resume session autocomplete uses the selected path", async () => {
+  const { interaction, responses } = createAutocompleteInteraction({
+    focusedOption: "session",
+    focusedValue: "codex",
+    options: { path: "example" },
+  });
+  const calls = {
+    autocompleteResumeSessions: [] as Array<Record<string, string>>,
+  };
+  const services = {
+    autocompleteResumeSessions(input: Record<string, string>) {
+      calls.autocompleteResumeSessions.push(input);
+      return [
+        { name: "codex-thread-7", value: "codex-thread-7" },
+      ];
+    },
+  };
+
+  const handleControlChannelAutocomplete =
+    getHandleControlChannelAutocomplete();
+  expect(typeof handleControlChannelAutocomplete).toBe("function");
+  if (typeof handleControlChannelAutocomplete !== "function") {
+    throw new Error("handleControlChannelAutocomplete export is missing");
+  }
+
+  await handleControlChannelAutocomplete(
+    { ...interaction, commandName: "session-resume" } as never,
+    services as never,
+  );
+
+  expect(calls.autocompleteResumeSessions).toEqual([
+    {
+      actorId: "u1",
+      guildId: "g1",
+      channelId: "c1",
+      path: "example",
       query: "codex",
     },
   ]);
@@ -371,11 +392,11 @@ test("/session-sync defers and delegates using the current thread context", asyn
   expect(followsUps).toEqual([{ content: "session synced" }]);
 });
 
-test("/session-resume extracts workdir and session, defers, and delegates", async () => {
+test("/session-resume forwards path and codexThreadId", async () => {
   const { calls, services } = createServices();
   const { interaction, replies, followsUps, defers } = createInteraction({
     commandName: "session-resume",
-    options: { workdir: "example", session: "codex-thread-7" },
+    options: { path: "example", session: "codex-thread-7" },
   });
 
   const handled = await handleControlChannelCommand(interaction as never, services);
@@ -386,7 +407,7 @@ test("/session-resume extracts workdir and session, defers, and delegates", asyn
       actorId: "u1",
       guildId: "g1",
       channelId: "c1",
-      workdirId: "example",
+      path: "example",
       codexThreadId: "codex-thread-7",
     },
   ]);

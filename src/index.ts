@@ -2623,19 +2623,19 @@ export const createControlChannelServices = ({
   readThreadForSnapshotReconciliation,
 }: CreateControlChannelServicesDeps): DiscordCommandServices => {
   return {
-    async createSession({ actorId, guildId, channelId, workdirId }) {
+    async createSession({ actorId, guildId, channelId, path }) {
       const contextError = requireConfiguredControlChannel(config, guildId, channelId);
 
       if (contextError) {
         return contextError;
       }
 
-      const workdir = findConfiguredWorkdir(configuredWorkdirs, workdirId);
+      const workdir = findConfiguredWorkdir(configuredWorkdirs, path);
 
       if (!workdir) {
         return {
           reply: {
-            content: `Unknown workdir \`${workdirId}\`.`,
+            content: `Unknown workdir \`${path}\`.`,
             ephemeral: true,
           },
         };
@@ -2806,20 +2806,15 @@ export const createControlChannelServices = ({
 
       return filterConfiguredWorkdirs(configuredWorkdirs, query);
     },
-    async autocompleteResumeSessions({
-      guildId,
-      channelId,
-      workdirId,
-      query,
-    }) {
+    async autocompleteResumeSessions({ guildId, channelId, path, query }) {
       const contextError = requireConfiguredControlChannel(config, guildId, channelId);
 
       if (contextError) {
         return [];
       }
 
-      const workdir = workdirId
-        ? findConfiguredWorkdir(configuredWorkdirs, workdirId)
+      const workdir = path
+        ? findConfiguredWorkdir(configuredWorkdirs, path)
         : undefined;
 
       return buildResumeSessionAutocompleteChoices({
@@ -2828,19 +2823,19 @@ export const createControlChannelServices = ({
         workdir,
       });
     },
-    async resumeSession({ actorId, guildId, channelId, workdirId, codexThreadId }) {
+    async resumeSession({ actorId, guildId, channelId, path, codexThreadId }) {
       const contextError = requireConfiguredControlChannel(config, guildId, channelId);
 
       if (contextError) {
         return contextError;
       }
 
-      const workdir = findConfiguredWorkdir(configuredWorkdirs, workdirId);
+      const workdir = findConfiguredWorkdir(configuredWorkdirs, path);
 
       if (!workdir) {
         return {
           reply: {
-            content: `Unknown workdir \`${workdirId}\`.`,
+            content: `Unknown workdir \`${path}\`.`,
             ephemeral: true,
           },
         };

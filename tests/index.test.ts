@@ -747,7 +747,7 @@ test("create session does not render an initial idle status card", async () => {
     actorId: "owner-1",
     guildId: "guild-1",
     channelId: "control-1",
-    workdirId: "api",
+    path: "api",
   });
 
   expect(calls.updateStatusCard).toEqual([]);
@@ -771,7 +771,7 @@ test("unmanaged session with matching workdir creates a new Discord thread and s
     actorId: "owner-1",
     guildId: "guild-1",
     channelId: "control-1",
-    workdirId: "api",
+    path: "api",
     codexThreadId: "codex-thread-1",
   });
 
@@ -812,7 +812,7 @@ test("archived managed session syncs and reopens the same Discord thread", async
     actorId: "owner-1",
     guildId: "guild-1",
     channelId: "control-1",
-    workdirId: "api",
+    path: "api",
     codexThreadId: "codex-thread-1",
   });
 
@@ -839,7 +839,7 @@ test("active managed session reuses the existing Discord thread instead of creat
     actorId: "owner-1",
     guildId: "guild-1",
     channelId: "control-1",
-    workdirId: "api",
+    path: "api",
     codexThreadId: "codex-thread-1",
   });
 
@@ -867,7 +867,7 @@ test("deleted or unusable managed thread creates a replacement Discord thread th
     actorId: "owner-1",
     guildId: "guild-1",
     channelId: "control-1",
-    workdirId: "api",
+    path: "api",
     codexThreadId: "codex-thread-1",
   });
 
@@ -907,7 +907,7 @@ test("attach rejects a codex thread whose cwd does not match the selected workdi
     actorId: "owner-1",
     guildId: "guild-1",
     channelId: "control-1",
-    workdirId: "api",
+    path: "api",
     codexThreadId: "codex-thread-1",
   });
 
@@ -932,7 +932,7 @@ test("attach surfaces snapshot read failures as structured command errors", asyn
     actorId: "owner-1",
     guildId: "guild-1",
     channelId: "control-1",
-    workdirId: "api",
+    path: "api",
     codexThreadId: "codex-thread-1",
   });
 
@@ -954,7 +954,7 @@ test("create attach rolls back the new binding when starter relay fails", async 
     actorId: "owner-1",
     guildId: "guild-1",
     channelId: "control-1",
-    workdirId: "api",
+    path: "api",
     codexThreadId: "codex-thread-1",
   });
 
@@ -989,7 +989,7 @@ test("replacement attach restores the original binding when starter relay fails"
     actorId: "owner-1",
     guildId: "guild-1",
     channelId: "control-1",
-    workdirId: "api",
+    path: "api",
     codexThreadId: "codex-thread-1",
   });
 
@@ -1051,7 +1051,7 @@ test("waiting-approval create attach resumes the Discord thread instead of doing
     actorId: "owner-1",
     guildId: "guild-1",
     channelId: "control-1",
-    workdirId: "api",
+    path: "api",
     codexThreadId: "codex-thread-1",
   });
 
@@ -1103,7 +1103,7 @@ test("waiting-approval replacement attach resumes the replacement thread instead
     actorId: "owner-1",
     guildId: "guild-1",
     channelId: "control-1",
-    workdirId: "api",
+    path: "api",
     codexThreadId: "codex-thread-1",
   });
 
@@ -1126,7 +1126,7 @@ test("untrusted create attach rolls back the new discord thread into a deleted b
     actorId: "owner-1",
     guildId: "guild-1",
     channelId: "control-1",
-    workdirId: "api",
+    path: "api",
     codexThreadId: "codex-thread-1",
   });
 
@@ -1160,7 +1160,7 @@ test("untrusted replacement attach rebinds back to the original deleted thread",
     actorId: "owner-1",
     guildId: "guild-1",
     channelId: "control-1",
-    workdirId: "api",
+    path: "api",
     codexThreadId: "codex-thread-1",
   });
 
@@ -1197,7 +1197,7 @@ test("attached busy sessions stay non-writable", async () => {
     actorId: "owner-1",
     guildId: "guild-1",
     channelId: "control-1",
-    workdirId: "api",
+    path: "api",
     codexThreadId: "codex-thread-1",
   });
 
@@ -1218,7 +1218,7 @@ test("attached degraded or error sessions stay read-only", async () => {
     actorId: "owner-1",
     guildId: "guild-1",
     channelId: "control-1",
-    workdirId: "api",
+    path: "api",
     codexThreadId: "codex-thread-1",
   });
 
@@ -1237,7 +1237,7 @@ test("attached degraded or error sessions stay read-only", async () => {
     actorId: "owner-1",
     guildId: "guild-1",
     channelId: "control-1",
-    workdirId: "api",
+    path: "api",
     codexThreadId: "codex-thread-1",
   });
 

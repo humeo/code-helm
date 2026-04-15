@@ -30,7 +30,7 @@ export type CreateSessionInput = {
   actorId: string;
   guildId: string;
   channelId: string;
-  workdirId: string;
+  path: string;
 };
 
 export type CloseSessionInput = {
@@ -49,7 +49,7 @@ export type ResumeSessionInput = {
   actorId: string;
   guildId: string;
   channelId: string;
-  workdirId: string;
+  path: string;
   codexThreadId: string;
 };
 
@@ -62,7 +62,7 @@ export type ResumeSessionAutocompleteInput = {
   actorId: string;
   guildId: string;
   channelId: string;
-  workdirId?: string;
+  path?: string;
   query: string;
 };
 
@@ -94,52 +94,28 @@ const guildOnlyCommand = (name: string, description: string) => {
     .setDMPermission(false);
 };
 
-const workdirOptionDescription = "Configured workdir identifier";
+const pathOptionDescription = "Path to the workspace directory";
 const resumeOptionDescription = "Codex session identifier to attach";
 
-type CommandWorkdir = {
-  id: string;
-  label: string;
-};
-
-const addWorkdirOption = (
-  command: SlashCommandBuilder,
-  workdirs: CommandWorkdir[],
-) => {
-  return command.addStringOption((option) => {
-    option
-      .setName("workdir")
-      .setDescription(workdirOptionDescription)
-      .setRequired(true);
-
-    for (const workdir of workdirs.slice(0, 25)) {
-      option.addChoices({
-        name: `${workdir.label} (${workdir.id})`,
-        value: workdir.id,
-      });
-    }
-
-    return option;
-  });
-};
-
 export const buildControlChannelCommands = (
-  workdirs: CommandWorkdir[] = [],
+  _workdirs: Array<{ id: string; label: string }> = [],
 ): RESTPostAPIChatInputApplicationCommandsJSONBody[] =>
   [
-    addWorkdirOption(
-      guildOnlyCommand("session-new", "Create a new session for a workdir"),
-      workdirs,
-    ),
+    guildOnlyCommand("session-new", "Create a new session for a path")
+      .addStringOption((option) =>
+        option
+          .setName("path")
+          .setDescription(pathOptionDescription)
+          .setRequired(true),
+      ),
     guildOnlyCommand("session-close", "Close the current managed session thread"),
     guildOnlyCommand("session-sync", "Sync the current degraded session thread"),
     guildOnlyCommand("session-resume", "Attach Discord to an existing Codex session")
       .addStringOption((option) =>
         option
-          .setName("workdir")
-          .setDescription(workdirOptionDescription)
-          .setRequired(true)
-          .setAutocomplete(true),
+          .setName("path")
+          .setDescription(pathOptionDescription)
+          .setRequired(true),
       )
       .addStringOption((option) =>
         option
@@ -239,7 +215,7 @@ export const handleControlChannelCommand = async (
         interaction,
         await services.createSession({
           ...context,
-          workdirId: interaction.options.getString("workdir", true),
+          path: interaction.options.getString("path", true),
         }),
       );
       return true;
@@ -258,7 +234,7 @@ export const handleControlChannelCommand = async (
         interaction,
         await services.resumeSession({
           ...context,
-          workdirId: interaction.options.getString("workdir", true),
+          path: interaction.options.getString("path", true),
           codexThreadId: interaction.options.getString("session", true),
         }),
       );
@@ -284,16 +260,10 @@ export const handleControlChannelAutocomplete = async (
   let choices: DiscordAutocompleteChoice[] = [];
 
   switch (focusedOption) {
-    case "workdir":
-      choices = await services.autocompleteResumeWorkdirs({
-        ...context,
-        query,
-      });
-      break;
     case "session":
       choices = await services.autocompleteResumeSessions({
         ...context,
-        workdirId: interaction.options.getString("workdir") ?? undefined,
+        path: interaction.options.getString("path") ?? undefined,
         query,
       });
       break;

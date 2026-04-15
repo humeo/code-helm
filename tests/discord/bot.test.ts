@@ -86,11 +86,11 @@ test("createDiscordBot routes autocomplete interactions to the autocomplete hand
     options: {
       getFocused(withName?: boolean) {
         return withName
-          ? { name: "workdir", value: "exa" }
+          ? { name: "session", value: "exa" }
           : "exa";
       },
-      getString() {
-        return null;
+      getString(name: string) {
+        return name === "path" ? "workspace/example" : null;
       },
     },
     async respond(payload: unknown) {
@@ -110,6 +110,6 @@ test("createDiscordBot routes autocomplete interactions to the autocomplete hand
   ]);
 
   expect(responses).toEqual([
-    [{ name: "Code Agent Helm Example (example)", value: "example" }],
+    [{ name: "codex-thread-7", value: "codex-thread-7" }],
   ]);
 });
