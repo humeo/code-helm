@@ -92,6 +92,34 @@ describe("buildPathBrowserChoices", () => {
     }
   });
 
+  test("missing single trailing segment keeps filtering on the nearest valid parent", () => {
+    const homeDir = createTempHomeDir();
+
+    try {
+      mkdirSync(join(homeDir, "code-github", "code-helm"), { recursive: true });
+      mkdirSync(join(homeDir, "code-github", "codex"), { recursive: true });
+      mkdirSync(join(homeDir, "Downloads"));
+
+      expect(buildPathBrowserChoices({
+        inputPath: "code-hel/",
+        homeDir,
+      })).toEqual([
+        { name: ".", value: "~" },
+      ]);
+
+      expect(buildPathBrowserChoices({
+        inputPath: "~/code-github/code-h/",
+        homeDir,
+      })).toEqual([
+        { name: ".", value: "~/code-github" },
+        { name: "..", value: "~" },
+        { name: "code-helm/", value: "~/code-github/code-helm/" },
+      ]);
+    } finally {
+      rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
   test("nonexistent paths fall back to the nearest valid parent", () => {
     const homeDir = createTempHomeDir();
 

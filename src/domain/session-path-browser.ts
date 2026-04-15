@@ -136,6 +136,48 @@ const normalizeRequestedBrowserPath = ({
   }
 };
 
+const resolveFallbackNameFilter = ({
+  requestedPath,
+  candidatePath,
+  currentNameFilter,
+  fs,
+}: {
+  requestedPath: string;
+  candidatePath: string;
+  currentNameFilter: string;
+  fs: PathBrowserFs;
+}) => {
+  if (currentNameFilter.length > 0 || requestedPath === candidatePath) {
+    return currentNameFilter;
+  }
+
+  try {
+    if (fs.statSync(requestedPath).isDirectory()) {
+      return currentNameFilter;
+    }
+  } catch {
+    // Ignore missing or unreadable targets and infer a filter from the fallback path.
+  }
+
+  const unresolvedPath = relative(candidatePath, requestedPath);
+
+  if (
+    unresolvedPath.length === 0
+    || unresolvedPath.startsWith("..")
+    || isAbsolute(unresolvedPath)
+  ) {
+    return currentNameFilter;
+  }
+
+  const unresolvedSegments = unresolvedPath
+    .split(/[\\/]+/)
+    .filter((segment) => segment.length > 0);
+
+  return unresolvedSegments.length === 1
+    ? unresolvedSegments[0] ?? currentNameFilter
+    : currentNameFilter;
+};
+
 const isPathWithinHome = (path: string, homeDir: string) => {
   const homeRelativePath = relative(homeDir, path);
 
@@ -187,6 +229,12 @@ export const resolvePathBrowserState = ({
     candidatePath,
     normalizedHomeDir,
   );
+  const effectiveNameFilter = resolveFallbackNameFilter({
+    requestedPath,
+    candidatePath,
+    currentNameFilter: nameFilter,
+    fs,
+  });
   const parentPath = dirname(candidatePath);
   const parentValue =
     currentLabel === "~" || parentPath === candidatePath
@@ -198,7 +246,7 @@ export const resolvePathBrowserState = ({
     currentLabel,
     currentValue,
     parentValue,
-    nameFilter,
+    nameFilter: effectiveNameFilter,
   };
 };
 

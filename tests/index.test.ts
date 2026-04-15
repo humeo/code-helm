@@ -970,6 +970,15 @@ test("path autocomplete starts from home directory choices", async () => {
       { name: "code-github/", value: "~/code-github/" },
       { name: "Downloads/", value: "~/Downloads/" },
     ]);
+
+    expect(await services.autocompleteSessionPaths({
+      actorId: "owner-1",
+      guildId: "guild-1",
+      channelId: "control-1",
+      query: "code-agent-helm-example/",
+    })).toEqual([
+      { name: ".", value: "~" },
+    ]);
   } finally {
     rmSync(homeDir, { recursive: true, force: true });
   }
