@@ -17,10 +17,6 @@ const StoredConfigSchema = z.object({
   database: z.object({
     path: z.string().min(1),
   }),
-  internal: z.object({
-    discordAppId: z.string().min(1).optional(),
-    codexAppServerUrl: z.string().min(1).optional(),
-  }).optional(),
 });
 
 const StoredSecretsSchema = z.object({

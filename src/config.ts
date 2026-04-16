@@ -52,8 +52,7 @@ const resolveAppConfigInput = (env: Record<string, string | undefined>) => {
     discordBotToken: env.CODE_HELM_DISCORD_BOT_TOKEN
       ?? store.secrets?.discord.botToken
       ?? env.DISCORD_BOT_TOKEN,
-    discordAppId: store.config?.internal?.discordAppId
-      ?? env.DISCORD_APP_ID,
+    discordAppId: env.DISCORD_APP_ID,
     discordGuildId: env.CODE_HELM_DISCORD_GUILD_ID
       ?? store.config?.discord.guildId
       ?? env.DISCORD_GUILD_ID,
@@ -61,7 +60,6 @@ const resolveAppConfigInput = (env: Record<string, string | undefined>) => {
       ?? store.config?.discord.controlChannelId
       ?? env.DISCORD_CONTROL_CHANNEL_ID,
     codexAppServerUrl: env.CODE_HELM_CODEX_APP_SERVER_URL
-      ?? store.config?.internal?.codexAppServerUrl
       ?? env.CODEX_APP_SERVER_URL,
     databasePath: expandHomePath(
       env.CODE_HELM_DATABASE_PATH

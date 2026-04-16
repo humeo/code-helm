@@ -34,10 +34,6 @@ const createStoredConfig = (): StoredConfig => ({
   database: {
     path: "/tmp/stored-codehelm.sqlite",
   },
-  internal: {
-    discordAppId: "stored-app-id",
-    codexAppServerUrl: "ws://127.0.0.1:4090",
-  },
 });
 
 const createStoredSecrets = (): StoredSecrets => ({
@@ -64,6 +60,8 @@ describe("loadAppConfig", () => {
     const config = loadAppConfig({
       CODE_HELM_CONFIG: configPath,
       CODE_HELM_SECRETS: secretsPath,
+      DISCORD_APP_ID: "legacy-app-id",
+      CODEX_APP_SERVER_URL: "ws://127.0.0.1:4090",
     });
 
     expect(config.discord.guildId).toBe("stored-guild");
@@ -71,8 +69,8 @@ describe("loadAppConfig", () => {
     expect(config.discord.botToken).toBe("stored-bot-token");
     expect(config.codex.appServerUrl).toBe("ws://127.0.0.1:4090");
     expect(config.databasePath).toBe("/tmp/stored-codehelm.sqlite");
-    expect(config.DISCORD_APP_ID).toBe("stored-app-id");
-    expect(config.discord.appId).toBe("stored-app-id");
+    expect(config.DISCORD_APP_ID).toBe("legacy-app-id");
+    expect(config.discord.appId).toBe("legacy-app-id");
     expect(config.workspace).toEqual({
       id: DEFAULT_WORKSPACE_ID,
       name: DEFAULT_WORKSPACE_NAME,
@@ -90,6 +88,8 @@ describe("loadAppConfig", () => {
     const config = loadAppConfig({
       CODE_HELM_CONFIG: configPath,
       CODE_HELM_SECRETS: secretsPath,
+      DISCORD_APP_ID: "legacy-app-id",
+      CODEX_APP_SERVER_URL: "ws://127.0.0.1:4090",
       CODE_HELM_DISCORD_GUILD_ID: "override-guild",
       CODE_HELM_DISCORD_CONTROL_CHANNEL_ID: "override-channel",
       CODE_HELM_DISCORD_BOT_TOKEN: "override-bot-token",
@@ -102,7 +102,7 @@ describe("loadAppConfig", () => {
     expect(config.discord.botToken).toBe("override-bot-token");
     expect(config.codex.appServerUrl).toBe("wss://example.com/codex");
     expect(config.databasePath).toBe("/tmp/override-codehelm.sqlite");
-    expect(config.DISCORD_APP_ID).toBe("stored-app-id");
+    expect(config.DISCORD_APP_ID).toBe("legacy-app-id");
   });
 
   test("keeps the daemon compatibility bridge values required by the runtime", () => {
@@ -116,6 +116,8 @@ describe("loadAppConfig", () => {
     const config = parseConfig({
       CODE_HELM_CONFIG: configPath,
       CODE_HELM_SECRETS: secretsPath,
+      DISCORD_APP_ID: "legacy-app-id",
+      CODEX_APP_SERVER_URL: "ws://127.0.0.1:4090",
     });
 
     expect(config.discord.guildId).toBe("stored-guild");
@@ -123,8 +125,8 @@ describe("loadAppConfig", () => {
     expect(config.discord.botToken).toBe("stored-bot-token");
     expect(config.codex.appServerUrl).toBe("ws://127.0.0.1:4090");
     expect(config.databasePath).toBe("/tmp/stored-codehelm.sqlite");
-    expect(config.DISCORD_APP_ID).toBe("stored-app-id");
-    expect(config.discord.appId).toBe("stored-app-id");
+    expect(config.DISCORD_APP_ID).toBe("legacy-app-id");
+    expect(config.discord.appId).toBe("legacy-app-id");
     expect(config.workspace).toEqual({
       id: DEFAULT_WORKSPACE_ID,
       name: DEFAULT_WORKSPACE_NAME,

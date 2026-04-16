@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -31,10 +31,6 @@ const createStoredConfig = (): StoredConfig => ({
   },
   database: {
     path: "/tmp/codehelm.sqlite",
-  },
-  internal: {
-    discordAppId: "app-1",
-    codexAppServerUrl: "ws://127.0.0.1:4090",
   },
 });
 
@@ -76,7 +72,7 @@ describe("config-store", () => {
     const rawConfig = readFileSync(configPath, "utf8");
     expect(rawConfig).toContain('appServerMode = "managed"');
     expect(rawConfig).toContain('path = "/tmp/codehelm.sqlite"');
-    expect(rawConfig).toContain('codexAppServerUrl = "ws://127.0.0.1:4090"');
+    expect(rawConfig).not.toContain("[internal]");
   });
 
   test("saves and loads secrets.toml", () => {
@@ -110,7 +106,6 @@ describe("config-store", () => {
     expect(store.paths.configPath).toBe(configPath);
     expect(store.paths.secretsPath).toBe(secretsPath);
     expect(store.config?.discord.guildId).toBe("guild-1");
-    expect(store.config?.internal?.codexAppServerUrl).toBe("ws://127.0.0.1:4090");
     expect(store.secrets).toEqual({
       discord: {
         botToken: "env-bot-token",
@@ -138,5 +133,30 @@ describe("config-store", () => {
 
     expect(store.config).toEqual(storedConfig);
     expect(store.secrets).toEqual(storedSecrets);
+  });
+
+  test("ignores daemon compatibility fields when reading existing config.toml", () => {
+    const directory = createTempDir();
+    const configPath = join(directory, "config.toml");
+
+    const rawConfig = `
+[discord]
+guildId = "guild-1"
+controlChannelId = "channel-1"
+
+[codex]
+appServerMode = "managed"
+
+[database]
+path = "/tmp/codehelm.sqlite"
+
+[internal]
+discordAppId = "app-1"
+codexAppServerUrl = "ws://127.0.0.1:4090"
+`;
+
+    writeFileSync(configPath, rawConfig, "utf8");
+
+    expect(loadStoredConfig({ configPath })).toEqual(createStoredConfig());
   });
 });
