@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 
@@ -72,11 +72,29 @@ const readJsonFile = (path: string) => {
   return JSON.parse(readFileSync(path, "utf8")) as unknown;
 };
 
+const hasErrorCode = (error: unknown, code: string) => {
+  return typeof error === "object"
+    && error !== null
+    && "code" in error
+    && error.code === code;
+};
+
 const writeJsonFile = (path: string, value: unknown, options: { flag?: string } = {}) => {
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, {
     encoding: "utf8",
     flag: options.flag,
   });
+};
+
+const writeJsonFileAtomically = (path: string, value: unknown) => {
+  const tempPath = `${path}.tmp-${process.pid}-${Date.now()}`;
+
+  try {
+    writeJsonFile(tempPath, value);
+    renameSync(tempPath, path);
+  } finally {
+    removeFileIfExists(tempPath);
+  }
 };
 
 const tryReadLock = (stateDir: string) => {
@@ -108,7 +126,7 @@ export const writeRuntimeSummary = (
   },
 ) => {
   ensureStateDir(options.stateDir);
-  writeJsonFile(
+  writeJsonFileAtomically(
     getRuntimePath(options.stateDir),
     runtimeSummarySchema.parse(options.summary),
   );
@@ -138,6 +156,25 @@ export const readRuntimeSummary = ({ stateDir, isPidAlive }: ReadRuntimeSummaryO
   return summary;
 };
 
+const claimStaleLock = (stateDir: string, existingPid: number, pid: number) => {
+  const lockPath = getLockPath(stateDir);
+  const claimedPath = join(
+    stateDir,
+    `instance.lock.stale.${existingPid}.${pid}.${Date.now()}`,
+  );
+
+  try {
+    renameSync(lockPath, claimedPath);
+    return claimedPath;
+  } catch (error) {
+    if (hasErrorCode(error, "ENOENT")) {
+      return undefined;
+    }
+
+    throw error;
+  }
+};
+
 export const acquireInstanceLock = ({
   stateDir,
   pid,
@@ -146,40 +183,61 @@ export const acquireInstanceLock = ({
   ensureStateDir(stateDir);
   const lockPath = getLockPath(stateDir);
 
-  try {
-    writeJsonFile(lockPath, lockFileSchema.parse({ pid }), { flag: "wx" });
-    return {
-      pid,
-      cleanedStaleState: false,
-    };
-  } catch (error) {
-    const isExistingLockError = error instanceof Error
-      && "code" in error
-      && error.code === "EEXIST";
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      writeJsonFile(lockPath, lockFileSchema.parse({ pid }), { flag: "wx" });
+      return {
+        pid,
+        cleanedStaleState: false,
+      };
+    } catch (error) {
+      if (!hasErrorCode(error, "EEXIST")) {
+        throw error;
+      }
+    }
 
-    if (!isExistingLockError) {
-      throw error;
+    const existingLock = tryReadLock(stateDir);
+
+    if (!existingLock) {
+      throw new Error(
+        "CodeHelm instance lock is unreadable. Remove the stale lock manually before retrying.",
+      );
+    }
+
+    if (isPidAlive(existingLock.pid)) {
+      throw new Error(`CodeHelm is already running with pid ${existingLock.pid}.`);
+    }
+
+    const claimedStaleLockPath = claimStaleLock(stateDir, existingLock.pid, pid);
+
+    if (!claimedStaleLockPath) {
+      continue;
+    }
+
+    try {
+      removeFileIfExists(getRuntimePath(stateDir));
+
+      try {
+        writeJsonFile(lockPath, lockFileSchema.parse({ pid }), { flag: "wx" });
+        return {
+          pid,
+          cleanedStaleState: true,
+        };
+      } catch (error) {
+        if (!hasErrorCode(error, "EEXIST")) {
+          throw error;
+        }
+      }
+    } finally {
+      removeFileIfExists(claimedStaleLockPath);
+    }
+
+    const replacementLock = tryReadLock(stateDir);
+
+    if (replacementLock && isPidAlive(replacementLock.pid)) {
+      throw new Error(`CodeHelm is already running with pid ${replacementLock.pid}.`);
     }
   }
 
-  const existingLock = tryReadLock(stateDir);
-
-  if (!existingLock) {
-    throw new Error(
-      "CodeHelm instance lock is unreadable. Remove the stale lock manually before retrying.",
-    );
-  }
-
-  if (isPidAlive(existingLock.pid)) {
-    throw new Error(`CodeHelm is already running with pid ${existingLock.pid}.`);
-  }
-
-  clearRuntimeState({ stateDir });
-  ensureStateDir(stateDir);
-  writeJsonFile(lockPath, lockFileSchema.parse({ pid }), { flag: "wx" });
-
-  return {
-    pid,
-    cleanedStaleState: true,
-  };
+  throw new Error("CodeHelm instance lock changed during stale recovery. Retry the command.");
 };
