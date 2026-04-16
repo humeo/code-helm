@@ -14,6 +14,10 @@ test("parses supported cli commands", () => {
     kind: "autostart",
     action: "enable",
   });
+  expect(parseCliArgs(["autostart", "disable"])).toEqual({
+    kind: "autostart",
+    action: "disable",
+  });
   expect(parseCliArgs(["uninstall"])).toEqual({ kind: "uninstall" });
 });
 
