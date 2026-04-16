@@ -2537,30 +2537,6 @@ const resolveStoredCurrentWorkdirForCommand = ({
   };
 };
 
-const resolveStoredCurrentWorkdirForAutocomplete = ({
-  currentWorkdirRepo,
-  actorId,
-  guildId,
-  channelId,
-}: {
-  currentWorkdirRepo: Pick<
-    ReturnType<typeof createCurrentWorkdirRepo>,
-    "get" | "upsert"
-  >;
-  actorId: string;
-  guildId: string;
-  channelId: string;
-}) => {
-  const resolved = resolveStoredCurrentWorkdirForCommand({
-    currentWorkdirRepo,
-    actorId,
-    guildId,
-    channelId,
-  });
-
-  return resolved.ok ? resolved.cwd : undefined;
-};
-
 export const sortResumePickerThreads = (threads: CodexThread[]) => {
   return [...threads].sort((left, right) => {
     const leftUpdatedAt =

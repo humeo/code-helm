@@ -5,6 +5,9 @@ import { createDiscordBot } from "../../src/discord/bot";
 const createServices = () => {
   return {
     services: {
+      setCurrentWorkdir() {
+        return { reply: { content: "workdir set" } };
+      },
       createSession: () => ({ reply: { content: "session created" } }),
       closeSession: () => ({ reply: { content: "session closed" } }),
       syncSession: () => ({ reply: { content: "session synced" } }),
