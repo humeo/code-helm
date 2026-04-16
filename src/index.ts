@@ -17,7 +17,17 @@ import {
   type RESTPostAPIChatInputApplicationCommandsJSONBody,
 } from "discord.js";
 import { z } from "zod";
+import {
+  acquireInstanceLock,
+  clearRuntimeState,
+  writeRuntimeSummary,
+} from "./cli/runtime-state";
+import { resolveCodeHelmPaths } from "./cli/paths";
 import { JsonRpcClient } from "./codex/jsonrpc-client";
+import {
+  startManagedCodexAppServer,
+  type ManagedCodexAppServer,
+} from "./codex/supervisor";
 import {
   approvalRequestMethods,
 } from "./codex/protocol-types";
@@ -34,7 +44,12 @@ import type {
   StartTurnParams,
   ThreadReadResult,
 } from "./codex/protocol-types";
-import { assertOperationalConfigReady, type AppConfig, parseConfig } from "./config";
+import {
+  DEFAULT_CODEX_APP_SERVER_URL,
+  DEFAULT_DISCORD_APP_ID,
+  type AppConfig,
+  parseConfig,
+} from "./config";
 import { createDatabaseClient } from "./db/client";
 import { applyMigrations } from "./db/migrate";
 import { createApprovalRepo, type ApprovalRecord } from "./db/repos/approvals";
@@ -3886,12 +3901,50 @@ export const handleApprovalInteraction = async ({
   return true;
 };
 
-export const startCodeHelm = async (
-  env: Record<string, string | undefined> = Bun.env,
+type StartCodeHelmMode = "foreground" | "background";
+
+type StartedCodeHelmHandle = {
+  config: AppConfig;
+  stop: () => Promise<void>;
+  [key: string]: unknown;
+};
+
+export type StartCodeHelmOptions = {
+  acquireInstanceLock?: typeof acquireInstanceLock;
+  clearRuntimeState?: typeof clearRuntimeState;
+  installSignalHandlers?: boolean;
+  legacyWorkspaceBootstrap?: ReturnType<typeof resolveLegacyWorkspaceBootstrap>;
+  mode?: StartCodeHelmMode;
+  startManagedCodexAppServer?: typeof startManagedCodexAppServer;
+  startRuntime?: (
+    config: AppConfig,
+    options: {
+      installSignalHandlers?: boolean;
+      legacyWorkspaceBootstrap?: ReturnType<typeof resolveLegacyWorkspaceBootstrap>;
+    },
+  ) => Promise<StartedCodeHelmHandle>;
+  stateDir?: string;
+  writeRuntimeSummary?: typeof writeRuntimeSummary;
+};
+
+const isPidAlive = (pid: number) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const startCodeHelmRuntime = async (
+  config: AppConfig,
+  options: {
+    installSignalHandlers?: boolean;
+    legacyWorkspaceBootstrap?: ReturnType<typeof resolveLegacyWorkspaceBootstrap>;
+  } = {},
 ) => {
-  const config = parseConfig(env);
-  assertOperationalConfigReady(config);
-  const legacyWorkspaceBootstrap = resolveLegacyWorkspaceBootstrap(env);
+  const installSignalHandlers = options.installSignalHandlers ?? true;
+  const legacyWorkspaceBootstrap = options.legacyWorkspaceBootstrap ?? null;
   const db = createDatabaseClient(config.databasePath);
 
   applyMigrations(db);
@@ -5504,12 +5557,14 @@ export const startCodeHelm = async (
     db.close();
   };
 
-  for (const signal of ["SIGINT", "SIGTERM"] as const) {
-    process.once(signal, () => {
-      void stop().catch((error) => {
-        logger.error(`Failed to stop cleanly on ${signal}`, error);
+  if (installSignalHandlers) {
+    for (const signal of ["SIGINT", "SIGTERM"] as const) {
+      process.once(signal, () => {
+        void stop().catch((error) => {
+          logger.error(`Failed to stop cleanly on ${signal}`, error);
+        });
       });
-    });
+    }
   }
 
   return {
@@ -5521,8 +5576,145 @@ export const startCodeHelm = async (
   };
 };
 
+export const startCodeHelm = async (
+  config: AppConfig,
+  options: StartCodeHelmOptions = {},
+) => {
+  const acquireLock = options.acquireInstanceLock ?? acquireInstanceLock;
+  const clearState = options.clearRuntimeState ?? clearRuntimeState;
+  const mode = options.mode ?? "foreground";
+  const installSignalHandlers = options.installSignalHandlers ?? true;
+  const publishRuntimeSummary = options.writeRuntimeSummary ?? writeRuntimeSummary;
+  const startManagedServer = options.startManagedCodexAppServer ?? startManagedCodexAppServer;
+  const startRuntime = options.startRuntime ?? startCodeHelmRuntime;
+  let runtimeConfig = config;
+  let managedCodexAppServer: ManagedCodexAppServer | undefined;
+  let runtimeHandle: StartedCodeHelmHandle | undefined;
+  let shuttingDown = false;
+
+  if (options.stateDir) {
+    acquireLock({
+      stateDir: options.stateDir,
+      pid: process.pid,
+      isPidAlive,
+    });
+  }
+
+  try {
+    if (runtimeConfig.codex.appServerUrl === DEFAULT_CODEX_APP_SERVER_URL) {
+      managedCodexAppServer = await startManagedServer();
+      runtimeConfig = {
+        ...runtimeConfig,
+        codex: {
+          ...runtimeConfig.codex,
+          appServerUrl: managedCodexAppServer.address,
+        },
+      };
+    }
+
+    runtimeHandle = await startRuntime(runtimeConfig, {
+      installSignalHandlers: false,
+      legacyWorkspaceBootstrap: options.legacyWorkspaceBootstrap,
+    });
+
+    if (options.stateDir) {
+      publishRuntimeSummary({
+        stateDir: options.stateDir,
+        summary: {
+          pid: process.pid,
+          mode,
+          discord: {
+            guildId: runtimeConfig.discord.guildId,
+            controlChannelId: runtimeConfig.discord.controlChannelId,
+            connected: true,
+          },
+          codex: {
+            appServerAddress: runtimeConfig.codex.appServerUrl,
+            pid: managedCodexAppServer?.pid,
+            running: true,
+          },
+          startedAt: new Date().toISOString(),
+        },
+      });
+    }
+  } catch (error) {
+    if (runtimeHandle) {
+      await runtimeHandle.stop().catch((stopError) => {
+        logger.error("Failed to stop CodeHelm runtime after startup failure", stopError);
+      });
+    }
+
+    if (managedCodexAppServer) {
+      await managedCodexAppServer.stop().catch((stopError) => {
+        logger.error("Failed to stop managed Codex App Server after startup failure", stopError);
+      });
+    }
+
+    if (options.stateDir) {
+      clearState({ stateDir: options.stateDir });
+    }
+
+    throw error;
+  }
+
+  const stop = async () => {
+    if (shuttingDown) {
+      return;
+    }
+
+    shuttingDown = true;
+
+    try {
+      await runtimeHandle?.stop();
+    } finally {
+      if (managedCodexAppServer) {
+        await managedCodexAppServer.stop().catch((error) => {
+          logger.error("Failed to stop managed Codex App Server cleanly", error);
+        });
+      }
+
+      if (options.stateDir) {
+        clearState({ stateDir: options.stateDir });
+      }
+    }
+  };
+
+  if (installSignalHandlers) {
+    for (const signal of ["SIGINT", "SIGTERM"] as const) {
+      process.once(signal, () => {
+        void stop().catch((error) => {
+          logger.error(`Failed to stop cleanly on ${signal}`, error);
+        });
+      });
+    }
+  }
+
+  return {
+    ...runtimeHandle,
+    config: runtimeConfig,
+    stop,
+  };
+};
+
+export const loadAndStartCodeHelmFromProcess = async (
+  env: Record<string, string | undefined> = Bun.env,
+) => {
+  const config = parseConfig(env);
+
+  if (config.DISCORD_APP_ID === DEFAULT_DISCORD_APP_ID) {
+    throw new Error("CodeHelm configuration is not ready for daemon startup: DISCORD_APP_ID is unresolved");
+  }
+
+  return startCodeHelm(config, {
+    installSignalHandlers: true,
+    legacyWorkspaceBootstrap: resolveLegacyWorkspaceBootstrap(env),
+    mode: env.CODE_HELM_DAEMON_MODE === "background" ? "background" : "foreground",
+    stateDir: resolveCodeHelmPaths({ env }).stateDir,
+  });
+};
+
 if (import.meta.main) {
-  void startCodeHelm(process.env as Record<string, string | undefined>)
+  void loadAndStartCodeHelmFromProcess(process.env as Record<string, string | undefined>)
     .then(({ config }) => {
       logger.info(`CodeHelm started for Discord app ${config.discord.appId}`);
     })

@@ -1,6 +1,17 @@
+import {
+  cancel,
+  confirm,
+  intro,
+  isCancel,
+  note,
+  outro,
+  password,
+  select,
+} from "@clack/prompts";
 import { loadConfigStore, saveStoredConfig, saveStoredSecrets, type StoredConfig } from "./config-store";
 import type { RuntimeSummary } from "./runtime-state";
 import {
+  createDiscordDiscoveryServices,
   listSelectableControlChannels,
   listSelectableGuilds,
   validateBotToken,
@@ -48,6 +59,116 @@ export type OnboardingResult =
   | { kind: "completed" }
   | { kind: "already-running" }
   | { kind: "cancelled" };
+
+const ONBOARDING_CANCELLED_MESSAGE = "Onboarding cancelled.";
+
+const unwrapPromptValue = <T>(value: T | symbol): T => {
+  if (isCancel(value)) {
+    cancel(ONBOARDING_CANCELLED_MESSAGE);
+    throw new Error(ONBOARDING_CANCELLED_MESSAGE);
+  }
+
+  return value;
+};
+
+const formatReviewSummary = (input: {
+  botIdentity: DiscordBotIdentity;
+  guild: SelectableGuild;
+  controlChannel: SelectableControlChannel;
+  configPath: string;
+  secretsPath: string;
+  databasePath: string;
+}) => {
+  return [
+    `Bot: ${input.botIdentity.botUser.username} (${input.botIdentity.application.name})`,
+    `Guild: ${input.guild.name}`,
+    `Control channel: #${input.controlChannel.name}`,
+    "Codex App Server: managed",
+    `Config: ${input.configPath}`,
+    `Secrets: ${input.secretsPath}`,
+    `Database: ${input.databasePath}`,
+  ].join("\n");
+};
+
+export const createOnboardingUi = (): OnboardingUi => {
+  return {
+    async showWelcome() {
+      intro("CodeHelm onboarding");
+      note(
+        "CodeHelm will configure one local daemon, one Discord guild, and one Discord control channel.",
+        "Welcome",
+      );
+    },
+    async promptBotToken(input = {}) {
+      if (input.hasExistingToken) {
+        const tokenAction = unwrapPromptValue(await select({
+          message: "Discord bot token",
+          options: [
+            { value: "use-existing", label: "Use existing token" },
+            { value: "replace", label: "Replace token" },
+          ],
+        }));
+
+        if (tokenAction === "use-existing") {
+          return { kind: "use-existing" };
+        }
+      }
+
+      const token = unwrapPromptValue(await password({
+        message: "Discord bot token",
+        validate(value) {
+          return value.trim().length === 0
+            ? "Discord bot token is required."
+            : undefined;
+        },
+      }));
+
+      return { kind: "submit", token };
+    },
+    async showTokenValidationError(message) {
+      note(message, "Token error");
+    },
+    async selectGuild(input) {
+      return unwrapPromptValue(await select({
+        message: "Discord guild",
+        options: input.guilds.map((guild) => ({
+          value: guild.id,
+          label: guild.name,
+        })),
+        initialValue: input.currentGuildId,
+      }));
+    },
+    async selectControlChannel(input) {
+      return unwrapPromptValue(await select({
+        message: "Control channel",
+        options: input.channels.map((channel) => ({
+          value: channel.id,
+          label: `#${channel.name}`,
+        })),
+        initialValue: input.currentChannelId,
+      }));
+    },
+    async reviewSelection(input) {
+      note(formatReviewSummary(input), "Review");
+      return unwrapPromptValue(await confirm({
+        message: "Save this configuration?",
+        active: "save",
+        inactive: "cancel",
+        initialValue: true,
+      }));
+    },
+    async showBlockedError(message) {
+      note(message, "Blocked");
+    },
+    async showCompleted() {
+      outro("Onboarding complete. Run `code-helm start`.");
+    },
+  };
+};
+
+export const createDefaultDiscoveryServices = (): DiscoveryServices => {
+  return createDiscordDiscoveryServices();
+};
 
 const loadOnboardingStore = (options: { env: Record<string, string | undefined>; homeDir?: string }) => {
   return loadConfigStore({

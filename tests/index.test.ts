@@ -83,6 +83,7 @@ import {
   seedTranscriptRuntimeSeenItemsFromSnapshot,
   noteTrustedLiveExternalTurnStart,
   sortResumePickerThreads,
+  startCodeHelm,
 } from "../src/index";
 import { renderStatusCardText } from "../src/discord/renderers";
 import {
@@ -219,6 +220,37 @@ test("legacy workspace bootstrap rejects workdirs outside the workspace root", (
         '[{"id":"api","label":"API","absolutePath":"/tmp/other/api"}]',
     }),
   ).toThrow(/outside WORKSPACE_ROOT/);
+});
+
+test("startCodeHelm stops the started runtime when runtime-state publication fails", async () => {
+  const stopCalls: string[] = [];
+  const clearedStateDirs: string[] = [];
+
+  await expect(
+    startCodeHelm(createAppConfig(), {
+      installSignalHandlers: false,
+      stateDir: "/tmp/codehelm-state",
+      acquireInstanceLock: () => ({
+        pid: process.pid,
+        cleanedStaleState: false,
+      }),
+      clearRuntimeState: ({ stateDir }) => {
+        clearedStateDirs.push(stateDir);
+      },
+      writeRuntimeSummary: () => {
+        throw new Error("runtime-state write failed");
+      },
+      startRuntime: async (config) => ({
+        config,
+        stop: async () => {
+          stopCalls.push("stopped");
+        },
+      }),
+    }),
+  ).rejects.toThrow(/runtime-state write failed/i);
+
+  expect(stopCalls).toEqual(["stopped"]);
+  expect(clearedStateDirs).toEqual(["/tmp/codehelm-state"]);
 });
 
 const createResumeOutcome = (

@@ -1,7 +1,14 @@
 import { parseCliArgs } from "./cli/args";
+import { runCliCommand } from "./cli/commands";
 
-const runCommand = async (_command: ReturnType<typeof parseCliArgs>) => {
-  throw new Error("not implemented");
+const runCommand = async (command: ReturnType<typeof parseCliArgs>) => {
+  const result = await runCliCommand(command, {
+    env: process.env as Record<string, string | undefined>,
+  });
+
+  if (result.output.trim().length > 0) {
+    console.log(result.output);
+  }
 };
 
 const main = async () => {
