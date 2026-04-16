@@ -185,6 +185,44 @@ test("renders synced remote input as a panel followed by a separate final assist
   ]);
 });
 
+test("splits long final assistant replies across multiple Discord messages instead of truncating", () => {
+  const longReply = `${"a".repeat(1_895)}不过我还看到一个更长的尾巴`;
+  const entries = collectTranscriptEntries(
+    [
+      {
+        id: "turn-1",
+        status: "completed",
+        items: [
+          {
+            type: "agentMessage",
+            id: "agent-1",
+            text: longReply,
+            phase: "final",
+          },
+        ],
+      },
+    ],
+    {
+      source: "live",
+    },
+  );
+
+  expect(renderTranscriptMessages(entries)).toEqual([
+    {
+      itemIds: [],
+      payload: {
+        content: longReply.slice(0, 1_900),
+      },
+    },
+    {
+      itemIds: [getAssistantTranscriptEntryId("turn-1")],
+      payload: {
+        content: longReply.slice(1_900),
+      },
+    },
+  ]);
+});
+
 test("snapshot recovery clears stale pending Discord input before later live CLI input reuses the text", () => {
   const pendingDiscordInputs = ["resume --remote"];
 

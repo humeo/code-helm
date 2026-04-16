@@ -87,10 +87,24 @@ const truncate = (value: string, maxLength: number) => {
     : value;
 };
 
-const buildTextPayload = (content: string): DiscordMessagePayload => {
-  return {
-    content: truncate(content, maxDiscordMessageLength),
-  };
+const splitTextContent = (content: string, maxLength: number) => {
+  if (content.length <= maxLength) {
+    return [content];
+  }
+
+  const chunks: string[] = [];
+
+  for (let start = 0; start < content.length; start += maxLength) {
+    chunks.push(content.slice(start, start + maxLength));
+  }
+
+  return chunks;
+};
+
+const buildTextPayloads = (content: string): DiscordMessagePayload[] => {
+  return splitTextContent(content, maxDiscordMessageLength).map((chunk) => ({
+    content: chunk,
+  }));
 };
 
 const buildEmbedPayload = ({
@@ -385,7 +399,7 @@ export const collectComparableTranscriptItemIds = (
   return comparableIds;
 };
 
-export const renderTranscriptEntry = (entry: TranscriptEntry) => {
+const renderTranscriptEntryPayloads = (entry: TranscriptEntry): DiscordMessagePayload[] => {
   if (entry.kind === "user") {
     if (entry.source === "codex-cli") {
       const payload = buildEmbedPayload({
@@ -394,36 +408,40 @@ export const renderTranscriptEntry = (entry: TranscriptEntry) => {
         color: remoteInputEmbedColor,
       });
 
-      return {
-        ...payload,
-      };
+      return [payload];
     }
 
-    return buildTextPayload(entry.text);
+    return buildTextPayloads(entry.text);
   }
 
   if (entry.kind === "process") {
-    return buildEmbedPayload({
+    return [buildEmbedPayload({
       title: "Codex",
       description: entry.text,
       footer: entry.footer,
       color: codexProcessEmbedColor,
-    });
+    })];
   }
 
   if (entry.kind === "assistant") {
-    return buildTextPayload(entry.text);
+    return buildTextPayloads(entry.text);
   }
 
   const exhaustiveCheck: never = entry;
   return exhaustiveCheck;
 };
 
+export const renderTranscriptEntry = (entry: TranscriptEntry) => {
+  return renderTranscriptEntryPayloads(entry)[0] ?? {};
+};
+
 export const renderTranscriptMessages = (entries: TranscriptEntry[]) => {
-  return entries.map((entry) => {
-    return {
-      itemIds: [entry.itemId],
-      payload: renderTranscriptEntry(entry),
-    };
+  return entries.flatMap((entry) => {
+    const payloads = renderTranscriptEntryPayloads(entry);
+
+    return payloads.map((payload, index) => ({
+      itemIds: index === payloads.length - 1 ? [entry.itemId] : [],
+      payload,
+    }));
   });
 };
