@@ -108,6 +108,30 @@ describe("runtime-state", () => {
     expect(existsSync(runtimePath)).toBe(false);
   });
 
+  test("drops stale runtime.json without clearing a live instance lock", () => {
+    const stateDir = createStateDir();
+    const lockPath = join(stateDir, "instance.lock");
+    const runtimePath = join(stateDir, "runtime.json");
+
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(lockPath, JSON.stringify({ pid: 5678 }), "utf8");
+    writeRuntimeSummary({
+      stateDir,
+      summary: createRuntimeSummary(1234),
+    });
+
+    expect(
+      readRuntimeSummary({
+        stateDir,
+        isPidAlive: (pid) => pid === 5678,
+      }),
+    ).toBeUndefined();
+    expect(existsSync(runtimePath)).toBe(false);
+    expect(JSON.parse(readFileSync(lockPath, "utf8"))).toMatchObject({
+      pid: 5678,
+    });
+  });
+
   test("writes and reads runtime.json", () => {
     const stateDir = createStateDir();
 
@@ -154,6 +178,23 @@ describe("runtime-state", () => {
         isPidAlive: (pid) => pid === 1234,
       }),
     ).toThrow(/already running/i);
+  });
+
+  test("rejects unreadable lock files instead of silently stealing the lock", () => {
+    const stateDir = createStateDir();
+    const lockPath = join(stateDir, "instance.lock");
+
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(lockPath, "{not-valid-json", "utf8");
+
+    expect(() =>
+      acquireInstanceLock({
+        stateDir,
+        pid: 5678,
+        isPidAlive: () => false,
+      }),
+    ).toThrow(/unreadable/i);
+    expect(existsSync(lockPath)).toBe(true);
   });
 
   test("releases the instance lock", () => {

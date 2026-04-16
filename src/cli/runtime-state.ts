@@ -131,7 +131,7 @@ export const readRuntimeSummary = ({ stateDir, isPidAlive }: ReadRuntimeSummaryO
   }
 
   if (!isPidAlive(summary.pid)) {
-    clearRuntimeState({ stateDir });
+    removeFileIfExists(runtimePath);
     return undefined;
   }
 
@@ -164,7 +164,13 @@ export const acquireInstanceLock = ({
 
   const existingLock = tryReadLock(stateDir);
 
-  if (existingLock && isPidAlive(existingLock.pid)) {
+  if (!existingLock) {
+    throw new Error(
+      "CodeHelm instance lock is unreadable. Remove the stale lock manually before retrying.",
+    );
+  }
+
+  if (isPidAlive(existingLock.pid)) {
     throw new Error(`CodeHelm is already running with pid ${existingLock.pid}.`);
   }
 
