@@ -38,6 +38,7 @@ export type OnboardingUi = {
   }): Promise<string>;
   reviewSelection(input: {
     botIdentity: DiscordBotIdentity;
+    botToken: string;
     guild: SelectableGuild;
     controlChannel: SelectableControlChannel;
     configPath: string;
@@ -61,6 +62,8 @@ export type OnboardingResult =
   | { kind: "cancelled" };
 
 const ONBOARDING_CANCELLED_MESSAGE = "Onboarding cancelled.";
+const MANAGED_CODEX_APP_SERVER_ADDRESS = "ws://127.0.0.1:<auto>";
+const MANAGED_CODEX_CONNECT_COMMAND = `codex --remote ${MANAGED_CODEX_APP_SERVER_ADDRESS}`;
 
 const unwrapPromptValue = <T>(value: T | symbol): T => {
   if (isCancel(value)) {
@@ -71,8 +74,35 @@ const unwrapPromptValue = <T>(value: T | symbol): T => {
   return value;
 };
 
-const formatReviewSummary = (input: {
+type OnboardingPrompts = {
+  confirm: typeof confirm;
+  intro: typeof intro;
+  note: typeof note;
+  outro: typeof outro;
+  password: typeof password;
+  select: typeof select;
+};
+
+const defaultOnboardingPrompts: OnboardingPrompts = {
+  confirm,
+  intro,
+  note,
+  outro,
+  password,
+  select,
+};
+
+const maskBotTokenForDisplay = (token: string) => {
+  if (token.length <= 2) {
+    return token;
+  }
+
+  return `${token[0]}${"*".repeat(token.length - 2)}${token[token.length - 1]}`;
+};
+
+export const formatReviewSummary = (input: {
   botIdentity: DiscordBotIdentity;
+  botToken: string;
   guild: SelectableGuild;
   controlChannel: SelectableControlChannel;
   configPath: string;
@@ -81,27 +111,37 @@ const formatReviewSummary = (input: {
 }) => {
   return [
     `Bot: ${input.botIdentity.botUser.username} (${input.botIdentity.application.name})`,
+    `Discord bot token: ${maskBotTokenForDisplay(input.botToken)}`,
     `Guild: ${input.guild.name}`,
     `Control channel: #${input.controlChannel.name}`,
-    "Codex App Server: managed",
+    "Codex App Server: managed (loopback, port assigned on start)",
+    `Codex App Server address: ${MANAGED_CODEX_APP_SERVER_ADDRESS}`,
+    `Connect: ${MANAGED_CODEX_CONNECT_COMMAND}`,
     `Config: ${input.configPath}`,
     `Secrets: ${input.secretsPath}`,
     `Database: ${input.databasePath}`,
   ].join("\n");
 };
 
-export const createOnboardingUi = (): OnboardingUi => {
+export const createOnboardingUi = (
+  promptOverrides: Partial<OnboardingPrompts> = {},
+): OnboardingUi => {
+  const prompts = {
+    ...defaultOnboardingPrompts,
+    ...promptOverrides,
+  };
+
   return {
     async showWelcome() {
-      intro("CodeHelm onboarding");
-      note(
+      prompts.intro("CodeHelm onboarding");
+      prompts.note(
         "CodeHelm will configure one local daemon, one Discord guild, and one Discord control channel.",
         "Welcome",
       );
     },
     async promptBotToken(input = {}) {
       if (input.hasExistingToken) {
-        const tokenAction = unwrapPromptValue(await select({
+        const tokenAction = unwrapPromptValue(await prompts.select({
           message: "Discord bot token",
           options: [
             { value: "use-existing", label: "Use existing token" },
@@ -114,8 +154,9 @@ export const createOnboardingUi = (): OnboardingUi => {
         }
       }
 
-      const token = unwrapPromptValue(await password({
+      const token = unwrapPromptValue(await prompts.password({
         message: "Discord bot token",
+        mask: "*",
         validate(value) {
           return value.trim().length === 0
             ? "Discord bot token is required."
@@ -126,10 +167,10 @@ export const createOnboardingUi = (): OnboardingUi => {
       return { kind: "submit", token };
     },
     async showTokenValidationError(message) {
-      note(message, "Token error");
+      prompts.note(message, "Token error");
     },
     async selectGuild(input) {
-      return unwrapPromptValue(await select({
+      return unwrapPromptValue(await prompts.select({
         message: "Discord guild",
         options: input.guilds.map((guild) => ({
           value: guild.id,
@@ -139,7 +180,7 @@ export const createOnboardingUi = (): OnboardingUi => {
       }));
     },
     async selectControlChannel(input) {
-      return unwrapPromptValue(await select({
+      return unwrapPromptValue(await prompts.select({
         message: "Control channel",
         options: input.channels.map((channel) => ({
           value: channel.id,
@@ -149,8 +190,8 @@ export const createOnboardingUi = (): OnboardingUi => {
       }));
     },
     async reviewSelection(input) {
-      note(formatReviewSummary(input), "Review");
-      return unwrapPromptValue(await confirm({
+      prompts.note(formatReviewSummary(input), "Review");
+      return unwrapPromptValue(await prompts.confirm({
         message: "Save this configuration?",
         active: "save",
         inactive: "cancel",
@@ -158,10 +199,10 @@ export const createOnboardingUi = (): OnboardingUi => {
       }));
     },
     async showBlockedError(message) {
-      note(message, "Blocked");
+      prompts.note(message, "Blocked");
     },
     async showCompleted() {
-      outro("Onboarding complete. Run `code-helm start`.");
+      prompts.outro("Onboarding complete. Run `code-helm start`.");
     },
   };
 };
@@ -351,6 +392,7 @@ export const runOnboarding = async (
 
   const accepted = await options.ui.reviewSelection({
     botIdentity,
+    botToken,
     guild,
     controlChannel,
     configPath: store.paths.configPath,

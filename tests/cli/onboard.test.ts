@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import type { PasswordOptions } from "@clack/prompts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +9,8 @@ import {
   type StoredConfig,
 } from "../../src/cli/config-store";
 import {
+  createOnboardingUi,
+  formatReviewSummary,
   runOnboarding,
   type DiscoveryServices,
   type OnboardingUi,
@@ -34,6 +37,18 @@ class OnboardingUiStub implements OnboardingUi {
     | undefined;
   lastChannelSelectionInput:
     | { channels: Array<{ id: string; name: string }>; currentChannelId?: string }
+    | undefined;
+  lastReviewInput:
+    | {
+      botIdentity: { botUser: { id: string; username: string }; application: { id: string; name: string } };
+      botToken: string;
+      guild: { id: string; name: string };
+      controlChannel: { id: string; name: string };
+      configPath: string;
+      secretsPath: string;
+      databasePath: string;
+      existingConfig?: StoredConfig;
+    }
     | undefined;
 
   constructor(
@@ -72,7 +87,8 @@ class OnboardingUiStub implements OnboardingUi {
     return next ?? input.currentChannelId ?? input.channels[0]?.id ?? "";
   }
 
-  async reviewSelection() {
+  async reviewSelection(input: Parameters<OnboardingUi["reviewSelection"]>[0]) {
+    this.lastReviewInput = input;
     return true;
   }
 
@@ -124,6 +140,46 @@ afterEach(() => {
 });
 
 describe("runOnboarding", () => {
+  test("review summary masks the bot token and previews the managed Codex connect command", () => {
+    const review = formatReviewSummary({
+      botIdentity: {
+        botUser: {
+          id: "bot-1",
+          username: "code-helm",
+        },
+        application: {
+          id: "123456789012345678",
+          name: "CodeHelm Bot",
+        },
+      },
+      botToken: "abcd1234",
+      guild: { id: "guild-1", name: "Guild One" },
+      controlChannel: { id: "channel-1", name: "control-room" },
+      configPath: "/tmp/config.toml",
+      secretsPath: "/tmp/secrets.toml",
+      databasePath: "/tmp/codehelm.sqlite",
+    });
+
+    expect(review).toContain("Discord bot token: a******4");
+    expect(review).toContain("Codex App Server address: ws://127.0.0.1:<auto>");
+    expect(review).toContain("Connect: codex --remote ws://127.0.0.1:<auto>");
+  });
+
+  test("createOnboardingUi uses an asterisk mask for bot token entry", async () => {
+    let capturedMask: string | undefined;
+    const ui = createOnboardingUi({
+      password: async (options: PasswordOptions) => {
+        capturedMask = options.mask;
+        return "token-1";
+      },
+    });
+
+    const response = await ui.promptBotToken();
+
+    expect(response).toEqual({ kind: "submit", token: "token-1" });
+    expect(capturedMask).toBe("*");
+  });
+
   test("first-run onboarding saves config and secrets", async () => {
     const homeDir = createTempDir();
     const ui = new OnboardingUiStub({
@@ -168,6 +224,7 @@ describe("runOnboarding", () => {
       },
     });
     expect(ui.completionCount).toBe(1);
+    expect(ui.lastReviewInput?.botToken).toBe("token-1");
   });
 
   test("token validation failure keeps the flow on the token step", async () => {
