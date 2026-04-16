@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { loadConfigStore } from "./cli/config-store";
-import { expandHomePath } from "./cli/paths";
+import { loadStoredConfig, loadStoredSecrets } from "./cli/config-store";
+import { expandHomePath, resolveCodeHelmPaths } from "./cli/paths";
 
 const CodexAppServerUrlSchema = z
   .string()
@@ -74,12 +74,11 @@ export const deriveDiscordAppIdFromBotToken = (token: string): string | undefine
 };
 
 const resolveAppConfigInput = (env: Record<string, string | undefined>) => {
-  const store = loadConfigStore({
-    env,
-    mode: "edit",
-  });
+  const paths = resolveCodeHelmPaths({ env });
+  const storedConfig = loadStoredConfig({ configPath: paths.configPath });
+  const storedSecrets = loadStoredSecrets({ secretsPath: paths.secretsPath });
   const resolvedBotToken = env.CODE_HELM_DISCORD_BOT_TOKEN
-    ?? store.secrets?.discord.botToken
+    ?? storedSecrets?.discord.botToken
     ?? env.DISCORD_BOT_TOKEN;
   const derivedDiscordAppId = resolvedBotToken
     ? deriveDiscordAppIdFromBotToken(resolvedBotToken)
@@ -91,19 +90,19 @@ const resolveAppConfigInput = (env: Record<string, string | undefined>) => {
       ?? derivedDiscordAppId
       ?? DEFAULT_DISCORD_APP_ID,
     discordGuildId: env.CODE_HELM_DISCORD_GUILD_ID
-      ?? store.config?.discord.guildId
+      ?? storedConfig?.discord.guildId
       ?? env.DISCORD_GUILD_ID,
     discordControlChannelId: env.CODE_HELM_DISCORD_CONTROL_CHANNEL_ID
-      ?? store.config?.discord.controlChannelId
+      ?? storedConfig?.discord.controlChannelId
       ?? env.DISCORD_CONTROL_CHANNEL_ID,
     codexAppServerUrl: env.CODE_HELM_CODEX_APP_SERVER_URL
       ?? env.CODEX_APP_SERVER_URL
       ?? DEFAULT_CODEX_APP_SERVER_URL,
     databasePath: expandHomePath(
       env.CODE_HELM_DATABASE_PATH
-        ?? store.config?.database.path
+        ?? storedConfig?.database.path
         ?? env.DATABASE_PATH
-        ?? store.paths.databasePath,
+        ?? paths.databasePath,
     ),
     workspaceId: env.WORKSPACE_ID ?? DEFAULT_WORKSPACE_ID,
     workspaceName: env.WORKSPACE_NAME ?? DEFAULT_WORKSPACE_NAME,
@@ -134,4 +133,20 @@ export const loadAppConfig = (env: Record<string, string | undefined>): AppConfi
 
 export const parseConfig = (env: Record<string, string | undefined>): AppConfig => {
   return loadAppConfig(env);
+};
+
+export const assertOperationalConfigReady = (config: AppConfig) => {
+  const issues: string[] = [];
+
+  if (config.DISCORD_APP_ID === DEFAULT_DISCORD_APP_ID) {
+    issues.push("DISCORD_APP_ID is unresolved");
+  }
+
+  if (config.codex.appServerUrl === DEFAULT_CODEX_APP_SERVER_URL) {
+    issues.push("CODEX_APP_SERVER_URL is unresolved");
+  }
+
+  if (issues.length > 0) {
+    throw new Error(`CodeHelm configuration is not ready for daemon startup: ${issues.join("; ")}`);
+  }
 };

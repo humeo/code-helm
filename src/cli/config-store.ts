@@ -1,5 +1,5 @@
 import { parse as parseToml, stringify as stringifyToml } from "@iarna/toml";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { z } from "zod";
 import { resolveCodeHelmPaths, type CodeHelmPathEnv, type CodeHelmPaths } from "./paths";
@@ -44,9 +44,22 @@ const readTomlFile = <T>(path: string, schema: z.ZodType<T>) => {
   return schema.parse(parseToml(content));
 };
 
-const writeTomlFile = (path: string, value: unknown) => {
+const writeTomlFile = (
+  path: string,
+  value: unknown,
+  options: {
+    mode?: number;
+  } = {},
+) => {
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, stringifyToml(value as StringifiableToml), "utf8");
+  writeFileSync(path, stringifyToml(value as StringifiableToml), {
+    encoding: "utf8",
+    mode: options.mode,
+  });
+
+  if (options.mode !== undefined) {
+    chmodSync(path, options.mode);
+  }
 };
 
 export const loadStoredConfig = (
@@ -80,7 +93,11 @@ export const saveStoredSecrets = (
     secretsPath: string;
   },
 ) => {
-  writeTomlFile(options.secretsPath, StoredSecretsSchema.parse(secrets));
+  writeTomlFile(
+    options.secretsPath,
+    StoredSecretsSchema.parse(secrets),
+    { mode: 0o600 },
+  );
 };
 
 export const loadConfigStore = (
@@ -91,26 +108,21 @@ export const loadConfigStore = (
   } = {},
 ): LoadedConfigStore => {
   const env = options.env ?? {};
+  const mode = options.mode ?? "edit";
   const paths = resolveCodeHelmPaths({
     env,
     homeDir: options.homeDir,
   });
 
-  const config = loadStoredConfig({ configPath: paths.configPath });
-  const storedSecrets = loadStoredSecrets({ secretsPath: paths.secretsPath });
-  const secrets = env.CODE_HELM_DISCORD_BOT_TOKEN
-    ? StoredSecretsSchema.parse({
-        ...storedSecrets,
-        discord: {
-          ...storedSecrets?.discord,
-          botToken: env.CODE_HELM_DISCORD_BOT_TOKEN,
-        },
-      })
-    : storedSecrets;
+  if (mode === "create") {
+    return {
+      paths,
+    };
+  }
 
   return {
-    config,
-    secrets,
+    config: loadStoredConfig({ configPath: paths.configPath }),
+    secrets: loadStoredSecrets({ secretsPath: paths.secretsPath }),
     paths,
   };
 };

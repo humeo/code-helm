@@ -34,7 +34,7 @@ import type {
   StartTurnParams,
   ThreadReadResult,
 } from "./codex/protocol-types";
-import { type AppConfig, parseConfig } from "./config";
+import { assertOperationalConfigReady, type AppConfig, parseConfig } from "./config";
 import { createDatabaseClient } from "./db/client";
 import { applyMigrations } from "./db/migrate";
 import { createApprovalRepo, type ApprovalRecord } from "./db/repos/approvals";
@@ -3890,6 +3890,7 @@ export const startCodeHelm = async (
   env: Record<string, string | undefined> = Bun.env,
 ) => {
   const config = parseConfig(env);
+  assertOperationalConfigReady(config);
   const legacyWorkspaceBootstrap = resolveLegacyWorkspaceBootstrap(env);
   const db = createDatabaseClient(config.databasePath);
 

@@ -13,6 +13,7 @@ import {
   DEFAULT_DISCORD_APP_ID,
   DEFAULT_WORKSPACE_ID,
   DEFAULT_WORKSPACE_NAME,
+  assertOperationalConfigReady,
   loadAppConfig,
   parseConfig,
 } from "../src/config";
@@ -131,5 +132,60 @@ describe("loadAppConfig", () => {
       id: DEFAULT_WORKSPACE_ID,
       name: DEFAULT_WORKSPACE_NAME,
     });
+  });
+
+  test("operational guard rejects placeholder Codex app server URLs", () => {
+    const directory = createTempDir();
+    const configPath = join(directory, "config.toml");
+    const secretsPath = join(directory, "secrets.toml");
+
+    saveStoredConfig(createStoredConfig(), { configPath });
+    saveStoredSecrets(createStoredSecrets(), { secretsPath });
+
+    const config = loadAppConfig({
+      CODE_HELM_CONFIG: configPath,
+      CODE_HELM_SECRETS: secretsPath,
+    });
+
+    expect(() => assertOperationalConfigReady(config)).toThrow(/CODEX_APP_SERVER_URL/);
+  });
+
+  test("operational guard rejects unresolved Discord app ids", () => {
+    const directory = createTempDir();
+    const configPath = join(directory, "config.toml");
+    const secretsPath = join(directory, "secrets.toml");
+
+    saveStoredConfig(createStoredConfig(), { configPath });
+    saveStoredSecrets({
+      discord: {
+        botToken: "not-a-discord-token",
+      },
+    }, { secretsPath });
+
+    const config = loadAppConfig({
+      CODE_HELM_CONFIG: configPath,
+      CODE_HELM_SECRETS: secretsPath,
+      CODEX_APP_SERVER_URL: "ws://127.0.0.1:4090",
+    });
+
+    expect(config.DISCORD_APP_ID).toBe(DEFAULT_DISCORD_APP_ID);
+    expect(() => assertOperationalConfigReady(config)).toThrow(/DISCORD_APP_ID/);
+  });
+
+  test("operational guard allows runtime-ready config", () => {
+    const directory = createTempDir();
+    const configPath = join(directory, "config.toml");
+    const secretsPath = join(directory, "secrets.toml");
+
+    saveStoredConfig(createStoredConfig(), { configPath });
+    saveStoredSecrets(createStoredSecrets(), { secretsPath });
+
+    const config = loadAppConfig({
+      CODE_HELM_CONFIG: configPath,
+      CODE_HELM_SECRETS: secretsPath,
+      CODEX_APP_SERVER_URL: "ws://127.0.0.1:4090",
+    });
+
+    expect(() => assertOperationalConfigReady(config)).not.toThrow();
   });
 });

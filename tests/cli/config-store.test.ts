@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -84,9 +84,12 @@ describe("config-store", () => {
 
     expect(existsSync(secretsPath)).toBe(true);
     expect(loadStoredSecrets({ secretsPath })).toEqual(storedSecrets);
+    if (process.platform !== "win32") {
+      expect(statSync(secretsPath).mode & 0o777).toBe(0o600);
+    }
   });
 
-  test("applies CODE_HELM_CONFIG, CODE_HELM_SECRETS, and CODE_HELM_DISCORD_BOT_TOKEN overrides", () => {
+  test("uses CODE_HELM_CONFIG and CODE_HELM_SECRETS for edit-mode path resolution", () => {
     const directory = createTempDir();
     const configPath = join(directory, "override-config.toml");
     const secretsPath = join(directory, "override-secrets.toml");
@@ -98,7 +101,6 @@ describe("config-store", () => {
       env: {
         CODE_HELM_CONFIG: configPath,
         CODE_HELM_SECRETS: secretsPath,
-        CODE_HELM_DISCORD_BOT_TOKEN: "env-bot-token",
       },
       mode: "edit",
     });
@@ -106,11 +108,7 @@ describe("config-store", () => {
     expect(store.paths.configPath).toBe(configPath);
     expect(store.paths.secretsPath).toBe(secretsPath);
     expect(store.config?.discord.guildId).toBe("guild-1");
-    expect(store.secrets).toEqual({
-      discord: {
-        botToken: "env-bot-token",
-      },
-    });
+    expect(store.secrets).toEqual(createStoredSecrets());
   });
 
   test("reads existing config and secrets in edit mode", () => {
@@ -158,5 +156,27 @@ codexAppServerUrl = "ws://127.0.0.1:4090"
     writeFileSync(configPath, rawConfig, "utf8");
 
     expect(loadStoredConfig({ configPath })).toEqual(createStoredConfig());
+  });
+
+  test("create mode resolves paths without reading existing files", () => {
+    const directory = createTempDir();
+    const configPath = join(directory, "config.toml");
+    const secretsPath = join(directory, "secrets.toml");
+
+    saveStoredConfig(createStoredConfig(), { configPath });
+    saveStoredSecrets(createStoredSecrets(), { secretsPath });
+
+    const store = loadConfigStore({
+      env: {
+        CODE_HELM_CONFIG: configPath,
+        CODE_HELM_SECRETS: secretsPath,
+      },
+      mode: "create",
+    });
+
+    expect(store.paths.configPath).toBe(configPath);
+    expect(store.paths.secretsPath).toBe(secretsPath);
+    expect(store.config).toBeUndefined();
+    expect(store.secrets).toBeUndefined();
   });
 });
