@@ -1,6 +1,6 @@
 import { execFile, spawn, type SpawnOptions } from "node:child_process";
 import { once } from "node:events";
-import { createServer } from "node:net";
+import { createConnection, createServer } from "node:net";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -23,15 +23,18 @@ export interface ChildProcessLike {
   pid: number | undefined;
   kill(signal?: NodeJS.Signals | number): boolean;
   on(event: "error", listener: (error: Error) => void): this;
+  once(event: "error", listener: (error: Error) => void): this;
   off(event: "error", listener: (error: Error) => void): this;
   once(event: "exit", listener: (code: number | null, signal: NodeJS.Signals | null) => void): this;
   off(event: "exit", listener: (code: number | null, signal: NodeJS.Signals | null) => void): this;
+  stderr?: {
+    on(event: "data", listener: (chunk: string | Uint8Array) => void): unknown;
+  } | null;
 }
 
 export type ManagedCodexAppServer = {
   pid: number;
   address: string;
-  child: ChildProcessLike;
   stop: (options?: StopManagedCodexAppServerOptions) => Promise<void>;
 };
 
@@ -51,6 +54,7 @@ export type StartManagedCodexAppServerOptions = {
   resolveBinary?: ResolveBinary;
   allocatePort?: AllocatePort;
   spawnProcess?: SpawnProcess;
+  waitForReady?: WaitForReady;
 };
 
 export type StopManagedCodexAppServerOptions = {
@@ -58,8 +62,19 @@ export type StopManagedCodexAppServerOptions = {
 };
 
 type ManagedCodexAppServerHandle = {
+  pid: number;
+  address: string;
   child: ChildProcessLike;
 };
+
+type WaitForReady = (
+  options: {
+    address: string;
+    child: ChildProcessLike;
+    timeoutMs: number;
+    getDiagnostics: () => string | undefined;
+  },
+) => Promise<void>;
 
 const defaultResolveBinary: ResolveBinary = async (binaryName) => {
   const lookupCommand = process.platform === "win32" ? "where" : "which";
@@ -109,6 +124,23 @@ const defaultSpawnProcess: SpawnProcess = (command, args, options) => {
   return spawn(command, args, options) as unknown as ChildProcessLike;
 };
 
+const appendDiagnosticChunk = (buffer: string[], chunk: string | Uint8Array) => {
+  buffer.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+
+  const combined = buffer.join("");
+
+  if (combined.length <= 4_000) {
+    return;
+  }
+
+  buffer.splice(0, buffer.length, combined.slice(-4_000));
+};
+
+const withDiagnostics = (message: string, diagnostics?: string) => {
+  const trimmed = diagnostics?.trim();
+  return trimmed ? `${message}\nDiagnostics:\n${trimmed}` : message;
+};
+
 const waitForChildExit = async (child: ChildProcessLike, timeoutMs: number) => {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
@@ -149,6 +181,97 @@ const waitForChildExit = async (child: ChildProcessLike, timeoutMs: number) => {
   }
 };
 
+const defaultWaitForReady: WaitForReady = ({
+  address,
+  child,
+  timeoutMs,
+  getDiagnostics,
+}) => {
+  const target = new URL(address);
+  const host = target.hostname;
+  const port = Number.parseInt(target.port, 10);
+
+  return new Promise<void>((resolve, reject) => {
+    let settled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+    const cleanup = () => {
+      settled = true;
+      if (retryTimer) {
+        clearTimeout(retryTimer);
+      }
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+      child.off("exit", handleExit);
+      child.off("error", handleError);
+    };
+
+    const finishError = (error: CodexSupervisorError) => {
+      cleanup();
+      reject(error);
+    };
+
+    const handleExit = (code: number | null, signal: NodeJS.Signals | null) => {
+      finishError(new CodexSupervisorError(
+        "CODEX_APP_SERVER_FAILED_TO_START",
+        withDiagnostics(
+          `Managed Codex App Server exited before becoming ready (code: ${String(code)}, signal: ${String(signal)}).`,
+          getDiagnostics(),
+        ),
+      ));
+    };
+
+    const handleError = (error: Error) => {
+      finishError(new CodexSupervisorError(
+        "CODEX_APP_SERVER_FAILED_TO_START",
+        withDiagnostics(
+          `Managed Codex App Server failed before becoming ready: ${error.message}`,
+          getDiagnostics(),
+        ),
+      ));
+    };
+
+    const tryConnect = () => {
+      if (settled) {
+        return;
+      }
+
+      const socket = createConnection({
+        host,
+        port,
+      });
+
+      socket.once("connect", () => {
+        socket.end();
+        cleanup();
+        resolve();
+      });
+      socket.once("error", () => {
+        socket.destroy();
+        if (!settled) {
+          retryTimer = setTimeout(tryConnect, 50);
+        }
+      });
+    };
+
+    child.once("exit", handleExit);
+    child.once("error", handleError);
+    timeoutId = setTimeout(() => {
+      finishError(new CodexSupervisorError(
+        "CODEX_APP_SERVER_FAILED_TO_START",
+        withDiagnostics(
+          "Managed Codex App Server did not become ready before the startup timeout expired.",
+          getDiagnostics(),
+        ),
+      ));
+    }, timeoutMs);
+
+    tryConnect();
+  });
+};
+
 export const detectCodexBinary = async (
   options: DetectCodexBinaryOptions = {},
 ) => {
@@ -173,15 +296,21 @@ export const startManagedCodexAppServer = async (
   });
   const allocatePort = options.allocatePort ?? defaultAllocatePort;
   const spawnProcess = options.spawnProcess ?? defaultSpawnProcess;
+  const waitForReady = options.waitForReady ?? defaultWaitForReady;
   const port = await allocatePort();
   const address = `ws://127.0.0.1:${port}`;
   const child = spawnProcess(
     binaryPath,
     ["app-server", "--listen", address],
     {
-      stdio: "ignore",
+      stdio: ["ignore", "pipe", "pipe"],
     },
   );
+  const stderrBuffer: string[] = [];
+
+  child.stderr?.on("data", (chunk) => {
+    appendDiagnosticChunk(stderrBuffer, chunk);
+  });
 
   if (!child.pid) {
     throw new CodexSupervisorError(
@@ -190,20 +319,45 @@ export const startManagedCodexAppServer = async (
     );
   }
 
+  try {
+    await waitForReady({
+      address,
+      child,
+      timeoutMs: 5_000,
+      getDiagnostics: () => {
+        const combined = stderrBuffer.join("").trim();
+        return combined.length > 0 ? combined : undefined;
+      },
+    });
+  } catch (error) {
+    child.kill("SIGTERM");
+    throw error;
+  }
+
   return {
     pid: child.pid,
     address,
-    child,
     stop: (stopOptions) => {
-      return stopManagedCodexAppServer({ child }, stopOptions);
+      return stopManagedCodexAppServer(
+        {
+          pid: child.pid as number,
+          address,
+          child,
+        },
+        stopOptions,
+      );
     },
   };
 };
 
 export const stopManagedCodexAppServer = async (
-  server: ManagedCodexAppServerHandle,
+  server: ManagedCodexAppServer | ManagedCodexAppServerHandle,
   options: StopManagedCodexAppServerOptions = {},
 ) => {
+  if (!("child" in server)) {
+    return server.stop(options);
+  }
+
   const timeoutMs = options.timeoutMs ?? 5_000;
   const waitForExit = waitForChildExit(server.child, timeoutMs);
   const didSignal = server.child.kill("SIGTERM");
