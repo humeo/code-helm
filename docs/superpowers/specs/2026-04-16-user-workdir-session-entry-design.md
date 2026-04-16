@@ -164,7 +164,7 @@ Behavior:
 - reuse the existing directory-browser-style path autocomplete
 - normalize and validate the selected path
 - require the path to exist and be a directory
-- reject hidden directories using the same hidden-path rules already used for session path input
+- reject hidden directories, where a hidden directory is any path segment whose basename starts with `.`, except the literal navigation entries `.` and `..`
 - persist the normalized path as current workdir
 
 Success response:
@@ -220,6 +220,8 @@ Keep the current directory-browser interaction:
 - show `.` and `..` navigation choices
 - show directories only
 - do not show hidden directories
+- treat a directory as hidden when its basename starts with `.`, except the literal navigation entries `.` and `..`
+- reject submitted paths that resolve to a hidden directory using the same hidden-directory rule
 
 The submitted value remains a real path string.
 
@@ -232,8 +234,9 @@ Instead:
 1. load the user's current workdir for this guild/channel context
 2. if absent, return an empty list
 3. if present, call Codex `thread/list` using that `cwd`
-4. apply the same recent-first ordering and top-25 truncation already used by the current session picker
-5. format each choice as `updated-time · conversation · session-id`
+4. sort the returned sessions by normalized provider `updatedAt` descending so the most recently updated session appears first
+5. truncate the sorted list to the first 25 choices
+6. format each choice as `updated-time · conversation · session-id`
 
 This means the user never sees a "best effort" fallback session list from another directory.
 
@@ -246,7 +249,7 @@ Rules:
 - label format is `updated-time · conversation · session-id`
 - do not show status in the main picker label
 - do not repeat the current path or workdir in each choice
-- keep the time segment normalized and human-readable, matching the existing recent-first resume presentation
+- keep the time segment normalized and human-readable, such as `3 minutes ago`, using the provider timestamp converted into a relative display value
 - use the session id as the fallback conversation segment when no title or preview text is available
 
 ## Validation And Error Handling
@@ -277,6 +280,12 @@ Expected cases:
 Recommended message:
 
 - `Current workdir is no longer available. Run /workdir again.`
+
+Command-level behavior:
+
+- `/session-new` reads the stored current workdir at command start and fails immediately if the stored path is unavailable, deleted, moved, unreadable, or no longer a directory
+- `/session-resume` autocomplete reads the stored current workdir before listing sessions and returns no choices if the stored path is unavailable, deleted, moved, unreadable, or no longer a directory
+- `/session-resume` submit reads the stored current workdir again and rejects the command without attaching Discord if the stored path is unavailable, deleted, moved, unreadable, or no longer a directory
 
 ### Resume Submit Mismatch
 
