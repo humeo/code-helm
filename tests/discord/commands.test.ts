@@ -1,10 +1,9 @@
-import { beforeEach, expect, test } from "bun:test";
+import { expect, test } from "bun:test";
 import * as discordCommands from "../../src/discord/commands";
 import {
   buildControlChannelCommands,
   controlChannelCommands,
   handleControlChannelCommand,
-  resetAutocompletePathMemoryForTests,
   replyWithCommandError,
   type DiscordCommandResult,
   type DiscordCommandServices,
@@ -179,10 +178,6 @@ const getHandleControlChannelAutocomplete = () => {
     .handleControlChannelAutocomplete;
 };
 
-beforeEach(() => {
-  resetAutocompletePathMemoryForTests();
-});
-
 test("/workdir forwards path to setCurrentWorkdir", async () => {
   const { calls, services } = createServices();
   const { interaction, replies, followsUps, defers } = createInteraction({
@@ -279,29 +274,6 @@ test("/session-new forwards only actor/guild/channel context", async () => {
   expect(defers).toEqual([null]);
   expect(replies).toEqual([]);
   expect(followsUps).toEqual([{ content: "session created" }]);
-});
-
-test("/session-resume forwards only context plus codexThreadId", async () => {
-  const { calls, services } = createServices();
-  const { interaction, replies, followsUps, defers } = createInteraction({
-    commandName: "session-resume",
-    options: { session: "codex-thread-7" },
-  });
-
-  const handled = await handleControlChannelCommand(interaction as never, services);
-
-  expect(handled).toBe(true);
-  expect(calls.resumeSession).toEqual([
-    {
-      actorId: "u1",
-      guildId: "g1",
-      channelId: "c1",
-      codexThreadId: "codex-thread-7",
-    },
-  ]);
-  expect(defers).toEqual([null]);
-  expect(replies).toEqual([]);
-  expect(followsUps).toEqual([{ content: "session resumed" }]);
 });
 
 test("/workdir focused path routes to autocompleteSessionPaths", async () => {

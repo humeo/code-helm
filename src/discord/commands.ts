@@ -151,8 +151,6 @@ const controlCommandNames = new Set([
   "session-resume",
 ]);
 
-export const resetAutocompletePathMemoryForTests = () => {};
-
 export const isControlChannelCommandName = (commandName: string) => {
   return controlCommandNames.has(commandName);
 };
