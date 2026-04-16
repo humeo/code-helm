@@ -83,6 +83,13 @@ The control-channel command set becomes:
 `/session-close` and `/session-sync` keep their current meaning.
 The change only affects how users choose the directory context before creating or resuming sessions.
 
+The source of truth for command entry is:
+
+- `/workdir` sets the current workdir
+- `/session-new` reads the current workdir at submit time
+- `/session-resume` reads the current workdir at autocomplete time and again at submit time
+- the current workdir is persisted in SQLite, keyed by `guild_id + channel_id + discord_user_id`
+
 ### Mental Model
 
 The intended user mental model is:
@@ -193,6 +200,11 @@ Behavior:
 - scope session autocomplete to that workdir only
 - on submit, read current workdir again and use it as the authoritative directory context
 - verify the selected Codex thread still belongs to that workdir before attaching Discord
+- preserve existing attach semantics:
+  - reuse an already-active Discord attachment when the session is already bound
+  - reopen the archived managed thread when the thread exists but is archived
+  - create a replacement Discord thread and rebind the session when the old thread is deleted or unusable
+  - when the Codex session is `waiting-approval`, resume attachment must restore the approval lifecycle UI and owner DM controls instead of downgrading to plain sync
 
 This keeps session discovery aligned with Codex while avoiding any need to trust another option from the same slash command request.
 
@@ -221,8 +233,21 @@ Instead:
 2. if absent, return an empty list
 3. if present, call Codex `thread/list` using that `cwd`
 4. apply the same recent-first ordering and top-25 truncation already used by the current session picker
+5. format each choice as `updated-time · conversation · session-id`
 
 This means the user never sees a "best effort" fallback session list from another directory.
+
+## Session Picker Format
+
+`/session-resume` session choices must use normalized relative time formatting derived from the provider timestamps.
+
+Rules:
+
+- label format is `updated-time · conversation · session-id`
+- do not show status in the main picker label
+- do not repeat the current path or workdir in each choice
+- keep the time segment normalized and human-readable, matching the existing recent-first resume presentation
+- use the session id as the fallback conversation segment when no title or preview text is available
 
 ## Validation And Error Handling
 
@@ -265,6 +290,15 @@ If the selected session's actual `cwd` no longer matches the user's current work
 Recommended shape:
 
 - `Session \`019d...\` belongs to \`~/other/path\`, not current workdir \`~/code-github/code-helm\`.`
+
+If the submitted `session` value is hand-typed, stale, or otherwise not discoverable from live `thread/list` in the current workdir:
+
+- reject the command
+- do not attempt to infer a session from another workdir or from old cache data
+
+Recommended shape:
+
+- `Session \`019d...\` is not available in the current workdir. Pick a session from autocomplete.`
 
 ### No Sessions In Current Workdir
 
@@ -318,6 +352,13 @@ Existing archived threads remain resumable.
 
 The only behavioral change is that the user must first set current workdir to the session's directory before resuming it from Discord.
 
+### Documentation Follow-Through
+
+This change must ship with matching documentation updates in the same implementation:
+
+- update `README.md` to describe the current-workdir flow and the new command shapes
+- update `docs/baselines/e2e-baseline.md` so the regression contract matches the new user-scoped entry flow
+
 ## User-Facing Copy
 
 Recommended minimal copy:
@@ -358,6 +399,9 @@ Add or update tests for:
 - `/session-resume` submit rejects sessions whose actual `cwd` differs from current workdir
 - unavailable current workdir paths produce the expected command error
 - success replies for `new` and `resume` include `Workdir: ...`
+- session picker labels follow `updated-time · conversation · session-id` with normalized relative times
+- `/session-resume` reuses, reopens, or replaces the Discord attachment according to the existing thread state
+- `/session-resume` restores waiting-approval UI and owner DM controls when resuming a waiting-approval session
 
 ## Superseded Direction
 
