@@ -101,13 +101,16 @@ const tryReadLock = (stateDir: string) => {
   const lockPath = getLockPath(stateDir);
 
   if (!existsSync(lockPath)) {
-    return undefined;
+    return { kind: "missing" as const };
   }
 
   try {
-    return lockFileSchema.parse(readJsonFile(lockPath));
+    return {
+      kind: "valid" as const,
+      lock: lockFileSchema.parse(readJsonFile(lockPath)),
+    };
   } catch {
-    return undefined;
+    return { kind: "unreadable" as const };
   }
 };
 
@@ -198,17 +201,21 @@ export const acquireInstanceLock = ({
 
     const existingLock = tryReadLock(stateDir);
 
-    if (!existingLock) {
+    if (existingLock.kind === "missing") {
+      continue;
+    }
+
+    if (existingLock.kind === "unreadable") {
       throw new Error(
         "CodeHelm instance lock is unreadable. Remove the stale lock manually before retrying.",
       );
     }
 
-    if (isPidAlive(existingLock.pid)) {
-      throw new Error(`CodeHelm is already running with pid ${existingLock.pid}.`);
+    if (isPidAlive(existingLock.lock.pid)) {
+      throw new Error(`CodeHelm is already running with pid ${existingLock.lock.pid}.`);
     }
 
-    const claimedStaleLockPath = claimStaleLock(stateDir, existingLock.pid, pid);
+    const claimedStaleLockPath = claimStaleLock(stateDir, existingLock.lock.pid, pid);
 
     if (!claimedStaleLockPath) {
       continue;
@@ -234,8 +241,8 @@ export const acquireInstanceLock = ({
 
     const replacementLock = tryReadLock(stateDir);
 
-    if (replacementLock && isPidAlive(replacementLock.pid)) {
-      throw new Error(`CodeHelm is already running with pid ${replacementLock.pid}.`);
+    if (replacementLock.kind === "valid" && isPidAlive(replacementLock.lock.pid)) {
+      throw new Error(`CodeHelm is already running with pid ${replacementLock.lock.pid}.`);
     }
   }
 
