@@ -11,6 +11,7 @@ import type { AppConfig } from "../src/config";
 import type { SessionResumeState } from "../src/domain/types";
 import { createDatabaseClient } from "../src/db/client";
 import { applyMigrations } from "../src/db/migrate";
+import { createCurrentWorkdirRepo } from "../src/db/repos/current-workdirs";
 import { createWorkdirRepo } from "../src/db/repos/workdirs";
 import { createWorkspaceRepo } from "../src/db/repos/workspaces";
 import {
@@ -139,6 +140,11 @@ const createResumePickerThread = (
 
 const defaultSessionPath = "/tmp/workspace/api";
 const alternateSessionPath = "/tmp/workspace/web";
+const createTestHomeRoot = () => {
+  const homeRoot = mkdtempSync(join(tmpdir(), "codehelm-home-"));
+  mkdirSync(join(homeRoot, "code-github/code-helm"), { recursive: true });
+  return homeRoot;
+};
 
 test("thread statuses map into Discord session runtime states", () => {
   expect(inferSessionStateFromThreadStatus({ type: "idle" })).toBe("idle");
@@ -298,8 +304,11 @@ const createControlChannelServicesFixture = ({
   resumeOutcome?: SessionResumeState;
 } = {}) => {
   const config = createAppConfig();
+  const db = createDatabaseClient(":memory:");
+  applyMigrations(db);
   const sessionRecords = new Map<string, SessionRecord>();
   const codexThreadToDiscordThread = new Map<string, string>();
+  const currentWorkdirRepo = createCurrentWorkdirRepo(db);
   const calls = {
     ensureTranscriptRuntime: [] as string[],
     createVisibleSessionThread: [] as Array<{
@@ -377,6 +386,7 @@ const createControlChannelServicesFixture = ({
         };
       },
     } as never,
+    currentWorkdirRepo,
     sessionRepo: {
       getByDiscordThreadId(discordThreadId: string) {
         return sessionRecords.get(discordThreadId) ?? null;
@@ -517,11 +527,18 @@ const createControlChannelServicesFixture = ({
         }),
       };
     },
-  });
+  }) as any;
 
   return {
     services,
     calls,
+    getCurrentWorkdir(input: {
+      guildId: string;
+      channelId: string;
+      discordUserId: string;
+    }) {
+      return currentWorkdirRepo.get(input);
+    },
     getSessionByCodexThreadId(codexThreadId: string) {
       const discordThreadId = codexThreadToDiscordThread.get(codexThreadId);
       return discordThreadId
@@ -789,7 +806,7 @@ test("create session expands ~/ paths before starting Codex", async () => {
     });
     expect(result).toEqual({
       reply: {
-        content: `Created session <#discord-thread-new-1> for \`${pathInsideHome}\`.`,
+        content: `Created session <#discord-thread-new-1> for \`${tildePath}\`.`,
       },
     });
   } finally {
@@ -806,6 +823,7 @@ test("create session treats bare relative paths as home-relative shorthand", asy
     const shorthandPath = pathInsideHome.startsWith(homePrefix)
       ? pathInsideHome.slice(homePrefix.length)
       : ".";
+    const displayPath = shorthandPath === "." ? "~" : `~/${shorthandPath}`;
 
     const result = await services.createSession({
       actorId: "owner-1",
@@ -827,11 +845,189 @@ test("create session treats bare relative paths as home-relative shorthand", asy
     });
     expect(result).toEqual({
       reply: {
-        content: `Created session <#discord-thread-new-1> for \`${pathInsideHome}\`.`,
+        content: `Created session <#discord-thread-new-1> for \`${displayPath}\`.`,
       },
     });
   } finally {
     rmSync(pathInsideHome, { recursive: true, force: true });
+  }
+});
+
+test("/workdir normalizes, stores, and replies with the current workdir", async () => {
+  const homeRoot = createTestHomeRoot();
+  const { services, getCurrentWorkdir } = createControlChannelServicesFixture({
+    homeDir: homeRoot,
+  });
+  const expectedPath = join(homeRoot, "code-github/code-helm");
+
+  const result = await services.setCurrentWorkdir({
+    actorId: "u1",
+    guildId: "guild-1",
+    channelId: "control-1",
+    path: "~/code-github/code-helm",
+  });
+
+  expect(
+    getCurrentWorkdir({
+      guildId: "guild-1",
+      channelId: "control-1",
+      discordUserId: "u1",
+    }),
+  ).toMatchObject({
+    cwd: expectedPath,
+  });
+  expect(result).toEqual({
+    reply: { content: "Current workdir: `~/code-github/code-helm`" },
+  });
+});
+
+test("/workdir rejects hidden paths with the existing validation surface", async () => {
+  const { services, getCurrentWorkdir } = createControlChannelServicesFixture();
+
+  const result = await services.setCurrentWorkdir({
+    actorId: "u1",
+    guildId: "guild-1",
+    channelId: "control-1",
+    path: "~/.codex",
+  });
+
+  expect(
+    getCurrentWorkdir({
+      guildId: "guild-1",
+      channelId: "control-1",
+      discordUserId: "u1",
+    }),
+  ).toBeNull();
+  expect(result).toEqual({
+    reply: {
+      content: "Session path must not include hidden directories.",
+      ephemeral: true,
+    },
+  });
+});
+
+test("/workdir rejects missing paths with the existing validation surface", async () => {
+  const { services, getCurrentWorkdir } = createControlChannelServicesFixture();
+  const missingPath = join(tmpdir(), `codehelm-missing-${Date.now()}`);
+
+  const result = await services.setCurrentWorkdir({
+    actorId: "u1",
+    guildId: "guild-1",
+    channelId: "control-1",
+    path: missingPath,
+  });
+
+  expect(
+    getCurrentWorkdir({
+      guildId: "guild-1",
+      channelId: "control-1",
+      discordUserId: "u1",
+    }),
+  ).toBeNull();
+  expect(result).toEqual({
+    reply: {
+      content: `Directory does not exist: \`${missingPath}\`.`,
+      ephemeral: true,
+    },
+  });
+});
+
+test("/session-new requires a current workdir", async () => {
+  const { services, calls } = createControlChannelServicesFixture();
+
+  const result = await services.createSession({
+    actorId: "u1",
+    guildId: "guild-1",
+    channelId: "control-1",
+  });
+
+  expect(calls.startThread).toEqual([]);
+  expect(calls.createVisibleSessionThread).toEqual([]);
+  expect(result).toEqual({
+    reply: {
+      content: "No current workdir. Run /workdir first.",
+      ephemeral: true,
+    },
+  });
+});
+
+test("/session-new uses the stored current workdir snapshot for thread creation", async () => {
+  const homeRoot = createTestHomeRoot();
+  const { services, calls } = createControlChannelServicesFixture({
+    homeDir: homeRoot,
+  });
+  const expectedPath = join(homeRoot, "code-github/code-helm");
+
+  await services.setCurrentWorkdir({
+    actorId: "u1",
+    guildId: "guild-1",
+    channelId: "control-1",
+    path: "~/code-github/code-helm",
+  });
+
+  const result = await services.createSession({
+    actorId: "u1",
+    guildId: "guild-1",
+    channelId: "control-1",
+  });
+
+  expect(calls.startThread).toEqual([expectedPath]);
+  expect(calls.createVisibleSessionThread).toEqual([
+    {
+      title: "codex-thread-1",
+      starterText: `Opening session for \`${expectedPath}\`.`,
+    },
+  ]);
+  expect(calls.threadMessages).toEqual([
+    {
+      threadId: "discord-thread-new-1",
+      payload: {
+        embeds: [
+          {
+            title: "Session started",
+            description: "Workdir: `~/code-github/code-helm`\nCodex thread: `codex-thread-1`",
+            color: expect.any(Number),
+          },
+        ],
+      },
+    },
+  ]);
+  expect(result).toEqual({
+    reply: {
+      content: "Created session <#discord-thread-new-1> for `~/code-github/code-helm`.",
+    },
+  });
+});
+
+test("/session-new fails when the stored current workdir is no longer readable", async () => {
+  const { services, calls } = createControlChannelServicesFixture();
+  const missingWorkdir = mkdtempSync(join(tmpdir(), "codehelm-current-workdir-"));
+
+  try {
+    await services.setCurrentWorkdir({
+      actorId: "u1",
+      guildId: "guild-1",
+      channelId: "control-1",
+      path: missingWorkdir,
+    });
+    rmSync(missingWorkdir, { recursive: true, force: true });
+
+    const result = await services.createSession({
+      actorId: "u1",
+      guildId: "guild-1",
+      channelId: "control-1",
+    });
+
+    expect(calls.startThread).toEqual([]);
+    expect(calls.createVisibleSessionThread).toEqual([]);
+    expect(result).toEqual({
+      reply: {
+        content: "Current workdir is no longer available. Run /workdir again.",
+        ephemeral: true,
+      },
+    });
+  } finally {
+    rmSync(missingWorkdir, { recursive: true, force: true });
   }
 });
 

@@ -131,7 +131,7 @@ export const renderSessionStartedText = ({
 }: SessionStartedEvent) => {
   const { path, codexThreadId } = params;
 
-  return `Session started.\nPath: \`${path}\`.\nCodex thread: \`${codexThreadId}\`.`;
+  return `Session started.\nWorkdir: \`${path}\`.\nCodex thread: \`${codexThreadId}\`.`;
 };
 
 export const renderSessionStartedPayload = ({
@@ -141,7 +141,7 @@ export const renderSessionStartedPayload = ({
 
   return buildEmbedPayload({
     title: "Session started",
-    description: `Path: \`${path}\`\nCodex thread: \`${codexThreadId}\``,
+    description: `Workdir: \`${path}\`\nCodex thread: \`${codexThreadId}\``,
     color: startedNoticeColor,
   });
 };

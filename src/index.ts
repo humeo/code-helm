@@ -38,6 +38,7 @@ import { type AppConfig, parseConfig } from "./config";
 import { createDatabaseClient } from "./db/client";
 import { applyMigrations } from "./db/migrate";
 import { createApprovalRepo, type ApprovalRecord } from "./db/repos/approvals";
+import { createCurrentWorkdirRepo } from "./db/repos/current-workdirs";
 import { createSessionRepo, type SessionRecord } from "./db/repos/sessions";
 import { createWorkdirRepo } from "./db/repos/workdirs";
 import { createWorkspaceRepo } from "./db/repos/workspaces";
@@ -2481,6 +2482,85 @@ const resolveSessionPathForAutocomplete = (
   return directory.ok ? directory.cwd : undefined;
 };
 
+const resolveCurrentWorkdirCommandError = (message: string): DiscordCommandResult => {
+  return {
+    reply: {
+      content: message,
+      ephemeral: true,
+    },
+  };
+};
+
+const resolveStoredCurrentWorkdirForCommand = ({
+  currentWorkdirRepo,
+  actorId,
+  guildId,
+  channelId,
+}: {
+  currentWorkdirRepo: Pick<
+    ReturnType<typeof createCurrentWorkdirRepo>,
+    "get" | "upsert"
+  >;
+  actorId: string;
+  guildId: string;
+  channelId: string;
+}): { ok: true; cwd: string } | { ok: false; result: DiscordCommandResult } => {
+  const currentWorkdir = currentWorkdirRepo.get({
+    guildId,
+    channelId,
+    discordUserId: actorId,
+  });
+
+  if (!currentWorkdir) {
+    return {
+      ok: false as const,
+      result: resolveCurrentWorkdirCommandError(
+        "No current workdir. Run /workdir first.",
+      ),
+    };
+  }
+
+  const directory = validateSessionPathDirectory(currentWorkdir.cwd);
+
+  if (!directory.ok) {
+    return {
+      ok: false as const,
+      result: resolveCurrentWorkdirCommandError(
+        "Current workdir is no longer available. Run /workdir again.",
+      ),
+    };
+  }
+
+  return {
+    ok: true as const,
+    cwd: directory.cwd,
+  };
+};
+
+const resolveStoredCurrentWorkdirForAutocomplete = ({
+  currentWorkdirRepo,
+  actorId,
+  guildId,
+  channelId,
+}: {
+  currentWorkdirRepo: Pick<
+    ReturnType<typeof createCurrentWorkdirRepo>,
+    "get" | "upsert"
+  >;
+  actorId: string;
+  guildId: string;
+  channelId: string;
+}) => {
+  const resolved = resolveStoredCurrentWorkdirForCommand({
+    currentWorkdirRepo,
+    actorId,
+    guildId,
+    channelId,
+  });
+
+  return resolved.ok ? resolved.cwd : undefined;
+};
+
 export const sortResumePickerThreads = (threads: CodexThread[]) => {
   return [...threads].sort((left, right) => {
     const leftUpdatedAt =
@@ -2770,6 +2850,10 @@ type CreateControlChannelServicesDeps = {
   config: AppConfig;
   homeDir?: string;
   codexClient: Pick<JsonRpcClient, "listThreads" | "startThread">;
+  currentWorkdirRepo: Pick<
+    ReturnType<typeof createCurrentWorkdirRepo>,
+    "get" | "upsert"
+  >;
   sessionRepo: Pick<
     ReturnType<typeof createSessionRepo>,
     | "getByDiscordThreadId"
@@ -2882,6 +2966,7 @@ export const createControlChannelServices = ({
   config,
   homeDir = homedir(),
   codexClient,
+  currentWorkdirRepo,
   sessionRepo,
   getDiscordClient,
   createVisibleSessionThread,
@@ -2895,14 +2980,52 @@ export const createControlChannelServices = ({
   readThreadForSnapshotReconciliation,
 }: CreateControlChannelServicesDeps): DiscordCommandServices => {
   return {
-    async createSession({ actorId, guildId, channelId, path }) {
+    async setCurrentWorkdir({ actorId, guildId, channelId, path }) {
       const contextError = requireConfiguredControlChannel(config, guildId, channelId);
 
       if (contextError) {
         return contextError;
       }
 
-      const resolvedPath = resolveSessionPathForCommand(path, homeDir);
+      const resolvedPath = resolveSessionPathForCommand(path ?? "", homeDir);
+
+      if (!resolvedPath.ok) {
+        return resolvedPath.result;
+      }
+
+      currentWorkdirRepo.upsert({
+        guildId,
+        channelId,
+        discordUserId: actorId,
+        cwd: resolvedPath.cwd,
+      });
+
+      return {
+        reply: {
+          content: `Current workdir: \`${formatSessionPathForDisplay(
+            resolvedPath.cwd,
+            homeDir,
+          )}\``,
+        },
+      };
+    },
+    async createSession(input) {
+      const { actorId, guildId, channelId } = input;
+      const path = (input as { path?: string }).path;
+      const contextError = requireConfiguredControlChannel(config, guildId, channelId);
+
+      if (contextError) {
+        return contextError;
+      }
+
+      const resolvedPath = path
+        ? resolveSessionPathForCommand(path, homeDir)
+        : resolveStoredCurrentWorkdirForCommand({
+            currentWorkdirRepo,
+            actorId,
+            guildId,
+            channelId,
+          });
 
       if (!resolvedPath.ok) {
         return resolvedPath.result;
@@ -2961,7 +3084,7 @@ export const createControlChannelServices = ({
 
       return {
         reply: {
-          content: `Created session <#${thread.id}> for \`${authoritativeCwd}\`.`,
+          content: `Created session <#${thread.id}> for \`${displayPath}\`.`,
         },
       };
     },
@@ -3078,7 +3201,9 @@ export const createControlChannelServices = ({
         homeDir,
       });
     },
-    async autocompleteResumeSessions({ guildId, channelId, path, query }) {
+    async autocompleteResumeSessions(input) {
+      const { guildId, channelId, query } = input;
+      const path = (input as { path?: string }).path;
       const contextError = requireConfiguredControlChannel(config, guildId, channelId);
 
       if (contextError) {
@@ -3091,14 +3216,16 @@ export const createControlChannelServices = ({
         cwd: resolveSessionPathForAutocomplete(path, homeDir),
       });
     },
-    async resumeSession({ actorId, guildId, channelId, path, codexThreadId }) {
+    async resumeSession(input) {
+      const { actorId, guildId, channelId, codexThreadId } = input;
+      const path = (input as { path?: string }).path;
       const contextError = requireConfiguredControlChannel(config, guildId, channelId);
 
       if (contextError) {
         return contextError;
       }
 
-      const resolvedPath = resolveSessionPathForCommand(path, homeDir);
+      const resolvedPath = resolveSessionPathForCommand(path ?? "", homeDir);
 
       if (!resolvedPath.ok) {
         return resolvedPath.result;
@@ -3752,6 +3879,7 @@ export const startCodeHelm = async (
 
   const sessionRepo = createSessionRepo(db);
   const approvalRepo = createApprovalRepo(db);
+  const currentWorkdirRepo = createCurrentWorkdirRepo(db);
   const codexClient = new JsonRpcClient(config.codex.appServerUrl);
   const approvalDmMessages = new Map<string, ApprovalButtonMessage>();
   const approvalThreadMessages = new Map<string, ApprovalLifecycleState>();
@@ -4311,6 +4439,7 @@ export const startCodeHelm = async (
   const services = createControlChannelServices({
     config,
     codexClient,
+    currentWorkdirRepo,
     sessionRepo,
     getDiscordClient: () => requireDiscordClient(discordClient),
     createVisibleSessionThread,
