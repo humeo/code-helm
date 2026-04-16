@@ -3178,51 +3178,79 @@ export const createControlChannelServices = ({
       });
     },
     async autocompleteResumeSessions(input) {
-      const { guildId, channelId, query } = input;
-      const path = (input as { path?: string }).path;
+      const { actorId, guildId, channelId, query } = input;
       const contextError = requireConfiguredControlChannel(config, guildId, channelId);
 
       if (contextError) {
         return [];
       }
 
+      const currentWorkdirResult = resolveStoredCurrentWorkdirForCommand({
+        currentWorkdirRepo,
+        actorId,
+        guildId,
+        channelId,
+      });
+
+      if (!currentWorkdirResult.ok) {
+        return [];
+      }
+
       return buildResumeSessionAutocompleteChoices({
         codexClient,
         query,
-        cwd: resolveSessionPathForAutocomplete(path, homeDir),
+        cwd: currentWorkdirResult.cwd,
       });
     },
     async resumeSession(input) {
       const { actorId, guildId, channelId, codexThreadId } = input;
-      const path = (input as { path?: string }).path;
       const contextError = requireConfiguredControlChannel(config, guildId, channelId);
 
       if (contextError) {
         return contextError;
       }
 
-      const resolvedPath = resolveSessionPathForCommand(path ?? "", homeDir);
+      const currentWorkdirResult = resolveStoredCurrentWorkdirForCommand({
+        currentWorkdirRepo,
+        actorId,
+        guildId,
+        channelId,
+      });
 
-      if (!resolvedPath.ok) {
-        return resolvedPath.result;
+      if (!currentWorkdirResult.ok) {
+        return currentWorkdirResult.result;
+      }
+
+      const currentWorkdir = currentWorkdirResult.cwd;
+      const displayPath = formatSessionPathForDisplay(currentWorkdir, homeDir);
+      let snapshot: ThreadReadResult;
+
+      try {
+        snapshot = await readThreadForSnapshotReconciliation({
+          threadId: codexThreadId,
+        });
+      } catch (error) {
+        return {
+          reply: {
+            content:
+              `Session \`${codexThreadId}\` was not found in current workdir \`${displayPath}\`.`,
+              ephemeral: true,
+          },
+        };
+      }
+
+      if (snapshot.thread.cwd !== currentWorkdir) {
+        return {
+          reply: {
+            content:
+              `Session \`${codexThreadId}\` belongs to \`${snapshot.thread.cwd}\`, ` +
+              `not \`${currentWorkdir}\`.`,
+            ephemeral: true,
+          },
+        };
       }
 
       try {
-        const snapshot = await readThreadForSnapshotReconciliation({
-          threadId: codexThreadId,
-        });
-
-        if (snapshot.thread.cwd !== resolvedPath.cwd) {
-          return {
-            reply: {
-              content:
-                `Session \`${codexThreadId}\` belongs to \`${snapshot.thread.cwd}\`, ` +
-                `not \`${resolvedPath.cwd}\`.`,
-              ephemeral: true,
-            },
-          };
-        }
-
         const discord = getDiscordClient();
         const existingSession = sessionRepo.getByCodexThreadId(codexThreadId);
 
@@ -3260,7 +3288,6 @@ export const createControlChannelServices = ({
           const rollbackBinding = async (thread: BoundSessionThread) => {
             sessionRepo.markDeleted(thread.id);
           };
-          const displayPath = formatSessionPathForDisplay(resolvedPath.cwd, homeDir);
           const thread = await createAttachedSessionThread({
             client: discord,
             controlChannelId: config.discord.controlChannelId,
@@ -3268,13 +3295,13 @@ export const createControlChannelServices = ({
             sessionPath: displayPath,
             codexThreadId,
             title: sessionThreadTitle(codexThreadId),
-            starterText: `Attaching Codex session \`${codexThreadId}\` for \`${resolvedPath.cwd}\`.`,
+            starterText: `Attaching Codex session \`${codexThreadId}\` for \`${currentWorkdir}\`.`,
             onBound: async (boundThread) => {
               sessionRepo.insert({
                 discordThreadId: boundThread.id,
                 codexThreadId,
                 ownerDiscordUserId: actorId,
-                cwd: resolvedPath.cwd,
+                cwd: currentWorkdir,
                 state: inferSessionStateFromThreadStatus(snapshot.thread.status),
               });
               ensureTranscriptRuntime(codexThreadId);
@@ -3304,7 +3331,6 @@ export const createControlChannelServices = ({
               sessionRepo.updateLifecycleState(previousThreadId, previousLifecycleState);
             }
           };
-          const displayPath = formatSessionPathForDisplay(resolvedPath.cwd, homeDir);
           const thread = await createAttachedSessionThread({
             client: discord,
             controlChannelId: config.discord.controlChannelId,
@@ -3312,7 +3338,7 @@ export const createControlChannelServices = ({
             sessionPath: displayPath,
             codexThreadId,
             title: sessionThreadTitle(codexThreadId),
-            starterText: `Attaching Codex session \`${codexThreadId}\` for \`${resolvedPath.cwd}\`.`,
+            starterText: `Attaching Codex session \`${codexThreadId}\` for \`${currentWorkdir}\`.`,
             onBound: async (boundThread) => {
               sessionRepo.rebindDiscordThread({
                 currentDiscordThreadId: previousThreadId,

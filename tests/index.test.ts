@@ -1072,49 +1072,6 @@ test("create session rejects hidden absolute paths with an ephemeral validation 
   });
 });
 
-test("resume session rejects nonexistent paths with an ephemeral validation error", async () => {
-  const { services, calls } = createControlChannelServicesFixture();
-  const missingPath = join(tmpdir(), `codehelm-missing-${Date.now()}`);
-
-  const result = await services.resumeSession({
-    actorId: "owner-1",
-    guildId: "guild-1",
-    channelId: "control-1",
-    path: missingPath,
-    codexThreadId: "codex-thread-1",
-  });
-
-  expect(calls.readThreadIds).toEqual([]);
-  expect(calls.createVisibleSessionThread).toEqual([]);
-  expect(result).toEqual({
-    reply: {
-      content: `Directory does not exist: \`${missingPath}\`.`,
-      ephemeral: true,
-    },
-  });
-});
-
-test("resume session rejects hidden paths with an ephemeral validation error", async () => {
-  const { services, calls } = createControlChannelServicesFixture();
-
-  const result = await services.resumeSession({
-    actorId: "owner-1",
-    guildId: "guild-1",
-    channelId: "control-1",
-    path: "~/.codex",
-    codexThreadId: "codex-thread-1",
-  });
-
-  expect(calls.readThreadIds).toEqual([]);
-  expect(calls.createVisibleSessionThread).toEqual([]);
-  expect(result).toEqual({
-    reply: {
-      content: "Session path must not include hidden directories.",
-      ephemeral: true,
-    },
-  });
-});
-
 test("path autocomplete starts from home directory choices", async () => {
   const homeDir = mkdtempSync(join(tmpdir(), "codehelm-path-home-"));
 
@@ -1186,43 +1143,75 @@ test("path autocomplete starts from home directory choices", async () => {
   }
 });
 
-test("resume session autocomplete stays empty until the selected path is a valid directory", async () => {
-  const homeDir = mkdtempSync(join(tmpdir(), "codehelm-resume-home-"));
+test("/session-resume autocomplete returns [] when no current workdir exists", async () => {
+  const { services, calls } = createControlChannelServicesFixture();
+
+  expect(await services.autocompleteResumeSessions({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
+    query: "codex",
+  })).toEqual([]);
+  expect(calls.listThreads).toEqual([]);
+});
+
+test("/session-resume autocomplete returns [] when the stored current workdir is no longer available", async () => {
+  const { services, calls } = createControlChannelServicesFixture();
+  const missingWorkdir = mkdtempSync(join(tmpdir(), "codehelm-resume-current-workdir-"));
 
   try {
-    mkdirSync(join(homeDir, "code-github"));
-
-    const { services, calls } = createControlChannelServicesFixture({
-      homeDir,
+    await services.setCurrentWorkdir({
+      actorId: "owner-1",
+      guildId: "guild-1",
+      channelId: "control-1",
+      path: missingWorkdir,
     });
+    rmSync(missingWorkdir, { recursive: true, force: true });
 
     expect(await services.autocompleteResumeSessions({
       actorId: "owner-1",
       guildId: "guild-1",
       channelId: "control-1",
-      path: "~/code-github/missing/",
       query: "codex",
     })).toEqual([]);
     expect(calls.listThreads).toEqual([]);
+  } finally {
+    rmSync(missingWorkdir, { recursive: true, force: true });
+  }
+});
+
+test("/session-resume autocomplete scopes Codex threads by the stored current workdir, not by any slash-command path", async () => {
+  const homeRoot = createTestHomeRoot();
+  const { services, calls } = createControlChannelServicesFixture({
+    homeDir: homeRoot,
+  });
+  const expectedPath = join(homeRoot, "code-github/code-helm");
+
+  try {
+    await services.setCurrentWorkdir({
+      actorId: "owner-1",
+      guildId: "guild-1",
+      channelId: "control-1",
+      path: "~/code-github/code-helm",
+    });
 
     await services.autocompleteResumeSessions({
       actorId: "owner-1",
       guildId: "guild-1",
       channelId: "control-1",
-      path: "~/code-github/",
       query: "codex",
     });
 
     expect(calls.listThreads).toEqual([
       {
-        cwd: join(homeDir, "code-github"),
+        cwd: expectedPath,
         searchTerm: "codex",
         limit: 25,
         sortKey: "updated_at",
         archived: false,
       },
       {
-        cwd: join(homeDir, "code-github"),
+        cwd: expectedPath,
         searchTerm: "codex",
         limit: 25,
         sortKey: "updated_at",
@@ -1230,69 +1219,8 @@ test("resume session autocomplete stays empty until the selected path is a valid
       },
     ]);
   } finally {
-    rmSync(homeDir, { recursive: true, force: true });
+    rmSync(homeRoot, { recursive: true, force: true });
   }
-});
-
-test("resume session autocomplete returns no options for hidden paths", async () => {
-  const homeDir = mkdtempSync(join(tmpdir(), "codehelm-resume-hidden-home-"));
-
-  try {
-    mkdirSync(join(homeDir, ".codex", "work"), { recursive: true });
-
-    const { services, calls } = createControlChannelServicesFixture({
-      homeDir,
-    });
-
-    expect(await services.autocompleteResumeSessions({
-      actorId: "owner-1",
-      guildId: "guild-1",
-      channelId: "control-1",
-      path: "~/.codex",
-      query: "codex",
-    })).toEqual([]);
-
-    expect(await services.autocompleteResumeSessions({
-      actorId: "owner-1",
-      guildId: "guild-1",
-      channelId: "control-1",
-      path: "~/.codex/work",
-      query: "codex",
-    })).toEqual([]);
-
-    expect(calls.listThreads).toEqual([]);
-  } finally {
-    rmSync(homeDir, { recursive: true, force: true });
-  }
-});
-
-test("resume session autocomplete scopes Codex threads by the normalized path", async () => {
-  const { services, calls } = createControlChannelServicesFixture();
-
-  await services.autocompleteResumeSessions({
-    actorId: "owner-1",
-    guildId: "guild-1",
-    channelId: "control-1",
-    path: `${defaultSessionPath}/../api`,
-    query: "codex",
-  });
-
-  expect(calls.listThreads).toEqual([
-    {
-      cwd: defaultSessionPath,
-      searchTerm: "codex",
-      limit: 25,
-      sortKey: "updated_at",
-      archived: false,
-    },
-    {
-      cwd: defaultSessionPath,
-      searchTerm: "codex",
-      limit: 25,
-      sortKey: "updated_at",
-      archived: true,
-    },
-  ]);
 });
 
 test("resume attachment resolution distinguishes reuse, reopen, rebind, and create", () => {
@@ -1359,11 +1287,17 @@ test("create session does not render an initial idle status card", async () => {
 test("unmanaged session with matching workdir creates a new Discord thread and session row", async () => {
   const { services, calls, getSessionByCodexThreadId } = createControlChannelServicesFixture();
 
-  const result = await services.resumeSession({
+  await services.setCurrentWorkdir({
     actorId: "owner-1",
     guildId: "guild-1",
     channelId: "control-1",
     path: defaultSessionPath,
+  });
+
+  const result = await services.resumeSession({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
     codexThreadId: "codex-thread-1",
   });
 
@@ -1405,11 +1339,17 @@ test("archived managed session syncs and reopens the same Discord thread", async
     }),
   });
 
-  const result = await services.resumeSession({
+  await services.setCurrentWorkdir({
     actorId: "owner-1",
     guildId: "guild-1",
     channelId: "control-1",
     path: defaultSessionPath,
+  });
+
+  const result = await services.resumeSession({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
     codexThreadId: "codex-thread-1",
   });
 
@@ -1432,11 +1372,17 @@ test("active managed session reuses the existing Discord thread instead of creat
     }),
   });
 
-  const result = await services.resumeSession({
+  await services.setCurrentWorkdir({
     actorId: "owner-1",
     guildId: "guild-1",
     channelId: "control-1",
     path: defaultSessionPath,
+  });
+
+  const result = await services.resumeSession({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
     codexThreadId: "codex-thread-1",
   });
 
@@ -1460,11 +1406,17 @@ test("deleted or unusable managed thread creates a replacement Discord thread th
     discordThreadUsable: false,
   });
 
-  const result = await services.resumeSession({
+  await services.setCurrentWorkdir({
     actorId: "owner-1",
     guildId: "guild-1",
     channelId: "control-1",
     path: defaultSessionPath,
+  });
+
+  const result = await services.resumeSession({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
     codexThreadId: "codex-thread-1",
   });
 
@@ -1500,16 +1452,70 @@ test("deleted or unusable managed thread creates a replacement Discord thread th
   });
 });
 
-test("attach rejects a codex thread whose cwd does not match the normalized path", async () => {
-  const { services, calls } = createControlChannelServicesFixture({
-    readThreadCwd: alternateSessionPath,
+test("/session-resume fails with No current workdir. Run /workdir first. when unset", async () => {
+  const { services, calls } = createControlChannelServicesFixture();
+
+  const result = await services.resumeSession({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
+    codexThreadId: "codex-thread-1",
+  });
+
+  expect(calls.readThreadIds).toEqual([]);
+  expect(calls.createVisibleSessionThread).toEqual([]);
+  expect(result).toEqual({
+    reply: {
+      content: "No current workdir. Run /workdir first.",
+      ephemeral: true,
+    },
+  });
+});
+
+test("hand-typed or stale session ids produce a deterministic user-facing error instead of leaking a raw provider exception", async () => {
+  const { services } = createControlChannelServicesFixture({
+    readThreadError: new Error("thread missing"),
+  });
+
+  await services.setCurrentWorkdir({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
+    path: defaultSessionPath,
   });
 
   const result = await services.resumeSession({
     actorId: "owner-1",
     guildId: "guild-1",
     channelId: "control-1",
-    path: `${defaultSessionPath}/../api`,
+    codexThreadId: "codex-thread-1",
+  });
+
+  expect(result).toEqual({
+    reply: {
+      content:
+        "Session `codex-thread-1` was not found in current workdir `/tmp/workspace/api`.",
+      ephemeral: true,
+    },
+  });
+});
+
+test("a selected session whose authoritative cwd differs from current workdir is rejected", async () => {
+  const { services, calls } = createControlChannelServicesFixture({
+    readThreadCwd: alternateSessionPath,
+  });
+
+  await services.setCurrentWorkdir({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
+    path: defaultSessionPath,
+  });
+
+  const result = await services.resumeSession({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
     codexThreadId: "codex-thread-1",
   });
 
@@ -1525,22 +1531,60 @@ test("attach rejects a codex thread whose cwd does not match the normalized path
   });
 });
 
-test("attach surfaces snapshot read failures as structured command errors", async () => {
-  const { services } = createControlChannelServicesFixture({
-    readThreadError: new Error("thread missing"),
+test("attach rejects a codex thread whose cwd does not match the current workdir", async () => {
+  const { services, calls } = createControlChannelServicesFixture({
+    readThreadCwd: alternateSessionPath,
+  });
+
+  await services.setCurrentWorkdir({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
+    path: defaultSessionPath,
   });
 
   const result = await services.resumeSession({
     actorId: "owner-1",
     guildId: "guild-1",
     channelId: "control-1",
+    codexThreadId: "codex-thread-1",
+  });
+
+  expect(calls.createVisibleSessionThread).toHaveLength(0);
+  expect(calls.syncedThreads).toEqual([]);
+  expect(calls.resumedThreads).toEqual([]);
+  expect(result).toEqual({
+    reply: {
+      content:
+        "Session `codex-thread-1` belongs to `/tmp/workspace/web`, not `/tmp/workspace/api`.",
+      ephemeral: true,
+    },
+  });
+});
+
+test("attach returns a deterministic not-found error for stale session ids", async () => {
+  const { services } = createControlChannelServicesFixture({
+    readThreadError: new Error("thread missing"),
+  });
+
+  await services.setCurrentWorkdir({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
     path: defaultSessionPath,
+  });
+
+  const result = await services.resumeSession({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
     codexThreadId: "codex-thread-1",
   });
 
   expect(result).toEqual({
     reply: {
-      content: "Attach failed for `codex-thread-1`: thread missing.",
+      content:
+        "Session `codex-thread-1` was not found in current workdir `/tmp/workspace/api`.",
       ephemeral: true,
     },
   });
@@ -1552,11 +1596,17 @@ test("create attach rolls back the new binding when starter relay fails", async 
     createThreadSendError: failure,
   });
 
-  const result = await services.resumeSession({
+  await services.setCurrentWorkdir({
     actorId: "owner-1",
     guildId: "guild-1",
     channelId: "control-1",
     path: defaultSessionPath,
+  });
+
+  const result = await services.resumeSession({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
     codexThreadId: "codex-thread-1",
   });
 
@@ -1587,11 +1637,17 @@ test("replacement attach restores the original binding when starter relay fails"
     createThreadSendError: failure,
   });
 
-  const result = await services.resumeSession({
+  await services.setCurrentWorkdir({
     actorId: "owner-1",
     guildId: "guild-1",
     channelId: "control-1",
     path: defaultSessionPath,
+  });
+
+  const result = await services.resumeSession({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
     codexThreadId: "codex-thread-1",
   });
 
@@ -1649,11 +1705,17 @@ test("waiting-approval create attach resumes the Discord thread instead of doing
     resumeOutcome: waitingApprovalOutcome,
   });
 
-  const result = await services.resumeSession({
+  await services.setCurrentWorkdir({
     actorId: "owner-1",
     guildId: "guild-1",
     channelId: "control-1",
     path: defaultSessionPath,
+  });
+
+  const result = await services.resumeSession({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
     codexThreadId: "codex-thread-1",
   });
 
@@ -1701,11 +1763,17 @@ test("waiting-approval replacement attach resumes the replacement thread instead
     resumeOutcome: waitingApprovalOutcome,
   });
 
-  const result = await services.resumeSession({
+  await services.setCurrentWorkdir({
     actorId: "owner-1",
     guildId: "guild-1",
     channelId: "control-1",
     path: defaultSessionPath,
+  });
+
+  const result = await services.resumeSession({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
     codexThreadId: "codex-thread-1",
   });
 
@@ -1724,11 +1792,17 @@ test("untrusted create attach rolls back the new discord thread into a deleted b
     syncOutcome: createResumeOutcome("untrusted"),
   });
 
-  const result = await services.resumeSession({
+  await services.setCurrentWorkdir({
     actorId: "owner-1",
     guildId: "guild-1",
     channelId: "control-1",
     path: defaultSessionPath,
+  });
+
+  const result = await services.resumeSession({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
     codexThreadId: "codex-thread-1",
   });
 
@@ -1758,11 +1832,17 @@ test("untrusted replacement attach rebinds back to the original deleted thread",
     syncOutcome: createResumeOutcome("untrusted"),
   });
 
-  const result = await services.resumeSession({
+  await services.setCurrentWorkdir({
     actorId: "owner-1",
     guildId: "guild-1",
     channelId: "control-1",
     path: defaultSessionPath,
+  });
+
+  const result = await services.resumeSession({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
     codexThreadId: "codex-thread-1",
   });
 
@@ -1795,11 +1875,17 @@ test("attached busy sessions stay non-writable", async () => {
     syncOutcome: createResumeOutcome("busy"),
   });
 
-  const result = await services.resumeSession({
+  await services.setCurrentWorkdir({
     actorId: "owner-1",
     guildId: "guild-1",
     channelId: "control-1",
     path: defaultSessionPath,
+  });
+
+  const result = await services.resumeSession({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
     codexThreadId: "codex-thread-1",
   });
 
@@ -1816,11 +1902,17 @@ test("attached degraded or error sessions stay read-only", async () => {
     syncOutcome: createResumeOutcome("read-only"),
   });
 
-  const readOnlyResult = await readOnlyFixture.services.resumeSession({
+  await readOnlyFixture.services.setCurrentWorkdir({
     actorId: "owner-1",
     guildId: "guild-1",
     channelId: "control-1",
     path: defaultSessionPath,
+  });
+
+  const readOnlyResult = await readOnlyFixture.services.resumeSession({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
     codexThreadId: "codex-thread-1",
   });
 
@@ -1835,11 +1927,17 @@ test("attached degraded or error sessions stay read-only", async () => {
     syncOutcome: createResumeOutcome("error"),
   });
 
-  const errorResult = await errorFixture.services.resumeSession({
+  await errorFixture.services.setCurrentWorkdir({
     actorId: "owner-1",
     guildId: "guild-1",
     channelId: "control-1",
     path: defaultSessionPath,
+  });
+
+  const errorResult = await errorFixture.services.resumeSession({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
     codexThreadId: "codex-thread-1",
   });
 
