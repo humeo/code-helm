@@ -1474,7 +1474,7 @@ test("/session-resume fails with No current workdir. Run /workdir first. when un
 
 test("hand-typed or stale session ids produce a deterministic user-facing error instead of leaking a raw provider exception", async () => {
   const { services } = createControlChannelServicesFixture({
-    readThreadError: new Error("thread missing"),
+    readThreadError: new Error("thread not found: codex-thread-1"),
   });
 
   await services.setCurrentWorkdir({
@@ -1531,40 +1531,9 @@ test("a selected session whose authoritative cwd differs from current workdir is
   });
 });
 
-test("attach rejects a codex thread whose cwd does not match the current workdir", async () => {
-  const { services, calls } = createControlChannelServicesFixture({
-    readThreadCwd: alternateSessionPath,
-  });
-
-  await services.setCurrentWorkdir({
-    actorId: "owner-1",
-    guildId: "guild-1",
-    channelId: "control-1",
-    path: defaultSessionPath,
-  });
-
-  const result = await services.resumeSession({
-    actorId: "owner-1",
-    guildId: "guild-1",
-    channelId: "control-1",
-    codexThreadId: "codex-thread-1",
-  });
-
-  expect(calls.createVisibleSessionThread).toHaveLength(0);
-  expect(calls.syncedThreads).toEqual([]);
-  expect(calls.resumedThreads).toEqual([]);
-  expect(result).toEqual({
-    reply: {
-      content:
-        "Session `codex-thread-1` belongs to `/tmp/workspace/web`, not `/tmp/workspace/api`.",
-      ephemeral: true,
-    },
-  });
-});
-
-test("attach returns a deterministic not-found error for stale session ids", async () => {
+test("unexpected read-thread provider failures stay attach failures instead of being rewritten as not-found", async () => {
   const { services } = createControlChannelServicesFixture({
-    readThreadError: new Error("thread missing"),
+    readThreadError: new Error("unexpected rpc failure"),
   });
 
   await services.setCurrentWorkdir({
@@ -1583,8 +1552,7 @@ test("attach returns a deterministic not-found error for stale session ids", asy
 
   expect(result).toEqual({
     reply: {
-      content:
-        "Session `codex-thread-1` was not found in current workdir `/tmp/workspace/api`.",
+      content: "Attach failed for `codex-thread-1`: unexpected rpc failure.",
       ephemeral: true,
     },
   });

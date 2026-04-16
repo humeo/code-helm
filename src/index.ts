@@ -2491,6 +2491,21 @@ const resolveCurrentWorkdirCommandError = (message: string): DiscordCommandResul
   };
 };
 
+const resolveResumeAttachFailure = (
+  codexThreadId: string,
+  error: unknown,
+): DiscordCommandResult => {
+  return {
+    reply: {
+      content:
+        error instanceof Error
+          ? `Attach failed for \`${codexThreadId}\`: ${error.message}.`
+          : `Attach failed for \`${codexThreadId}\`.`,
+      ephemeral: true,
+    },
+  };
+};
+
 const resolveStoredCurrentWorkdirForCommand = ({
   currentWorkdirRepo,
   actorId,
@@ -3230,6 +3245,10 @@ export const createControlChannelServices = ({
           threadId: codexThreadId,
         });
       } catch (error) {
+        if (!isMissingCodexThreadError(error)) {
+          return resolveResumeAttachFailure(codexThreadId, error);
+        }
+
         return {
           reply: {
             content:
@@ -3416,15 +3435,7 @@ export const createControlChannelServices = ({
           },
         };
       } catch (error) {
-        return {
-          reply: {
-            content:
-              error instanceof Error
-                ? `Attach failed for \`${codexThreadId}\`: ${error.message}.`
-                : `Attach failed for \`${codexThreadId}\`.`,
-            ephemeral: true,
-          },
-        };
+        return resolveResumeAttachFailure(codexThreadId, error);
       }
     },
   };
