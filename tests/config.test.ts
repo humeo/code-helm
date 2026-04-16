@@ -1,75 +1,133 @@
-import { describe, expect, test } from "bun:test";
-import { parseConfig } from "../src/config";
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  saveStoredConfig,
+  saveStoredSecrets,
+  type StoredConfig,
+  type StoredSecrets,
+} from "../src/cli/config-store";
+import {
+  DEFAULT_WORKSPACE_ID,
+  DEFAULT_WORKSPACE_NAME,
+  loadAppConfig,
+  parseConfig,
+} from "../src/config";
 
-describe("parseConfig", () => {
-  test("returns parsed config for valid env", () => {
-    const env = {
-      DISCORD_BOT_TOKEN: "bot-token",
-      DISCORD_APP_ID: "app-id",
-      DISCORD_GUILD_ID: "guild-id",
-      DISCORD_CONTROL_CHANNEL_ID: "channel-id",
-      CODEX_APP_SERVER_URL: "ws://127.0.0.1:4090",
-      DATABASE_PATH: "/tmp/code-helm.db",
-      WORKSPACE_ID: "workspace-id",
-      WORKSPACE_NAME: "Main Workspace",
-    };
+const tempDirs: string[] = [];
 
-    const config = parseConfig(env);
+const createTempDir = () => {
+  const directory = mkdtempSync(join(tmpdir(), "codehelm-config-"));
+  tempDirs.push(directory);
+  return directory;
+};
 
-    expect(config).toEqual({
-      DISCORD_APP_ID: "app-id",
-      discord: {
-        botToken: "bot-token",
-        appId: "app-id",
-        guildId: "guild-id",
-        controlChannelId: "channel-id",
-      },
-      codex: {
-        appServerUrl: "ws://127.0.0.1:4090",
-      },
-      databasePath: "/tmp/code-helm.db",
-      workspace: {
-        id: "workspace-id",
-        name: "Main Workspace",
-      },
+const createStoredConfig = (): StoredConfig => ({
+  discord: {
+    guildId: "stored-guild",
+    controlChannelId: "stored-channel",
+  },
+  codex: {
+    appServerMode: "managed",
+  },
+  database: {
+    path: "/tmp/stored-codehelm.sqlite",
+  },
+  internal: {
+    discordAppId: "stored-app-id",
+    codexAppServerUrl: "ws://127.0.0.1:4090",
+  },
+});
+
+const createStoredSecrets = (): StoredSecrets => ({
+  discord: {
+    botToken: "stored-bot-token",
+  },
+});
+
+afterEach(() => {
+  for (const directory of tempDirs.splice(0)) {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+describe("loadAppConfig", () => {
+  test("builds an AppConfig from stored config and stored secrets", () => {
+    const directory = createTempDir();
+    const configPath = join(directory, "config.toml");
+    const secretsPath = join(directory, "secrets.toml");
+
+    saveStoredConfig(createStoredConfig(), { configPath });
+    saveStoredSecrets(createStoredSecrets(), { secretsPath });
+
+    const config = loadAppConfig({
+      CODE_HELM_CONFIG: configPath,
+      CODE_HELM_SECRETS: secretsPath,
     });
 
-    expect(config.workspace).not.toHaveProperty("rootPath");
-    expect(config).not.toHaveProperty("workdirs");
+    expect(config.discord.guildId).toBe("stored-guild");
+    expect(config.discord.controlChannelId).toBe("stored-channel");
+    expect(config.discord.botToken).toBe("stored-bot-token");
+    expect(config.codex.appServerUrl).toBe("ws://127.0.0.1:4090");
+    expect(config.databasePath).toBe("/tmp/stored-codehelm.sqlite");
+    expect(config.DISCORD_APP_ID).toBe("stored-app-id");
+    expect(config.discord.appId).toBe("stored-app-id");
+    expect(config.workspace).toEqual({
+      id: DEFAULT_WORKSPACE_ID,
+      name: DEFAULT_WORKSPACE_NAME,
+    });
   });
 
-  test("rejects invalid Codex server URLs", () => {
-    expect(() =>
-      parseConfig({
-        DISCORD_BOT_TOKEN: "bot-token",
-        DISCORD_APP_ID: "app-id",
-        DISCORD_GUILD_ID: "guild-id",
-        DISCORD_CONTROL_CHANNEL_ID: "channel-id",
-        CODEX_APP_SERVER_URL: "not-a-url",
-        DATABASE_PATH: "/tmp/code-helm.db",
-        WORKSPACE_ID: "workspace-id",
-        WORKSPACE_NAME: "Main Workspace",
-      }),
-    ).toThrow(/URL|CODEX_APP_SERVER_URL/);
+  test("lets CODE_HELM overrides win over stored files", () => {
+    const directory = createTempDir();
+    const configPath = join(directory, "config.toml");
+    const secretsPath = join(directory, "secrets.toml");
+
+    saveStoredConfig(createStoredConfig(), { configPath });
+    saveStoredSecrets(createStoredSecrets(), { secretsPath });
+
+    const config = loadAppConfig({
+      CODE_HELM_CONFIG: configPath,
+      CODE_HELM_SECRETS: secretsPath,
+      CODE_HELM_DISCORD_GUILD_ID: "override-guild",
+      CODE_HELM_DISCORD_CONTROL_CHANNEL_ID: "override-channel",
+      CODE_HELM_DISCORD_BOT_TOKEN: "override-bot-token",
+      CODE_HELM_CODEX_APP_SERVER_URL: "wss://example.com/codex",
+      CODE_HELM_DATABASE_PATH: "/tmp/override-codehelm.sqlite",
+    });
+
+    expect(config.discord.guildId).toBe("override-guild");
+    expect(config.discord.controlChannelId).toBe("override-channel");
+    expect(config.discord.botToken).toBe("override-bot-token");
+    expect(config.codex.appServerUrl).toBe("wss://example.com/codex");
+    expect(config.databasePath).toBe("/tmp/override-codehelm.sqlite");
+    expect(config.DISCORD_APP_ID).toBe("stored-app-id");
   });
 
-  test("requires Discord, Codex, and database settings", () => {
-    expect(() => parseConfig({})).toThrow(/DISCORD_BOT_TOKEN/);
-  });
+  test("keeps the daemon compatibility bridge values required by the runtime", () => {
+    const directory = createTempDir();
+    const configPath = join(directory, "config.toml");
+    const secretsPath = join(directory, "secrets.toml");
 
-  test("keeps the legacy DISCORD_APP_ID field for the entrypoint", () => {
+    saveStoredConfig(createStoredConfig(), { configPath });
+    saveStoredSecrets(createStoredSecrets(), { secretsPath });
+
     const config = parseConfig({
-      DISCORD_BOT_TOKEN: "bot-token",
-      DISCORD_APP_ID: "app-id",
-      DISCORD_GUILD_ID: "guild-id",
-      DISCORD_CONTROL_CHANNEL_ID: "channel-id",
-      CODEX_APP_SERVER_URL: "ws://127.0.0.1:4090",
-      DATABASE_PATH: "/tmp/code-helm.db",
-      WORKSPACE_ID: "workspace-id",
-      WORKSPACE_NAME: "Main Workspace",
+      CODE_HELM_CONFIG: configPath,
+      CODE_HELM_SECRETS: secretsPath,
     });
 
-    expect(config.DISCORD_APP_ID).toBe("app-id");
-    expect(config.discord.appId).toBe("app-id");
+    expect(config.discord.guildId).toBe("stored-guild");
+    expect(config.discord.controlChannelId).toBe("stored-channel");
+    expect(config.discord.botToken).toBe("stored-bot-token");
+    expect(config.codex.appServerUrl).toBe("ws://127.0.0.1:4090");
+    expect(config.databasePath).toBe("/tmp/stored-codehelm.sqlite");
+    expect(config.DISCORD_APP_ID).toBe("stored-app-id");
+    expect(config.discord.appId).toBe("stored-app-id");
+    expect(config.workspace).toEqual({
+      id: DEFAULT_WORKSPACE_ID,
+      name: DEFAULT_WORKSPACE_NAME,
+    });
   });
 });
