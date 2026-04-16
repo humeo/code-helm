@@ -205,6 +205,7 @@ export const stopManagedCodexAppServer = async (
   options: StopManagedCodexAppServerOptions = {},
 ) => {
   const timeoutMs = options.timeoutMs ?? 5_000;
+  const waitForExit = waitForChildExit(server.child, timeoutMs);
   const didSignal = server.child.kill("SIGTERM");
 
   if (!didSignal) {
@@ -214,5 +215,5 @@ export const stopManagedCodexAppServer = async (
     );
   }
 
-  await waitForChildExit(server.child, timeoutMs);
+  await waitForExit;
 };

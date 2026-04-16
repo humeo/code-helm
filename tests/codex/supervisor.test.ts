@@ -82,6 +82,28 @@ test("stopManagedCodexAppServer sends SIGTERM and waits for a clean exit", async
   expect(child.killedSignals).toEqual(["SIGTERM"]);
 });
 
+test("stopManagedCodexAppServer still succeeds when the child exits immediately on SIGTERM", async () => {
+  const child = new ChildProcessStub(4242);
+  child.kill = (signal?: NodeJS.Signals | number) => {
+    child.killedSignals.push(signal ?? "SIGTERM");
+    child.emit("exit", 0, "SIGTERM");
+    return true;
+  };
+
+  const server = await startManagedCodexAppServer({
+    resolveBinary: async () => "/usr/local/bin/codex",
+    allocatePort: async () => 4511,
+    spawnProcess: () => child,
+  });
+
+  await expect(
+    stopManagedCodexAppServer(server, {
+      timeoutMs: 100,
+    }),
+  ).resolves.toBeUndefined();
+  expect(child.killedSignals).toEqual(["SIGTERM"]);
+});
+
 test("stopManagedCodexAppServer returns a clear failure when the child does not exit", async () => {
   const child = new ChildProcessStub(4242);
   const server = await startManagedCodexAppServer({
