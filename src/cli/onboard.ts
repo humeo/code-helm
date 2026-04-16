@@ -103,6 +103,32 @@ const getExistingToken = (store: ReturnType<typeof loadOnboardingStore>) => {
   return store.secrets?.discord.botToken;
 };
 
+const resolveSelectedGuild = (
+  guilds: SelectableGuild[],
+  selectedGuildId: string,
+) => {
+  const selectedGuild = guilds.find((entry) => entry.id === selectedGuildId);
+
+  if (!selectedGuild) {
+    throw new Error("Selected guild is no longer available. Please retry onboarding.");
+  }
+
+  return selectedGuild;
+};
+
+const resolveSelectedControlChannel = (
+  channels: SelectableControlChannel[],
+  selectedChannelId: string,
+) => {
+  const selectedChannel = channels.find((entry) => entry.id === selectedChannelId);
+
+  if (!selectedChannel) {
+    throw new Error("Selected control channel is no longer available. Please retry onboarding.");
+  }
+
+  return selectedChannel;
+};
+
 const resolveRuntimeState = (
   options: {
     env: Record<string, string | undefined>;
@@ -152,25 +178,27 @@ export const runOnboarding = async (
       hasExistingToken: Boolean(existingToken),
     });
 
-    if (tokenResponse.kind === "use-existing") {
-      if (!existingToken) {
-        await options.ui.showTokenValidationError("No existing bot token is available.");
-        continue;
-      }
+    const nextToken = tokenResponse.kind === "use-existing"
+      ? existingToken
+      : tokenResponse.token;
 
-      botToken = existingToken;
-      break;
+    if (!nextToken) {
+      await options.ui.showTokenValidationError("No existing bot token is available.");
+      continue;
     }
 
     try {
-      botIdentity = await options.discovery.validateBotToken(tokenResponse.token);
-      botToken = tokenResponse.token;
+      botIdentity = await options.discovery.validateBotToken(nextToken);
+      botToken = nextToken;
     } catch (error) {
       await options.ui.showTokenValidationError(normalizeValidationError(error));
     }
   }
 
-  botIdentity ??= await options.discovery.validateBotToken(botToken);
+  if (!botIdentity) {
+    throw new Error("Bot token validation did not complete.");
+  }
+
   const guilds = await options.discovery.listSelectableGuilds(botToken);
 
   if (guilds.length === 0) {
@@ -184,7 +212,7 @@ export const runOnboarding = async (
     guilds,
     currentGuildId,
   });
-  const guild = guilds.find((entry) => entry.id === selectedGuildId) ?? guilds[0];
+  const guild = resolveSelectedGuild(guilds, selectedGuildId);
 
   const channels = await options.discovery.listSelectableControlChannels(botToken, guild.id);
 
@@ -198,7 +226,7 @@ export const runOnboarding = async (
     channels,
     currentChannelId: store.config?.discord.controlChannelId,
   });
-  const controlChannel = channels.find((entry) => entry.id === selectedChannelId) ?? channels[0];
+  const controlChannel = resolveSelectedControlChannel(channels, selectedChannelId);
 
   const accepted = await options.ui.reviewSelection({
     botIdentity,

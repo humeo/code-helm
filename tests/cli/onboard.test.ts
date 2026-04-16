@@ -29,6 +29,12 @@ class OnboardingUiStub implements OnboardingUi {
   tokenErrors: string[] = [];
   blockedErrors: string[] = [];
   completionCount = 0;
+  lastGuildSelectionInput:
+    | { guilds: Array<{ id: string; name: string }>; currentGuildId?: string }
+    | undefined;
+  lastChannelSelectionInput:
+    | { channels: Array<{ id: string; name: string }>; currentChannelId?: string }
+    | undefined;
 
   constructor(
     private readonly options: {
@@ -51,6 +57,7 @@ class OnboardingUiStub implements OnboardingUi {
   }
 
   async selectGuild(input: { guilds: Array<{ id: string; name: string }>; currentGuildId?: string }) {
+    this.lastGuildSelectionInput = input;
     const next = this.options.guildSelections?.[this.guildSelectionCalls];
     this.guildSelectionCalls += 1;
     return next ?? input.currentGuildId ?? input.guilds[0]?.id ?? "";
@@ -59,6 +66,7 @@ class OnboardingUiStub implements OnboardingUi {
   async selectControlChannel(
     input: { channels: Array<{ id: string; name: string }>; currentChannelId?: string },
   ) {
+    this.lastChannelSelectionInput = input;
     const next = this.options.channelSelections?.[this.channelSelectionCalls];
     this.channelSelectionCalls += 1;
     return next ?? input.currentChannelId ?? input.channels[0]?.id ?? "";
@@ -201,6 +209,58 @@ describe("runOnboarding", () => {
     expect(ui.tokenErrors[0]).toMatch(/invalid bot token/i);
   });
 
+  test("stale existing tokens return the flow to the token step", async () => {
+    const homeDir = createTempDir();
+    const firstUi = new OnboardingUiStub({
+      tokens: [{ kind: "submit", token: "stale-token" }],
+    });
+
+    await runOnboarding({
+      env: {},
+      homeDir,
+      ui: firstUi,
+      discovery: createDiscoveryServices(),
+      readRuntimeSummary: () => undefined,
+      isPidAlive: () => false,
+    });
+
+    const editUi = new OnboardingUiStub({
+      tokens: [
+        { kind: "use-existing" },
+        { kind: "submit", token: "fresh-token" },
+      ],
+    });
+
+    await runOnboarding({
+      env: {},
+      homeDir,
+      ui: editUi,
+      discovery: createDiscoveryServices({
+        async validateBotToken(token) {
+          if (token === "stale-token") {
+            throw new Error("Invalid bot token");
+          }
+
+          return {
+            botUser: {
+              id: "bot-1",
+              username: token,
+            },
+            application: {
+              id: "123456789012345678",
+              name: "CodeHelm Bot",
+            },
+          };
+        },
+      }),
+      readRuntimeSummary: () => undefined,
+      isPidAlive: () => false,
+    });
+
+    expect(editUi.promptTokenCalls).toBe(2);
+    expect(editUi.tokenErrors[0]).toMatch(/invalid bot token/i);
+  });
+
   test("no guilds returns a helpful blocking error", async () => {
     const homeDir = createTempDir();
     const ui = new OnboardingUiStub();
@@ -276,6 +336,44 @@ describe("runOnboarding", () => {
     expect(editUi.guildSelectionCalls).toBe(1);
     expect(editUi.channelSelectionCalls).toBe(1);
     expect(editUi.promptTokenCalls).toBe(1);
+    expect(editUi.lastGuildSelectionInput?.currentGuildId).toBe("guild-2");
+    expect(editUi.lastChannelSelectionInput?.currentChannelId).toBe("channel-2");
+  });
+
+  test("invalid guild selections are rejected instead of silently falling back", async () => {
+    const homeDir = createTempDir();
+    const ui = new OnboardingUiStub({
+      guildSelections: ["guild-missing"],
+    });
+
+    await expect(
+      runOnboarding({
+        env: {},
+        homeDir,
+        ui,
+        discovery: createDiscoveryServices(),
+        readRuntimeSummary: () => undefined,
+        isPidAlive: () => false,
+      }),
+    ).rejects.toThrow(/selected guild/i);
+  });
+
+  test("invalid control-channel selections are rejected instead of silently falling back", async () => {
+    const homeDir = createTempDir();
+    const ui = new OnboardingUiStub({
+      channelSelections: ["channel-missing"],
+    });
+
+    await expect(
+      runOnboarding({
+        env: {},
+        homeDir,
+        ui,
+        discovery: createDiscoveryServices(),
+        readRuntimeSummary: () => undefined,
+        isPidAlive: () => false,
+      }),
+    ).rejects.toThrow(/selected control channel/i);
   });
 
   test("already-running short-circuits before the tui opens", async () => {
