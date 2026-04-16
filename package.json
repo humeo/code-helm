@@ -1,11 +1,13 @@
 {
   "name": "code-helm",
+  "version": "0.1.0",
   "bin": {
     "code-helm": "./bin/code-helm"
   },
   "type": "module",
   "scripts": {
-    "dev": "bun run src/cli.ts start",
+    "dev": "bun run src/index.ts",
+    "dev:cli": "bun run src/cli.ts start",
     "test": "bun test",
     "migrate": "bun run src/db/migrate.ts",
     "typecheck": "tsc --noEmit"
