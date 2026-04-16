@@ -1,14 +1,18 @@
 {
   "name": "code-helm",
-  "private": true,
+  "bin": {
+    "code-helm": "./bin/code-helm"
+  },
   "type": "module",
   "scripts": {
-    "dev": "bun run src/index.ts",
+    "dev": "bun run src/cli.ts start",
     "test": "bun test",
     "migrate": "bun run src/db/migrate.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@clack/prompts": "^0.11.0",
+    "@iarna/toml": "^2.2.5",
     "discord.js": "^14.26.2",
     "undici": "6.24.1",
     "zod": "^3.25.76"
