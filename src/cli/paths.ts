@@ -39,7 +39,7 @@ export const resolveCodeHelmPaths = (
   return {
     configPath: expandHomePath(env.CODE_HELM_CONFIG ?? DEFAULT_CONFIG_PATH, homeDir),
     secretsPath: expandHomePath(env.CODE_HELM_SECRETS ?? DEFAULT_SECRETS_PATH, homeDir),
-    databasePath: expandHomePath(DEFAULT_DATABASE_PATH, homeDir),
+    databasePath: expandHomePath(env.CODE_HELM_DATABASE_PATH ?? DEFAULT_DATABASE_PATH, homeDir),
     stateDir: expandHomePath(DEFAULT_STATE_DIR, homeDir),
   };
 };

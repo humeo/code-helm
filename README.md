@@ -1,225 +1,225 @@
-# CodeHelm v1
+# CodeHelm
 
-CodeHelm v1 is a local daemon that bridges a Discord control surface to Codex App Server sessions. The product model is strict:
+CodeHelm turns Codex into a local daemon you control from Discord.
 
-- one Discord bot connects to one local CodeHelm daemon
-- one Discord server maps to one workspace container
-- one Discord thread maps to one Codex session
-- one session belongs to one `cwd` for its entire lifetime
+It solves the awkward setup that usually comes with remote Codex sessions:
 
-Discord is the remote UI. The Codex App Server thread is the session source of truth.
+- no manual `.env` as the normal user path
+- no separate Codex App Server process to start yourself
+- one local daemon lifecycle with `onboard`, `start`, `status`, `stop`, `autostart`, and `uninstall`
+- Discord stays the day-to-day session surface
 
-## Required Setup
+## What It Does
 
-### Discord App Settings
+- stores your CodeHelm config locally in TOML
+- manages a local Codex App Server for you
+- prints the remote address you use with `codex --remote <ws-url>`
+- registers and serves the Discord control commands
+- keeps Discord threads attached to Codex sessions
 
-In the Discord Developer Portal, create or configure the bot application for the target guild.
+## Before You Install
 
-- add the bot token to `DISCORD_BOT_TOKEN`
-- copy the application id into `DISCORD_APP_ID`
-- install the bot into the target guild and set `DISCORD_GUILD_ID`
-- choose one control channel in that guild and set `DISCORD_CONTROL_CHANNEL_ID`
-- enable the `Message Content Intent` privileged intent
+You need these tools on the machine:
 
-CodeHelm registers guild slash commands and disables DM usage for the control commands.
+- `bun`
+- `codex`
+- a Discord bot application that is already invited to the target server
 
-### Local Codex App Server Settings
+The bot needs:
 
-CodeHelm connects to the local Codex App Server over WebSocket.
+- the bot token
+- access to one target guild
+- one text channel to act as the control channel
+- `Message Content Intent` enabled
 
-- set `CODEX_APP_SERVER_URL` to a `ws://` or `wss://` URL
-- in v1, keep that server on the daemon host machine
-- the supported local `codex --remote` attachment path is `codex resume --remote <ws-url> <thread-id>`; plain local `codex resume <thread-id>` is not
+## Trust And Local State
 
-### Environment Variables
+CodeHelm does not install Codex for you.
 
-The daemon requires these env vars:
+Normal local state lives here:
 
-```bash
-DISCORD_BOT_TOKEN=
-DISCORD_APP_ID=
-DISCORD_GUILD_ID=
-DISCORD_CONTROL_CHANNEL_ID=
-CODEX_APP_SERVER_URL=
-DATABASE_PATH=
-WORKSPACE_ID=
-WORKSPACE_NAME=
-```
+- config: `~/.config/code-helm/config.toml`
+- secrets: `~/.config/code-helm/secrets.toml`
+- database: `~/.local/share/code-helm/codehelm.sqlite`
+- runtime state: `~/.local/state/code-helm/`
 
-Optional legacy bootstrap env vars still exist for importing old configured-workdir data on first boot:
+What it touches:
 
-```bash
-WORKSPACE_ROOT=
-WORKDIRS_JSON=
-```
+- Discord API for bot login, command registration, and thread operations
+- a local managed Codex App Server on loopback
+- local config, secrets, database, and runtime-state files
 
-They are not required for the normal user flow.
+What it does not try to do:
 
-## Workspace Model
+- it does not uninstall the global npm package for you
+- it does not install Codex for you
+- it does not require a hand-written `.env` for the normal flow
 
-CodeHelm v1 still uses one workspace container per daemon:
-
-- `WORKSPACE_ID` identifies the workspace container
-- `WORKSPACE_NAME` is the display name for that workspace
-
-Normal session entry is workdir-first:
-
-- `/workdir --path <absolute-or-tilde-path>` sets the current workdir for the calling user in the current control channel
-- `/session-new` creates a fresh Codex session in the current workdir
-- `/session-resume --session <thread-id>` attaches Discord to an existing Codex session scoped to the current workdir
-- `/workdir` `path` autocomplete starts from `~/` and behaves like a lightweight directory browser
-- every browser level includes `.` for the current directory and `..` for parent navigation alongside child directories
-- `/session-resume` only shows `session` choices when the current workdir exists and is still available
-- session picker labels use relative times derived from normalized provider timestamps
-- users can enter absolute paths or `~/...`
-
-## Run It
-
-Apply the database migrations first:
+To stop it immediately:
 
 ```bash
-bun run migrate
+code-helm stop
 ```
 
-Then start the daemon:
+To remove local state:
+
+```bash
+code-helm uninstall
+```
+
+## Install
+
+```bash
+npm install -g code-helm
+```
+
+## Quick Start
+
+### 1. Onboard
+
+```bash
+code-helm onboard
+```
+
+The onboarding flow asks for only:
+
+- your Discord bot token
+- the guild to bind
+- the control channel to bind
+
+Everything else is defaulted and hidden.
+
+### 2. Start CodeHelm
+
+Foreground:
+
+```bash
+code-helm start
+```
+
+Background:
+
+```bash
+code-helm start --daemon
+```
+
+When startup succeeds, CodeHelm prints a concise status summary including the managed Codex App Server address.
+
+### 3. Connect Codex Remote
+
+Use the printed address with:
+
+```bash
+codex --remote <ws-url>
+```
+
+### 4. Use Discord
+
+In the configured control channel, use:
+
+- `/workdir`
+- `/session-new`
+- `/session-resume`
+- `/session-close`
+- `/session-sync`
+
+## Day-To-Day Commands
+
+```bash
+code-helm status
+code-helm stop
+code-helm autostart enable
+code-helm autostart disable
+code-helm uninstall
+```
+
+`code-helm status` always includes the current Codex remote address and the matching:
+
+```bash
+codex --remote <ws-url>
+```
+
+## See It Work
+
+```bash
+$ code-helm onboard
+$ code-helm start
+CodeHelm running
+Mode: foreground
+PID: 12345
+Discord: connected guild 123 channel 456
+Codex App Server: running ws://127.0.0.1:4123
+Connect: codex --remote ws://127.0.0.1:4123
+
+$ codex --remote ws://127.0.0.1:4123
+```
+
+Then switch to Discord and open or resume a session from the configured control channel.
+
+## Autostart
+
+On macOS, CodeHelm can install a LaunchAgent that starts the daemon at login:
+
+```bash
+code-helm autostart enable
+```
+
+To remove it:
+
+```bash
+code-helm autostart disable
+```
+
+On unsupported platforms, CodeHelm returns a clear unsupported result instead of pretending it worked.
+
+## Uninstall
+
+This removes CodeHelm-managed local resources:
+
+```bash
+code-helm uninstall
+```
+
+That command:
+
+- stops the background daemon if one is running
+- disables autostart when supported
+- removes local config, secrets, database, and runtime-state files
+
+It does not remove the global npm package. To do that too:
+
+```bash
+npm uninstall -g code-helm
+```
+
+## Development
+
+For local repo development:
+
+```bash
+bun install
+bun test
+bun run typecheck
+```
+
+Useful dev commands:
 
 ```bash
 bun run dev
+bun run migrate
 ```
 
-`bun run dev` starts the full CodeHelm daemon entrypoint in `src/index.ts`. That path parses config, applies migrations, optionally seeds legacy workspace/workdir rows for older installs, initializes the Codex App Server client, registers guild commands, starts the Discord bot, subscribes to Codex events, and installs shutdown hooks.
+## Advanced Overrides
 
-## Regression Baseline
+Normal users should prefer `code-helm onboard`.
 
-The current product baseline and executable end-to-end regression checklist live in [`docs/baselines/e2e-baseline.md`](/Users/koltenluca/code-github/code-helm/docs/baselines/e2e-baseline.md).
+If you need to override paths or inject values in development, see [.env.example](/Users/koltenluca/code-github/code-helm/.env.example).
 
-## Session Flow
+## Legacy Workspace Import
 
-Use the control channel for session management, not for normal conversation.
+CodeHelm still preserves a compatibility bridge for older installs that used:
 
-- `/workdir --path <absolute-or-tilde-path>` sets the current workdir for the calling user in the current control channel
-- `/session-new` creates a fresh Codex session in the current workdir
-- `/session-resume --session <thread-id>` attaches Discord to an existing Codex session chosen from the current workdir's live Codex thread list
-- `/session-close` archives the current managed Discord thread without destroying the Codex session
-- `/session-sync` is the manual recovery path for degraded managed session threads
+- `WORKSPACE_ROOT`
+- `WORKDIRS_JSON`
 
-Current workdir is stored per `guild + channel + user`, so different operators can keep different control-channel contexts without changing session ownership semantics.
-
-Session discovery lives inside `/session-resume`, not in separate list/import commands.
-The `/workdir` `path` autocomplete starts from `~/` and behaves like a lightweight directory browser:
-
-- child directories appear with trailing `/`
-- each level includes `.` for the current directory and `..` for parent navigation
-- `/session-resume` only opens `session` suggestions once the stored current workdir resolves to a real directory
-- without a current workdir, or when the stored workdir is no longer available, `/session-resume` autocomplete stays empty
-- `session` suggestions use relative times derived from normalized provider timestamps
-
-Session creation creates a new Codex App Server thread first, then binds it to a new Discord thread.
-
-New managed-thread naming is bootstrap-based:
-
-- thread creation starts with `session-id`
-- the first completed reply renames the thread to the first user message
-
-`/session-resume` is the only attach path for existing Codex sessions:
-
-- the selected Codex thread must belong to the current workdir
-- if the session already has an active usable Discord thread, CodeHelm reuses that thread
-- if the session has an archived Discord thread, CodeHelm syncs first and reopens that same thread
-- if the session has no Discord attachment yet, CodeHelm creates a new Discord thread and binds it
-- if the old Discord thread was deleted or is no longer usable, CodeHelm creates a replacement thread and rebinds the managed attachment
-- if attach finds `running` or `waiting-approval`, Discord reflects that busy state without pretending the session is writable
-- if attach finds `waiting-approval`, CodeHelm uses resume semantics so approval UI and DM controls can be rehydrated on the attached Discord surface
-
-Managed attachment keeps the Codex session identity stable even when the Discord container changes:
-
-- `session-close` archives the same Discord thread and marks the managed session `archived`
-- `session-resume` reuses, reopens, creates, or replaces the Discord thread attachment around the same Codex session
-- `session-sync` only reevaluates a degraded active managed thread; it does not create or replace attachments
-- deleting the Discord thread is treated as detaching the Discord container, not as deleting the Codex session
-
-## Conversation-First Transcript
-
-CodeHelm renders one shared conversation, not separate Discord and Codex logs.
-
-- Discord-originated user messages are recorded once and are not echoed back as a second `User:` line
-- live non-Discord input observed on the daemon host is labeled `Codex CLI`
-- assistant commentary stays in the process card instead of becoming durable transcript noise
-- active turns use a status-only recovery probe; periodic `includeTurns=true` snapshot polling is idle-only and resumes after recovery
-
-This keeps the thread readable as a conversation while still preserving the durable items that matter.
-
-## Ownership And Approval
-
-Each Discord thread has one controller: the initiating user.
-
-- in the current runtime, only the owner can advance the session and resolve approvals
-- other guild members can view the thread, read transcript, and see session status
-- other guild members only see approval state; they do not get actionable approval controls
-
-Explicit interrupt and close/archive controls are part of the v1 product model but are not yet wired into this repository snapshot.
-Approval handling follows Codex protocol behavior, not a stronger ownership model.
-
-- approval events fan out to subscribed clients
-- the first processed response wins
-- if Discord answers an approval, the Discord UI closes when Codex emits `serverRequest/resolved`
-- if a local Codex client leaves a stale approval screen open after resolution, that is a native-client limitation
-- if an approval is raised while the Discord thread is archived, CodeHelm persists it and recreates the owner DM controls on resume
-- if an approval resolves while the thread is archived, CodeHelm still tears down the DM controls and updates any existing approval lifecycle message without reopening the thread
-
-## Local Remote CLI
-
-The local supported second client is:
-
-```bash
-codex resume --remote <ws-url> <thread-id>
-```
-
-That `codex resume --remote` path is the supported shared-thread mode. It attaches to the same live Codex App Server thread as Discord and shares transcript state, runtime state, live commentary deltas, command output summaries, and approval events. The plain local `codex resume <thread-id>` path is not supported here.
-
-If a managed Discord thread has been closed, remote CLI activity does not auto-reopen it. CodeHelm keeps tracking the shared Codex session internally and backfills transcript/state on the next explicit or implicit Discord resume.
-
-## Read-Only Degradation
-
-CodeHelm treats unsupported external modification as a read-only condition in the product model.
-
-- supported control surfaces are Discord and `codex resume --remote`
-- plain local `codex resume <thread-id>` is unsupported
-- the current runtime preserves already-degraded sessions as read-only
-- the current runtime seeds a transcript snapshot for mapped sessions and periodically reconciles `thread/read(includeTurns=true)`
-- if new snapshot items appear without having been observed on the live app-server stream, Discord marks the session read-only with reason `snapshot_mismatch`
-- this is a best-effort detector for unsupported/offline modification, not a precise control-surface identifier
-- once downgraded, the thread stays read-only in Discord until a trustworthy sync clears the degradation or the session is recreated
-
-## What Has Been Verified Here
-
-Verified in the current repo state:
-
-- config parsing requires the documented env vars for Discord, Codex, database, and workspace identity
-- Discord control commands are guild-only and DM-disabled
-- the user-facing command surface is `workdir`, `session-new`, `session-resume`, `session-close`, and `session-sync`
-- `/workdir` stores a current workdir per `guild + channel + user`
-- `/session-new` uses the stored current workdir instead of taking a `path`
-- `/session-resume` uses required `session` autocomplete instead of `path + session` or separate list/import commands
-- `/workdir` `path` autocomplete starts from `~/` and behaves like a lightweight directory browser
-- users can choose the current directory at any level before submitting
-- `/session-resume` only shows `session` choices after the current workdir resolves to a valid directory
-- `/session-resume` autocomplete stays empty when no current workdir exists or the stored workdir is unavailable
-- `session` picker labels use relative times derived from normalized provider timestamps
-- `/session-resume` rejects Codex threads whose cwd does not match the current workdir
-- managed thread creation starts with `session-id`
-- the first completed reply renames the thread to the first user message
-- `/session-resume` can attach unmanaged Codex sessions, reuse active Discord attachments, reopen archived ones, and replace deleted or unusable Discord thread containers
-- waiting-approval attaches use resume semantics so approval state can be restored on the attached Discord surface
-- live app-server transcript sync relays Discord-originated user messages once, labels live non-Discord user input as `Codex CLI`, keeps commentary durable only when no final reply exists, and omits successful command executions from the main transcript
-- owner-only control checks are implemented for Discord thread control
-- approval UI behavior is split between owner controls and status-only viewers
-- the current runtime preserves already-degraded sessions as read-only
-
-Not verified here:
-
-- end-to-end Discord bot login against a live guild
-- live Codex App Server connectivity
-- `codex resume --remote` against a running daemon host
-- database migrations against a real database file
-- unsupported external modification detection against a real plain local `codex resume <thread-id>` session
+That path is legacy-only and not part of the normal onboarding flow.

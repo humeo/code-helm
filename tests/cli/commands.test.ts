@@ -99,6 +99,17 @@ const createBaseServices = (): CommandServices => {
       },
       startedAt: "2026-04-16T08:30:00.000Z",
     }),
+    enableAutostart: async () => ({
+      kind: "enabled",
+      label: "dev.codehelm.code-helm",
+      launchAgentPath: "/tmp/code-helm.plist",
+    }),
+    disableAutostart: async () => ({
+      kind: "disabled",
+      label: "dev.codehelm.code-helm",
+      launchAgentPath: "/tmp/code-helm.plist",
+      removed: true,
+    }),
     removePath: () => {},
   };
 };
@@ -301,6 +312,45 @@ describe("runCliCommand", () => {
     expect(result.output).toContain("codex --remote ws://127.0.0.1:4400");
   });
 
+  test("autostart enable delegates to the autostart service", async () => {
+    const services = createBaseServices();
+    let called = false;
+
+    services.enableAutostart = async () => {
+      called = true;
+      return {
+        kind: "enabled",
+        label: "dev.codehelm.code-helm",
+        launchAgentPath: "/tmp/code-helm.plist",
+      };
+    };
+
+    const result = await runCliCommand({ kind: "autostart", action: "enable" }, services);
+
+    expect(called).toBe(true);
+    expect(result.output).toContain("Autostart enabled");
+  });
+
+  test("autostart disable delegates to the autostart service", async () => {
+    const services = createBaseServices();
+    let called = false;
+
+    services.disableAutostart = async () => {
+      called = true;
+      return {
+        kind: "disabled",
+        label: "dev.codehelm.code-helm",
+        launchAgentPath: "/tmp/code-helm.plist",
+        removed: true,
+      };
+    };
+
+    const result = await runCliCommand({ kind: "autostart", action: "disable" }, services);
+
+    expect(called).toBe(true);
+    expect(result.output).toContain("Autostart disabled");
+  });
+
   test("stop shuts down the background daemon and its managed app server", async () => {
     const services = createBaseServices();
     const signals: Array<{ pid: number; signal: NodeJS.Signals }> = [];
@@ -336,6 +386,7 @@ describe("runCliCommand", () => {
   test("uninstall clears config, secrets, db, and runtime state without confirmation", async () => {
     const services = createBaseServices();
     const paths = createPaths();
+    let disabledAutostart = false;
 
     mkdirSync(join(paths.configPath, ".."), { recursive: true });
     mkdirSync(join(paths.databasePath, ".."), { recursive: true });
@@ -352,9 +403,19 @@ describe("runCliCommand", () => {
     services.removePath = (targetPath) => {
       Bun.spawnSync(["rm", "-rf", targetPath]);
     };
+    services.disableAutostart = async () => {
+      disabledAutostart = true;
+      return {
+        kind: "disabled",
+        label: "dev.codehelm.code-helm",
+        launchAgentPath: "/tmp/code-helm.plist",
+        removed: true,
+      };
+    };
 
     const result = await runCliCommand({ kind: "uninstall" }, services);
 
+    expect(disabledAutostart).toBe(true);
     expect(existsSync(paths.configPath)).toBe(false);
     expect(existsSync(paths.secretsPath)).toBe(false);
     expect(existsSync(paths.databasePath)).toBe(false);

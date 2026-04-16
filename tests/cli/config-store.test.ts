@@ -57,6 +57,17 @@ describe("resolveCodeHelmPaths", () => {
       stateDir: `${join(homeDir, ".local", "state", "code-helm")}/`,
     });
   });
+
+  test("honors CODE_HELM_DATABASE_PATH overrides", () => {
+    const homeDir = createTempDir();
+
+    expect(resolveCodeHelmPaths({
+      env: {
+        CODE_HELM_DATABASE_PATH: "~/custom/codehelm.sqlite",
+      },
+      homeDir,
+    }).databasePath).toBe(join(homeDir, "custom", "codehelm.sqlite"));
+  });
 });
 
 describe("config-store", () => {

@@ -1,7 +1,13 @@
 import { spawn, type SpawnOptions } from "node:child_process";
 import { existsSync, rmSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { CliCommand } from "./args";
+import {
+  disableAutostart,
+  enableAutostart,
+  type AutostartResult,
+} from "./autostart";
 import { loadConfigStore, type LoadedConfigStore } from "./config-store";
 import { readRuntimeSummary, type RuntimeSummary } from "./runtime-state";
 import { loadAppConfig, type AppConfig } from "../config";
@@ -30,6 +36,8 @@ export type CommandExecutionResult = {
 
 export type CommandServices = {
   backgroundRuntimeTimeoutMs: number;
+  disableAutostart: () => Promise<AutostartResult>;
+  enableAutostart: () => Promise<AutostartResult>;
   env: Record<string, string | undefined>;
   loadConfigStore: (options?: { env: Record<string, string | undefined> }) => LoadedConfigStore;
   loadAppConfig: (env: Record<string, string | undefined>) => AppConfig;
@@ -157,6 +165,11 @@ const createDefaultServices = (
   env: Record<string, string | undefined>,
 ): CommandServices => ({
   backgroundRuntimeTimeoutMs: 15_000,
+  disableAutostart: async () => disableAutostart(),
+  enableAutostart: async () => enableAutostart({
+    bunExecutablePath: process.execPath,
+    cliEntrypointPath: fileURLToPath(new URL("../../bin/code-helm", import.meta.url)),
+  }),
   env,
   loadConfigStore: (options) => loadConfigStore({ env: options?.env ?? env }),
   loadAppConfig,
@@ -199,6 +212,19 @@ const formatRuntimeSummary = (runtime?: RuntimeSummary) => {
   }
 
   return lines.join("\n");
+};
+
+const formatAutostartResult = (
+  result: AutostartResult,
+  action: "enable" | "disable",
+) => {
+  if (result.kind === "unsupported") {
+    return `Autostart is unsupported on ${result.platform}.`;
+  }
+
+  return action === "enable"
+    ? `Autostart enabled\nLaunchAgent: ${result.launchAgentPath}`
+    : `Autostart disabled\nLaunchAgent: ${result.launchAgentPath}`;
 };
 
 const waitForRuntimeSummary = async (
@@ -421,6 +447,17 @@ export const runCliCommand = async (
       const uninstallErrors: string[] = [];
       const removedPaths: string[] = [];
 
+      try {
+        const autostartResult = await services.disableAutostart();
+
+        if (autostartResult.kind !== "unsupported") {
+          removedPaths.push(autostartResult.launchAgentPath);
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        uninstallErrors.push(`autostart: ${message}`);
+      }
+
       if (runtime?.mode === "background") {
         try {
           await stopBackgroundRuntime(runtime, store, services);
@@ -480,6 +517,13 @@ export const runCliCommand = async (
       };
     }
     case "autostart":
-      throw new Error(`Autostart ${command.action} is not implemented in this command runner.`);
+      return {
+        output: formatAutostartResult(
+          command.action === "enable"
+            ? await services.enableAutostart()
+            : await services.disableAutostart(),
+          command.action,
+        ),
+      };
   }
 };
