@@ -182,9 +182,7 @@ Behavior:
 - if present, use it as `cwd` for Codex `thread/start`
 - create and bind the managed Discord thread as usual
 
-Success payloads should include:
-
-- `Workdir: ~/...`
+User-facing success surfaces should keep the active workdir visible, either inline in the command reply or in the attached thread starter payload.
 
 ### `/session-resume`
 
@@ -298,7 +296,7 @@ If the selected session's actual `cwd` no longer matches the user's current work
 
 Recommended shape:
 
-- `Session \`019d...\` belongs to \`~/other/path\`, not current workdir \`~/code-github/code-helm\`.`
+- `Session \`019d...\` belongs to \`/other/path\`, not \`/code-github/code-helm\`.`
 
 If the submitted `session` value is hand-typed, stale, or otherwise not discoverable from live `thread/list` in the current workdir:
 
@@ -307,7 +305,7 @@ If the submitted `session` value is hand-typed, stale, or otherwise not discover
 
 Recommended shape:
 
-- `Session \`019d...\` is not available in the current workdir. Pick a session from autocomplete.`
+- `Session \`019d...\` was not found in current workdir \`~/code-github/code-helm\`.`
 
 ### No Sessions In Current Workdir
 
@@ -384,9 +382,11 @@ Unavailable current workdir:
 
 - `Current workdir is no longer available. Run /workdir again.`
 
-Success payloads should include the active workdir:
+Session-started surfaces should keep the active workdir visible:
 
 - `Workdir: ~/code-github/code-helm`
+
+Command replies for `new` and `resume` may stay concise as long as the active workdir remains visible elsewhere in the session-start flow.
 
 Internal explanations about Discord autocomplete quirks should not be shown in normal user-facing command replies.
 
@@ -407,7 +407,7 @@ Add or update tests for:
 - `/session-resume` autocomplete scopes Codex `thread/list` by current workdir
 - `/session-resume` submit rejects sessions whose actual `cwd` differs from current workdir
 - unavailable current workdir paths produce the expected command error
-- success replies for `new` and `resume` include `Workdir: ...`
+- session-started surfaces keep `Workdir: ...` visible even when command replies stay concise
 - session picker labels follow `updated-time · conversation · session-id` with normalized relative times
 - `/session-resume` reuses, reopens, or replaces the Discord attachment according to the existing thread state
 - `/session-resume` restores waiting-approval UI and owner DM controls when resuming a waiting-approval session

@@ -62,16 +62,16 @@ CodeHelm v1 still uses one workspace container per daemon:
 - `WORKSPACE_ID` identifies the workspace container
 - `WORKSPACE_NAME` is the display name for that workspace
 
-Normal session entry is path-first:
+Normal session entry is workdir-first:
 
-- `/session-new` takes a `path`
-- `/session-resume` takes `path` and a path-scoped `session` choice
-- `path` autocomplete starts from `~/` and behaves like a lightweight directory browser
-- every browser level includes a `Select <current-directory>` choice alongside child directories
-- `/session-resume` only shows `session` choices after the selected `path` resolves to a valid directory
+- `/workdir --path <absolute-or-tilde-path>` sets the current workdir for the calling user in the current control channel
+- `/session-new` creates a fresh Codex session in the current workdir
+- `/session-resume --session <thread-id>` attaches Discord to an existing Codex session scoped to the current workdir
+- `/workdir` `path` autocomplete starts from `~/` and behaves like a lightweight directory browser
+- every browser level includes `.` for the current directory and `..` for parent navigation alongside child directories
+- `/session-resume` only shows `session` choices when the current workdir exists and is still available
 - session picker labels use relative times derived from normalized provider timestamps
 - users can enter absolute paths or `~/...`
-- there is no configured workdir picker in the normal user flow
 
 ## Run It
 
@@ -97,17 +97,21 @@ The current product baseline and executable end-to-end regression checklist live
 
 Use the control channel for session management, not for normal conversation.
 
-- `session-new --path <absolute-or-tilde-path>` creates a fresh Codex session in that directory
-- `session-resume --path <absolute-or-tilde-path> --session <thread-id>` attaches Discord to an existing Codex session chosen from the selected path's live Codex thread list
-- `session-close` archives the current managed Discord thread without destroying the Codex session
-- `session-sync` is the manual recovery path for degraded managed session threads
+- `/workdir --path <absolute-or-tilde-path>` sets the current workdir for the calling user in the current control channel
+- `/session-new` creates a fresh Codex session in the current workdir
+- `/session-resume --session <thread-id>` attaches Discord to an existing Codex session chosen from the current workdir's live Codex thread list
+- `/session-close` archives the current managed Discord thread without destroying the Codex session
+- `/session-sync` is the manual recovery path for degraded managed session threads
+
+Current workdir is stored per `guild + channel + user`, so different operators can keep different control-channel contexts without changing session ownership semantics.
 
 Session discovery lives inside `/session-resume`, not in separate list/import commands.
-The shared `path` autocomplete starts from `~/` and behaves like a lightweight directory browser:
+The `/workdir` `path` autocomplete starts from `~/` and behaves like a lightweight directory browser:
 
 - child directories appear with trailing `/`
-- each level includes a `Select <current-directory>` option
-- `/session-resume` only opens `session` suggestions once the selected path resolves to a real directory
+- each level includes `.` for the current directory and `..` for parent navigation
+- `/session-resume` only opens `session` suggestions once the stored current workdir resolves to a real directory
+- without a current workdir, or when the stored workdir is no longer available, `/session-resume` autocomplete stays empty
 - `session` suggestions use relative times derived from normalized provider timestamps
 
 Session creation creates a new Codex App Server thread first, then binds it to a new Discord thread.
@@ -119,7 +123,7 @@ New managed-thread naming is bootstrap-based:
 
 `/session-resume` is the only attach path for existing Codex sessions:
 
-- the selected Codex thread must belong to the selected path
+- the selected Codex thread must belong to the current workdir
 - if the session already has an active usable Discord thread, CodeHelm reuses that thread
 - if the session has an archived Discord thread, CodeHelm syncs first and reopens that same thread
 - if the session has no Discord attachment yet, CodeHelm creates a new Discord thread and binds it
@@ -193,15 +197,16 @@ Verified in the current repo state:
 
 - config parsing requires the documented env vars for Discord, Codex, database, and workspace identity
 - Discord control commands are guild-only and DM-disabled
-- the user-facing command surface is `session-new`, `session-resume`, `session-close`, and `session-sync`
-- `/session-new` takes `path`
-- `/session-resume` uses required `path + session` autocomplete instead of separate list/import commands
-- `path` autocomplete starts from `~/` and behaves like a lightweight directory browser
+- the user-facing command surface is `workdir`, `session-new`, `session-resume`, `session-close`, and `session-sync`
+- `/workdir` stores a current workdir per `guild + channel + user`
+- `/session-new` uses the stored current workdir instead of taking a `path`
+- `/session-resume` uses required `session` autocomplete instead of `path + session` or separate list/import commands
+- `/workdir` `path` autocomplete starts from `~/` and behaves like a lightweight directory browser
 - users can choose the current directory at any level before submitting
-- `/session-resume` only shows `session` choices after the selected `path` resolves to a valid directory
+- `/session-resume` only shows `session` choices after the current workdir resolves to a valid directory
+- `/session-resume` autocomplete stays empty when no current workdir exists or the stored workdir is unavailable
 - `session` picker labels use relative times derived from normalized provider timestamps
-- `/session-resume` rejects Codex threads whose cwd does not match the selected path
-- there is no configured workdir picker in the normal user flow
+- `/session-resume` rejects Codex threads whose cwd does not match the current workdir
 - managed thread creation starts with `session-id`
 - the first completed reply renames the thread to the first user message
 - `/session-resume` can attach unmanaged Codex sessions, reuse active Discord attachments, reopen archived ones, and replace deleted or unusable Discord thread containers
