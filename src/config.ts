@@ -44,17 +44,52 @@ export type AppConfig = {
   };
 };
 
+const decodeBase64Segment = (value: string) => {
+  const normalized = value
+    .replace(/-/g, "+")
+    .replace(/_/g, "/");
+  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+
+  try {
+    return Buffer.from(padded, "base64").toString("utf8");
+  } catch {
+    return undefined;
+  }
+};
+
+export const deriveDiscordAppIdFromBotToken = (token: string): string | undefined => {
+  const [idSegment] = token.split(".", 1);
+
+  if (!idSegment) {
+    return undefined;
+  }
+
+  const decoded = decodeBase64Segment(idSegment)?.trim();
+
+  if (!decoded || !/^\d+$/.test(decoded)) {
+    return undefined;
+  }
+
+  return decoded;
+};
+
 const resolveAppConfigInput = (env: Record<string, string | undefined>) => {
   const store = loadConfigStore({
     env,
     mode: "edit",
   });
+  const resolvedBotToken = env.CODE_HELM_DISCORD_BOT_TOKEN
+    ?? store.secrets?.discord.botToken
+    ?? env.DISCORD_BOT_TOKEN;
+  const derivedDiscordAppId = resolvedBotToken
+    ? deriveDiscordAppIdFromBotToken(resolvedBotToken)
+    : undefined;
 
   return ResolvedConfigSchema.parse({
-    discordBotToken: env.CODE_HELM_DISCORD_BOT_TOKEN
-      ?? store.secrets?.discord.botToken
-      ?? env.DISCORD_BOT_TOKEN,
-    discordAppId: env.DISCORD_APP_ID ?? DEFAULT_DISCORD_APP_ID,
+    discordBotToken: resolvedBotToken,
+    discordAppId: env.DISCORD_APP_ID
+      ?? derivedDiscordAppId
+      ?? DEFAULT_DISCORD_APP_ID,
     discordGuildId: env.CODE_HELM_DISCORD_GUILD_ID
       ?? store.config?.discord.guildId
       ?? env.DISCORD_GUILD_ID,

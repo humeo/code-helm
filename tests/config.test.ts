@@ -18,6 +18,10 @@ import {
 } from "../src/config";
 
 const tempDirs: string[] = [];
+const STORED_DISCORD_APP_ID = "123456789012345678";
+const OVERRIDE_DISCORD_APP_ID = "987654321098765432";
+const STORED_BOT_TOKEN = "MTIzNDU2Nzg5MDEyMzQ1Njc4.stored.secret";
+const OVERRIDE_BOT_TOKEN = "OTg3NjU0MzIxMDk4NzY1NDMy.override.secret";
 
 const createTempDir = () => {
   const directory = mkdtempSync(join(tmpdir(), "codehelm-config-"));
@@ -40,7 +44,7 @@ const createStoredConfig = (): StoredConfig => ({
 
 const createStoredSecrets = (): StoredSecrets => ({
   discord: {
-    botToken: "stored-bot-token",
+    botToken: STORED_BOT_TOKEN,
   },
 });
 
@@ -66,11 +70,11 @@ describe("loadAppConfig", () => {
 
     expect(config.discord.guildId).toBe("stored-guild");
     expect(config.discord.controlChannelId).toBe("stored-channel");
-    expect(config.discord.botToken).toBe("stored-bot-token");
+    expect(config.discord.botToken).toBe(STORED_BOT_TOKEN);
     expect(config.codex.appServerUrl).toBe(DEFAULT_CODEX_APP_SERVER_URL);
     expect(config.databasePath).toBe("/tmp/stored-codehelm.sqlite");
-    expect(config.DISCORD_APP_ID).toBe(DEFAULT_DISCORD_APP_ID);
-    expect(config.discord.appId).toBe(DEFAULT_DISCORD_APP_ID);
+    expect(config.DISCORD_APP_ID).toBe(STORED_DISCORD_APP_ID);
+    expect(config.discord.appId).toBe(STORED_DISCORD_APP_ID);
     expect(config.workspace).toEqual({
       id: DEFAULT_WORKSPACE_ID,
       name: DEFAULT_WORKSPACE_NAME,
@@ -90,17 +94,17 @@ describe("loadAppConfig", () => {
       CODE_HELM_SECRETS: secretsPath,
       CODE_HELM_DISCORD_GUILD_ID: "override-guild",
       CODE_HELM_DISCORD_CONTROL_CHANNEL_ID: "override-channel",
-      CODE_HELM_DISCORD_BOT_TOKEN: "override-bot-token",
+      CODE_HELM_DISCORD_BOT_TOKEN: OVERRIDE_BOT_TOKEN,
       CODE_HELM_CODEX_APP_SERVER_URL: "wss://example.com/codex",
       CODE_HELM_DATABASE_PATH: "/tmp/override-codehelm.sqlite",
     });
 
     expect(config.discord.guildId).toBe("override-guild");
     expect(config.discord.controlChannelId).toBe("override-channel");
-    expect(config.discord.botToken).toBe("override-bot-token");
+    expect(config.discord.botToken).toBe(OVERRIDE_BOT_TOKEN);
     expect(config.codex.appServerUrl).toBe("wss://example.com/codex");
     expect(config.databasePath).toBe("/tmp/override-codehelm.sqlite");
-    expect(config.DISCORD_APP_ID).toBe(DEFAULT_DISCORD_APP_ID);
+    expect(config.DISCORD_APP_ID).toBe(OVERRIDE_DISCORD_APP_ID);
   });
 
   test("keeps the daemon compatibility bridge values required by the runtime", () => {
@@ -118,11 +122,11 @@ describe("loadAppConfig", () => {
 
     expect(config.discord.guildId).toBe("stored-guild");
     expect(config.discord.controlChannelId).toBe("stored-channel");
-    expect(config.discord.botToken).toBe("stored-bot-token");
+    expect(config.discord.botToken).toBe(STORED_BOT_TOKEN);
     expect(config.codex.appServerUrl).toBe(DEFAULT_CODEX_APP_SERVER_URL);
     expect(config.databasePath).toBe("/tmp/stored-codehelm.sqlite");
-    expect(config.DISCORD_APP_ID).toBe(DEFAULT_DISCORD_APP_ID);
-    expect(config.discord.appId).toBe(DEFAULT_DISCORD_APP_ID);
+    expect(config.DISCORD_APP_ID).toBe(STORED_DISCORD_APP_ID);
+    expect(config.discord.appId).toBe(STORED_DISCORD_APP_ID);
     expect(config.workspace).toEqual({
       id: DEFAULT_WORKSPACE_ID,
       name: DEFAULT_WORKSPACE_NAME,
