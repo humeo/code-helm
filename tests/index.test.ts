@@ -69,6 +69,7 @@ import {
   shouldHoldSnapshotTranscriptForManualSync,
   shouldRelayLiveCompletedItemToTranscript,
   shouldRenderCompletedAssistantReplyImmediately,
+  shouldIgnoreManagedThreadMessage,
   shouldRenderCommandExecutionStartMessage,
   shouldShowDiscordTypingIndicator,
   shouldSkipStaleLiveTurnProcessUpdate,
@@ -4513,6 +4514,27 @@ test("Discord typing indicator is used only while the session is running", () =>
   expect(shouldShowDiscordTypingIndicator("idle")).toBe(false);
   expect(shouldShowDiscordTypingIndicator("waiting-approval")).toBe(false);
   expect(shouldShowDiscordTypingIndicator("degraded")).toBe(false);
+});
+
+test("managed thread input ignores bot and Discord system messages", () => {
+  expect(
+    shouldIgnoreManagedThreadMessage({
+      author: { bot: true },
+      system: false,
+    } as never),
+  ).toBe(true);
+  expect(
+    shouldIgnoreManagedThreadMessage({
+      author: { bot: false },
+      system: true,
+    } as never),
+  ).toBe(true);
+  expect(
+    shouldIgnoreManagedThreadMessage({
+      author: { bot: false },
+      system: false,
+    } as never),
+  ).toBe(false);
 });
 
 test("stale live turn process updates are ignored once the active turn changes", () => {

@@ -1742,6 +1742,12 @@ export const canAcceptManagedSessionThreadInput = (
   return session.lifecycleState === "active";
 };
 
+export const shouldIgnoreManagedThreadMessage = (
+  message: Pick<Message, "author" | "system">,
+) => {
+  return message.author.bot || message.system;
+};
+
 export const shouldProjectManagedSessionDiscordSurface = (
   session: Pick<SessionRecord, "lifecycleState">,
 ) => {
@@ -4667,7 +4673,7 @@ export const startCodeHelm = async (
 
   bot.client.on(Events.MessageCreate, (message) => {
     void (async () => {
-      if (message.author.bot) {
+      if (shouldIgnoreManagedThreadMessage(message)) {
         return;
       }
 
