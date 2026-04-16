@@ -330,7 +330,16 @@ export const startManagedCodexAppServer = async (
       },
     });
   } catch (error) {
-    child.kill("SIGTERM");
+    await stopManagedCodexAppServer(
+      {
+        pid: child.pid,
+        address,
+        child,
+      },
+      {
+        timeoutMs: 1_000,
+      },
+    ).catch(() => undefined);
     throw error;
   }
 

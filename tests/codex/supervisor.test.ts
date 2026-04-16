@@ -71,6 +71,13 @@ test("startManagedCodexAppServer uses the codex app-server listen command", asyn
 
 test("startManagedCodexAppServer fails clearly when readiness never arrives", async () => {
   const child = new ChildProcessStub(4242);
+  child.kill = (signal?: NodeJS.Signals | number) => {
+    child.killedSignals.push(signal ?? "SIGTERM");
+    queueMicrotask(() => {
+      child.emit("exit", 0, "SIGTERM");
+    });
+    return true;
+  };
 
   await expect(
     startManagedCodexAppServer({
