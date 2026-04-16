@@ -26,11 +26,17 @@ export type DiscordCommandResult = {
   intent?: DiscordCommandIntent;
 };
 
-export type CreateSessionInput = {
+export type SetCurrentWorkdirInput = {
   actorId: string;
   guildId: string;
   channelId: string;
   path: string;
+};
+
+export type CreateSessionInput = {
+  actorId: string;
+  guildId: string;
+  channelId: string;
 };
 
 export type CloseSessionInput = {
@@ -49,7 +55,6 @@ export type ResumeSessionInput = {
   actorId: string;
   guildId: string;
   channelId: string;
-  path: string;
   codexThreadId: string;
 };
 
@@ -62,7 +67,6 @@ export type ResumeSessionAutocompleteInput = {
   actorId: string;
   guildId: string;
   channelId: string;
-  path?: string;
   query: string;
 };
 
@@ -75,6 +79,9 @@ export type SessionPathAutocompleteInput = {
 };
 
 export type DiscordCommandServices = {
+  setCurrentWorkdir(
+    input: SetCurrentWorkdirInput,
+  ): Promise<DiscordCommandResult> | DiscordCommandResult;
   createSession(
     input: CreateSessionInput,
   ): Promise<DiscordCommandResult> | DiscordCommandResult;
@@ -107,7 +114,7 @@ const resumeOptionDescription = "Codex session identifier to attach";
 
 export const buildControlChannelCommands = (): RESTPostAPIChatInputApplicationCommandsJSONBody[] =>
   [
-    guildOnlyCommand("session-new", "Create a new session for a path")
+    guildOnlyCommand("workdir", "Set the current workdir for this workspace")
       .addStringOption((option) =>
         option
           .setName("path")
@@ -115,16 +122,16 @@ export const buildControlChannelCommands = (): RESTPostAPIChatInputApplicationCo
           .setRequired(true)
           .setAutocomplete(true),
       ),
+    guildOnlyCommand(
+      "session-new",
+      "Create a new session using the current workdir",
+    ),
     guildOnlyCommand("session-close", "Close the current managed session thread"),
     guildOnlyCommand("session-sync", "Sync the current degraded session thread"),
-    guildOnlyCommand("session-resume", "Attach Discord to an existing Codex session")
-      .addStringOption((option) =>
-        option
-          .setName("path")
-          .setDescription(pathOptionDescription)
-          .setRequired(true)
-          .setAutocomplete(true),
-      )
+    guildOnlyCommand(
+      "session-resume",
+      "Attach Discord to an existing Codex session using the current workdir",
+    )
       .addStringOption((option) =>
         option
           .setName("session")
@@ -137,91 +144,14 @@ export const buildControlChannelCommands = (): RESTPostAPIChatInputApplicationCo
 export const controlChannelCommands = buildControlChannelCommands();
 
 const controlCommandNames = new Set([
+  "workdir",
   "session-new",
   "session-close",
   "session-sync",
   "session-resume",
 ]);
 
-const autocompletePathMemoryTtlMs = 5 * 60 * 1000;
-
-type AutocompletePathMemoryEntry = {
-  path: string;
-  updatedAt: number;
-};
-
-const autocompletePathMemory = new Map<string, AutocompletePathMemoryEntry>();
-
-const buildAutocompletePathMemoryKey = (
-  interaction: Pick<AutocompleteInteraction, "commandName" | "guildId" | "channelId" | "user">,
-) => {
-  return [
-    interaction.commandName,
-    interaction.guildId ?? "",
-    interaction.channelId,
-    interaction.user.id,
-  ].join(":");
-};
-
-const pruneAutocompletePathMemory = (now: number = Date.now()) => {
-  for (const [key, entry] of autocompletePathMemory.entries()) {
-    if (now - entry.updatedAt > autocompletePathMemoryTtlMs) {
-      autocompletePathMemory.delete(key);
-    }
-  }
-};
-
-const rememberAutocompletePath = (
-  interaction: Pick<AutocompleteInteraction, "commandName" | "guildId" | "channelId" | "user">,
-  path?: string | null,
-) => {
-  const normalizedPath = path?.trim();
-
-  if (!normalizedPath) {
-    return;
-  }
-
-  pruneAutocompletePathMemory();
-  autocompletePathMemory.set(buildAutocompletePathMemoryKey(interaction), {
-    path: normalizedPath,
-    updatedAt: Date.now(),
-  });
-};
-
-const recallAutocompletePath = (
-  interaction: Pick<AutocompleteInteraction, "commandName" | "guildId" | "channelId" | "user">,
-) => {
-  pruneAutocompletePathMemory();
-  return autocompletePathMemory.get(buildAutocompletePathMemoryKey(interaction))?.path;
-};
-
-const resolveAutocompletePath = ({
-  interaction,
-  focusedOption,
-  query,
-}: {
-  interaction: AutocompleteInteraction;
-  focusedOption: string;
-  query: string;
-}) => {
-  const optionPath = interaction.options.getString("path");
-
-  if (optionPath) {
-    rememberAutocompletePath(interaction, optionPath);
-    return optionPath;
-  }
-
-  if (focusedOption === "path") {
-    rememberAutocompletePath(interaction, query);
-    return query;
-  }
-
-  return recallAutocompletePath(interaction);
-};
-
-export const resetAutocompletePathMemoryForTests = () => {
-  autocompletePathMemory.clear();
-};
+export const resetAutocompletePathMemoryForTests = () => {};
 
 export const isControlChannelCommandName = (commandName: string) => {
   return controlCommandNames.has(commandName);
@@ -297,14 +227,21 @@ export const handleControlChannelCommand = async (
   const context = interactionContext(interaction);
 
   switch (interaction.commandName) {
+    case "workdir":
+      await safelyDeferReply(interaction);
+      await safelyReply(
+        interaction,
+        await services.setCurrentWorkdir({
+          ...context,
+          path: interaction.options.getString("path", true),
+        }),
+      );
+      return true;
     case "session-new": {
       await safelyDeferReply(interaction);
       await safelyReply(
         interaction,
-        await services.createSession({
-          ...context,
-          path: interaction.options.getString("path", true),
-        }),
+        await services.createSession(context),
       );
       return true;
     }
@@ -322,7 +259,6 @@ export const handleControlChannelCommand = async (
         interaction,
         await services.resumeSession({
           ...context,
-          path: interaction.options.getString("path", true),
           codexThreadId: interaction.options.getString("session", true),
         }),
       );
@@ -339,16 +275,11 @@ export const handleControlChannelAutocomplete = async (
   const { name: focusedOption, value } = interaction.options.getFocused(true);
   const context = autocompleteContext(interaction);
   const query = String(value ?? "");
-  const path = resolveAutocompletePath({
-    interaction,
-    focusedOption,
-    query,
-  });
 
   let choices: DiscordAutocompleteChoice[] = [];
 
   switch (interaction.commandName) {
-    case "session-new":
+    case "workdir":
       if (focusedOption !== "path") {
         await interaction.respond([]);
         return false;
@@ -356,36 +287,28 @@ export const handleControlChannelAutocomplete = async (
 
       choices = await services.autocompleteSessionPaths({
         ...context,
-        path,
+        path: interaction.options.getString("path") ?? query,
         query,
       });
       break;
+    case "session-new":
+      await interaction.respond([]);
+      return false;
     case "session-resume":
-      switch (focusedOption) {
-        case "path":
-          choices = await services.autocompleteSessionPaths({
-            ...context,
-            path,
-            query,
-          });
-          break;
-        case "session":
-          choices = await services.autocompleteResumeSessions({
-            ...context,
-            path,
-            query,
-          });
-          break;
-        default:
-          await interaction.respond([]);
-          return false;
+      if (focusedOption !== "session") {
+        await interaction.respond([]);
+        return false;
       }
+
+      choices = await services.autocompleteResumeSessions({
+        ...context,
+        query,
+      });
       break;
     default:
       await interaction.respond([]);
       return false;
   }
-
   await interaction.respond(choices.slice(0, 25));
   return true;
 };
