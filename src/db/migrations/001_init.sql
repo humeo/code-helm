@@ -28,6 +28,16 @@ CREATE TABLE IF NOT EXISTS sessions (
   updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS current_workdirs (
+  guild_id TEXT NOT NULL,
+  channel_id TEXT NOT NULL,
+  discord_user_id TEXT NOT NULL,
+  cwd TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (guild_id, channel_id, discord_user_id)
+);
+
 CREATE TABLE IF NOT EXISTS approvals (
   approval_key TEXT PRIMARY KEY,
   request_id TEXT NOT NULL,
