@@ -91,6 +91,8 @@ import {
   noteTrustedLiveExternalTurnStart,
   sortResumePickerThreads,
   startCodeHelm,
+  rememberRuntimeApprovalRequest,
+  resolveStoredApprovalForResolvedEvent,
 } from "../src/index";
 import { renderStatusCardText } from "../src/discord/renderers";
 import {
@@ -4690,6 +4692,81 @@ test("live permissions approvals persist fallback title and request kind before 
       + "Kind: `permissions`\n"
       + "Request ID: `req-9`",
   );
+
+  db.close();
+});
+
+test("resolved events without threadId fail safe when duplicate live approvals share a request id", () => {
+  const db = createDatabaseClient(":memory:");
+  applyMigrations(db);
+  const sessionRepo = createSessionRepo(db);
+  const approvalRepo = createApprovalRepo(db);
+  const runtimeApprovalKeysByRequestId = new Map<string, Set<string>>();
+
+  sessionRepo.insert({
+    discordThreadId: "discord-thread-1",
+    codexThreadId: "codex-1",
+    ownerDiscordUserId: "owner-1",
+    cwd: "/tmp/ws1/app",
+    state: "waiting-approval",
+  });
+  sessionRepo.insert({
+    discordThreadId: "discord-thread-2",
+    codexThreadId: "codex-2",
+    ownerDiscordUserId: "owner-2",
+    cwd: "/tmp/ws2/app",
+    state: "waiting-approval",
+  });
+
+  const firstApproval = persistApprovalRequestSnapshot({
+    approvalRepo,
+    session: createSessionRecord({
+      codexThreadId: "codex-1",
+      discordThreadId: "discord-thread-1",
+    }),
+    method: "item/commandExecution/requestApproval",
+    event: {
+      requestId: "req-dup",
+      threadId: "codex-1",
+      turnId: "turn-1",
+      itemId: "call-1",
+      cmd: "touch first.txt",
+      justification: "Allow the first command?",
+      cwd: "/tmp/ws1/app",
+    },
+  });
+  const secondApproval = persistApprovalRequestSnapshot({
+    approvalRepo,
+    session: createSessionRecord({
+      codexThreadId: "codex-2",
+      discordThreadId: "discord-thread-2",
+    }),
+    method: "item/commandExecution/requestApproval",
+    event: {
+      requestId: "req-dup",
+      threadId: "codex-2",
+      turnId: "turn-2",
+      itemId: "call-1",
+      cmd: "touch second.txt",
+      justification: "Allow the second command?",
+      cwd: "/tmp/ws2/app",
+    },
+  });
+
+  rememberRuntimeApprovalRequest(runtimeApprovalKeysByRequestId, firstApproval);
+  rememberRuntimeApprovalRequest(runtimeApprovalKeysByRequestId, secondApproval);
+
+  expect(
+    resolveStoredApprovalForResolvedEvent({
+      approvalRepo,
+      runtimeApprovalKeysByRequestId,
+      event: {
+        requestId: "req-dup",
+      },
+    }),
+  ).toBeNull();
+  expect(approvalRepo.getByApprovalKey(firstApproval.approvalKey)?.status).toBe("pending");
+  expect(approvalRepo.getByApprovalKey(secondApproval.approvalKey)?.status).toBe("pending");
 
   db.close();
 });

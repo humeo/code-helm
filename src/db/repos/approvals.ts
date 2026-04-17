@@ -86,6 +86,21 @@ const normalizeApprovalKey = (approvalKey: string | undefined, requestId: string
   return approvalKey ?? requestId;
 };
 
+const mergeSnapshotField = (
+  existingValue: string | null | undefined,
+  nextValue: string | null | undefined,
+) => {
+  if (existingValue !== null && existingValue !== undefined) {
+    return existingValue;
+  }
+
+  if (nextValue !== undefined) {
+    return nextValue;
+  }
+
+  return null;
+};
+
 export const createApprovalRepo = (db: Database) => {
   const insertStatement = db.prepare(
     `INSERT INTO approvals (
@@ -126,6 +141,12 @@ export const createApprovalRepo = (db: Database) => {
       WHERE request_id = ?
       ORDER BY rowid DESC
       LIMIT 1`,
+  );
+  const getUniqueByRequestIdStatement = db.prepare(
+    `SELECT * FROM approvals
+      WHERE request_id = ?
+      ORDER BY rowid DESC
+      LIMIT 2`,
   );
   const getLatestByCodexThreadIdAndRequestIdStatement = db.prepare(
     `SELECT * FROM approvals
@@ -177,24 +198,23 @@ export const createApprovalRepo = (db: Database) => {
         input.resolution !== undefined
           ? input.resolution
           : existing?.resolution ?? null;
-      const displayTitle =
-        input.displayTitle !== undefined
-          ? input.displayTitle
-          : existing?.displayTitle ?? null;
-      const commandPreview =
-        input.commandPreview !== undefined
-          ? input.commandPreview
-          : existing?.commandPreview ?? null;
-      const justification =
-        input.justification !== undefined
-          ? input.justification
-          : existing?.justification ?? null;
-      const cwd =
-        input.cwd !== undefined ? input.cwd : existing?.cwd ?? null;
-      const requestKind =
-        input.requestKind !== undefined
-          ? input.requestKind
-          : existing?.requestKind ?? null;
+      const displayTitle = mergeSnapshotField(
+        existing?.displayTitle,
+        input.displayTitle,
+      );
+      const commandPreview = mergeSnapshotField(
+        existing?.commandPreview,
+        input.commandPreview,
+      );
+      const justification = mergeSnapshotField(
+        existing?.justification,
+        input.justification,
+      );
+      const cwd = mergeSnapshotField(existing?.cwd, input.cwd);
+      const requestKind = mergeSnapshotField(
+        existing?.requestKind,
+        input.requestKind,
+      );
 
       if (existing && isTerminalApprovalStatus(existing.status)) {
         return;
@@ -234,6 +254,13 @@ export const createApprovalRepo = (db: Database) => {
       return mapApproval(
         getByRequestIdStatement.get(normalizeRequestId(requestId)) as ApprovalRow | null,
       );
+    },
+    getUniqueByRequestId(requestId: string | number) {
+      const rows = getUniqueByRequestIdStatement.all(
+        normalizeRequestId(requestId),
+      ) as ApprovalRow[];
+
+      return rows.length === 1 ? mapApproval(rows[0]) : null;
     },
     getLatestByCodexThreadIdAndRequestId(
       codexThreadId: string,

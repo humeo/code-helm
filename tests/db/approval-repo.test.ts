@@ -240,6 +240,51 @@ test("approval snapshot fields survive a status-only update", () => {
   db.close();
 });
 
+test("pending approval replays preserve existing snapshot fields and only backfill empty ones", () => {
+  const db = createMigratedDb();
+  seedWorkspaceGraph(db);
+  const repo = createApprovalRepo(db);
+
+  repo.insert({
+    approvalKey: "turn-1:item-1",
+    requestId: 12,
+    discordThreadId: "123",
+    status: "pending",
+    displayTitle: "Original title",
+    commandPreview: null,
+    justification: "Original justification",
+    cwd: null,
+    requestKind: "command_execution",
+  });
+
+  repo.insert({
+    approvalKey: "turn-1:item-1",
+    requestId: 12,
+    discordThreadId: "123",
+    status: "pending",
+    displayTitle: "Replayed title",
+    commandPreview: "touch replay.txt",
+    justification: "Replayed justification",
+    cwd: "/tmp/ws1/app",
+    requestKind: "permissions",
+  });
+
+  expect(repo.getByApprovalKey("turn-1:item-1")).toMatchObject({
+    approvalKey: "turn-1:item-1",
+    requestId: "12",
+    codexThreadId: "codex-1",
+    discordThreadId: "123",
+    status: "pending",
+    displayTitle: "Original title",
+    commandPreview: "touch replay.txt",
+    justification: "Original justification",
+    cwd: "/tmp/ws1/app",
+    requestKind: "command_execution",
+  });
+
+  db.close();
+});
+
 test("repo can list pending approvals for a Discord thread newest first", () => {
   const db = createMigratedDb();
   seedWorkspaceGraph(db);

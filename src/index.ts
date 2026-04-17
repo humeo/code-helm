@@ -42,6 +42,7 @@ import type {
   CodexTurnItem,
   CodexUserMessageItem,
   RoutedEventMap,
+  ServerRequestResolvedEvent,
   StartTurnParams,
   ThreadReadResult,
 } from "./codex/protocol-types";
@@ -1835,6 +1836,89 @@ const extractApprovalSnapshotFromRequest = ({
     cwd: readApprovalEventString(event, "cwd"),
     requestKind,
   };
+};
+
+const getRuntimeApprovalRequestAssociations = (
+  runtimeApprovalKeysByRequestId: Map<string, Set<string>>,
+  requestId: string,
+) => {
+  const existing = runtimeApprovalKeysByRequestId.get(requestId);
+
+  if (existing) {
+    return existing;
+  }
+
+  const created = new Set<string>();
+  runtimeApprovalKeysByRequestId.set(requestId, created);
+  return created;
+};
+
+export const rememberRuntimeApprovalRequest = (
+  runtimeApprovalKeysByRequestId: Map<string, Set<string>>,
+  approval: Pick<ApprovalRecord, "approvalKey" | "requestId">,
+) => {
+  getRuntimeApprovalRequestAssociations(
+    runtimeApprovalKeysByRequestId,
+    approval.requestId,
+  ).add(approval.approvalKey);
+};
+
+const forgetRuntimeApprovalRequest = (
+  runtimeApprovalKeysByRequestId: Map<string, Set<string>>,
+  approval: Pick<ApprovalRecord, "approvalKey" | "requestId">,
+) => {
+  const approvalKeys = runtimeApprovalKeysByRequestId.get(approval.requestId);
+
+  if (!approvalKeys) {
+    return;
+  }
+
+  approvalKeys.delete(approval.approvalKey);
+
+  if (approvalKeys.size === 0) {
+    runtimeApprovalKeysByRequestId.delete(approval.requestId);
+  }
+};
+
+export const resolveStoredApprovalForResolvedEvent = ({
+  approvalRepo,
+  runtimeApprovalKeysByRequestId,
+  event,
+}: {
+  approvalRepo: ReturnType<typeof createApprovalRepo>;
+  runtimeApprovalKeysByRequestId: Map<string, Set<string>>;
+  event: Pick<ServerRequestResolvedEvent, "requestId" | "threadId">;
+}) => {
+  const requestId = String(event.requestId);
+
+  if (event.threadId) {
+    return approvalRepo.getLatestByCodexThreadIdAndRequestId(event.threadId, requestId);
+  }
+
+  const runtimeApprovalKeys = runtimeApprovalKeysByRequestId.get(requestId);
+
+  if (runtimeApprovalKeys && runtimeApprovalKeys.size > 0) {
+    const runtimeApprovals = [...runtimeApprovalKeys]
+      .map((approvalKey) => approvalRepo.getByApprovalKey(approvalKey))
+      .filter((approval): approval is ApprovalRecord => approval !== null);
+
+    if (runtimeApprovals.length === 1) {
+      return runtimeApprovals[0];
+    }
+
+    if (runtimeApprovals.length > 1) {
+      logger.debug(
+        "Skipping ambiguous serverRequest/resolved event without threadId",
+        {
+          requestId,
+          approvalKeys: runtimeApprovals.map((approval) => approval.approvalKey),
+        },
+      );
+      return null;
+    }
+  }
+
+  return approvalRepo.getUniqueByRequestId(requestId);
 };
 
 export const persistApprovalRequestSnapshot = ({
@@ -4193,6 +4277,7 @@ const startCodeHelmRuntime = async (
   const codexClient = new JsonRpcClient(config.codex.appServerUrl);
   const approvalDmMessages = new Map<string, ApprovalButtonMessage>();
   const approvalThreadMessages = new Map<string, ApprovalLifecycleState>();
+  const runtimeApprovalKeysByRequestId = new Map<string, Set<string>>();
   const approvalResolutionsInFlight = new Set<string>();
   const transcriptRuntimes = new Map<string, TranscriptRuntime>();
   let discordClient: Client | undefined;
@@ -5495,6 +5580,7 @@ const startCodeHelmRuntime = async (
         method,
         event,
       });
+      rememberRuntimeApprovalRequest(runtimeApprovalKeysByRequestId, approval);
       const approvalKey = approval.approvalKey;
 
       const isReadOnlySession = session.state === "degraded";
@@ -5597,9 +5683,11 @@ const startCodeHelmRuntime = async (
   codexClient.on("serverRequest/resolved", (event) => {
     void (async () => {
       const requestId = String(event.requestId);
-      const approvalRecord = event.threadId
-        ? approvalRepo.getLatestByCodexThreadIdAndRequestId(event.threadId, requestId)
-        : approvalRepo.getByRequestId(requestId);
+      const approvalRecord = resolveStoredApprovalForResolvedEvent({
+        approvalRepo,
+        runtimeApprovalKeysByRequestId,
+        event,
+      });
 
       if (!approvalRecord) {
         return;
@@ -5633,6 +5721,7 @@ const startCodeHelmRuntime = async (
         cwd: approvalRecord.cwd,
         requestKind: approvalRecord.requestKind,
       });
+      forgetRuntimeApprovalRequest(runtimeApprovalKeysByRequestId, approvalRecord);
       const storedApproval = approvalRepo.getByApprovalKey(approvalRecord.approvalKey);
 
       if (!storedApproval) {
