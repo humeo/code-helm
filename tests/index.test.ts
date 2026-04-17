@@ -4486,6 +4486,116 @@ test("live command approvals persist snapshot data before lifecycle rendering", 
   db.close();
 });
 
+test("live file-change approvals persist fallback title and request kind before lifecycle rendering", () => {
+  const db = createDatabaseClient(":memory:");
+  applyMigrations(db);
+  const sessionRepo = createSessionRepo(db);
+  const approvalRepo = createApprovalRepo(db);
+
+  sessionRepo.insert({
+    discordThreadId: "discord-thread-1",
+    codexThreadId: "codex-1",
+    ownerDiscordUserId: "owner-1",
+    cwd: "/tmp/ws1/app",
+    state: "waiting-approval",
+  });
+
+  const approval = persistApprovalRequestSnapshot({
+    approvalRepo,
+    session: createSessionRecord({
+      codexThreadId: "codex-1",
+      discordThreadId: "discord-thread-1",
+    }),
+    method: "item/fileChange/requestApproval",
+    event: {
+      requestId: "req-8",
+      threadId: "codex-1",
+      turnId: "turn-1",
+      itemId: "call-2",
+      justification: "Allow updating tracked files?",
+      cwd: "/tmp/ws1/app",
+    },
+  });
+
+  expect(approvalRepo.getByApprovalKey("turn-1:call-2")).toMatchObject({
+    approvalKey: "turn-1:call-2",
+    requestId: "req-8",
+    status: "pending",
+    displayTitle: "File change approval",
+    commandPreview: null,
+    justification: "Allow updating tracked files?",
+    cwd: "/tmp/ws1/app",
+    requestKind: "file_change",
+  });
+  expect(renderApprovalLifecycleMessage({
+    approval,
+  })).toBe(
+    "**File change approval**\n"
+      + "Status: `Pending`\n\n"
+      + "Allow updating tracked files?\n\n"
+      + "CWD: `/tmp/ws1/app`\n"
+      + "Kind: `file_change`\n"
+      + "Request ID: `req-8`",
+  );
+
+  db.close();
+});
+
+test("live permissions approvals persist fallback title and request kind before lifecycle rendering", () => {
+  const db = createDatabaseClient(":memory:");
+  applyMigrations(db);
+  const sessionRepo = createSessionRepo(db);
+  const approvalRepo = createApprovalRepo(db);
+
+  sessionRepo.insert({
+    discordThreadId: "discord-thread-1",
+    codexThreadId: "codex-1",
+    ownerDiscordUserId: "owner-1",
+    cwd: "/tmp/ws1/app",
+    state: "waiting-approval",
+  });
+
+  const approval = persistApprovalRequestSnapshot({
+    approvalRepo,
+    session: createSessionRecord({
+      codexThreadId: "codex-1",
+      discordThreadId: "discord-thread-1",
+    }),
+    method: "item/permissions/requestApproval",
+    event: {
+      requestId: "req-9",
+      threadId: "codex-1",
+      turnId: "turn-1",
+      itemId: "call-3",
+      justification: "Allow elevated permissions for this step?",
+      cwd: "/tmp/ws1/app",
+    },
+  });
+
+  expect(approvalRepo.getByApprovalKey("turn-1:call-3")).toMatchObject({
+    approvalKey: "turn-1:call-3",
+    requestId: "req-9",
+    status: "pending",
+    displayTitle: "Permissions approval",
+    commandPreview: null,
+    justification: "Allow elevated permissions for this step?",
+    cwd: "/tmp/ws1/app",
+    requestKind: "permissions",
+  });
+  expect(renderApprovalLifecycleMessage({
+    approval,
+  })).toBe(
+    "**Permissions approval**\n"
+      + "Status: `Pending`\n\n"
+      + "Allow elevated permissions for this step?\n\n"
+      + "CWD: `/tmp/ws1/app`\n"
+      + "Kind: `permissions`\n"
+      + "Request ID: `req-9`",
+  );
+
+  db.close();
+});
+
 test("owner approval DMs reuse the same stored approval body as the thread card", () => {
   const approval = createApprovalRecord();
   const threadPayload = renderApprovalLifecyclePayload({
