@@ -821,6 +821,7 @@ test("keeps non-session repository surfaces narrow", () => {
     "getUniqueByRequestId",
     "insert",
     "listPendingByDiscordThreadId",
+    "updateThreadMessageId",
   ]);
 
   db.close();

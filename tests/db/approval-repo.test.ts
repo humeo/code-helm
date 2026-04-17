@@ -68,6 +68,7 @@ test("repo upsert preserves terminal status and resolution metadata on resolved 
     justification: null,
     cwd: null,
     requestKind: null,
+    threadMessageId: null,
     resolvedByDiscordUserId: "u1",
     resolution: "approved",
     createdAt: expect.any(String),
@@ -240,6 +241,33 @@ test("approval snapshot fields survive a status-only update", () => {
   db.close();
 });
 
+test("repo can backfill a Discord thread message id after terminal resolution", () => {
+  const db = createMigratedDb();
+  seedWorkspaceGraph(db);
+  const repo = createApprovalRepo(db);
+
+  repo.insert({
+    approvalKey: "turn-1:item-1",
+    requestId: 9,
+    discordThreadId: "123",
+    status: "approved",
+    resolvedByDiscordUserId: "u1",
+    resolution: "approved",
+  });
+
+  (repo as {
+    updateThreadMessageId: (approvalKey: string, threadMessageId: string) => void;
+  }).updateThreadMessageId("turn-1:item-1", "discord-message-1");
+
+  expect(repo.getByApprovalKey("turn-1:item-1")).toMatchObject({
+    approvalKey: "turn-1:item-1",
+    status: "approved",
+    threadMessageId: "discord-message-1",
+  });
+
+  db.close();
+});
+
 test("pending approval replays preserve existing snapshot fields and only backfill empty ones", () => {
   const db = createMigratedDb();
   seedWorkspaceGraph(db);
@@ -332,6 +360,7 @@ test("repo can list pending approvals for a Discord thread newest first", () => 
       justification: null,
       cwd: null,
       requestKind: null,
+      threadMessageId: null,
       resolvedByDiscordUserId: null,
       resolution: null,
       createdAt: expect.any(String),
@@ -348,6 +377,7 @@ test("repo can list pending approvals for a Discord thread newest first", () => 
       justification: null,
       cwd: null,
       requestKind: null,
+      threadMessageId: null,
       resolvedByDiscordUserId: null,
       resolution: null,
       createdAt: expect.any(String),
@@ -399,6 +429,7 @@ test("approval rows follow a rebound Discord thread for the managed session", ()
       justification: null,
       cwd: null,
       requestKind: null,
+      threadMessageId: null,
       resolvedByDiscordUserId: null,
       resolution: null,
       createdAt: expect.any(String),
@@ -517,6 +548,7 @@ test("migrations backfill nullable approval snapshot fields for legacy approvals
     justification: null,
     cwd: null,
     requestKind: null,
+    threadMessageId: null,
     resolvedByDiscordUserId: null,
     resolution: null,
     createdAt: expect.any(String),
@@ -792,6 +824,7 @@ test("approval rows survive a rebuilt sessions schema and still follow rebound D
       justification: null,
       cwd: null,
       requestKind: null,
+      threadMessageId: null,
       resolvedByDiscordUserId: null,
       resolution: null,
       createdAt: expect.any(String),
@@ -925,6 +958,7 @@ test("migrations rebuild legacy approvals so rebinds cascade to the replacement 
       justification: null,
       cwd: null,
       requestKind: null,
+      threadMessageId: null,
       resolvedByDiscordUserId: null,
       resolution: null,
       createdAt: expect.any(String),

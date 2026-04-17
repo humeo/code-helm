@@ -15,6 +15,7 @@ export type ApprovalRecord = {
   justification: string | null;
   cwd: string | null;
   requestKind: string | null;
+  threadMessageId: string | null;
   resolvedByDiscordUserId: string | null;
   resolution: string | null;
   createdAt: string;
@@ -47,6 +48,7 @@ type ApprovalRow = {
   justification: string | null;
   cwd: string | null;
   request_kind: string | null;
+  thread_message_id: string | null;
   resolved_by_discord_user_id: string | null;
   resolution: string | null;
   created_at: string;
@@ -69,6 +71,7 @@ const mapApproval = (row: ApprovalRow | null): ApprovalRecord | null => {
     justification: row.justification,
     cwd: row.cwd,
     requestKind: row.request_kind,
+    threadMessageId: row.thread_message_id,
     resolvedByDiscordUserId: row.resolved_by_discord_user_id,
     resolution: row.resolution,
     createdAt: row.created_at,
@@ -114,11 +117,12 @@ export const createApprovalRepo = (db: Database) => {
       justification,
       cwd,
       request_kind,
+      thread_message_id,
       resolved_by_discord_user_id,
       resolution,
       created_at,
       updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(approval_key) DO UPDATE SET
       discord_thread_id = excluded.discord_thread_id,
       codex_thread_id = excluded.codex_thread_id,
@@ -129,6 +133,7 @@ export const createApprovalRepo = (db: Database) => {
       justification = excluded.justification,
       cwd = excluded.cwd,
       request_kind = excluded.request_kind,
+      thread_message_id = COALESCE(excluded.thread_message_id, approvals.thread_message_id),
       resolved_by_discord_user_id = excluded.resolved_by_discord_user_id,
       resolution = excluded.resolution,
       updated_at = excluded.updated_at`,
@@ -172,6 +177,12 @@ export const createApprovalRepo = (db: Database) => {
       FROM sessions
       WHERE discord_thread_id = ?
       LIMIT 1`,
+  );
+  const updateThreadMessageIdStatement = db.prepare(
+    `UPDATE approvals
+      SET thread_message_id = ?,
+          updated_at = ?
+      WHERE approval_key = ?`,
   );
 
   return {
@@ -239,6 +250,7 @@ export const createApprovalRepo = (db: Database) => {
         justification,
         cwd,
         requestKind,
+        existing?.threadMessageId ?? null,
         resolvedByDiscordUserId,
         resolution,
         timestamp,
@@ -281,6 +293,13 @@ export const createApprovalRepo = (db: Database) => {
     getLatestByDiscordThreadId(discordThreadId: string) {
       return mapApproval(
         getLatestByDiscordThreadIdStatement.get(discordThreadId) as ApprovalRow | null,
+      );
+    },
+    updateThreadMessageId(approvalKey: string, threadMessageId: string | null) {
+      updateThreadMessageIdStatement.run(
+        threadMessageId,
+        now(),
+        approvalKey,
       );
     },
   };

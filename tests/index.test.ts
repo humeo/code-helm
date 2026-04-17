@@ -135,6 +135,7 @@ const createApprovalRecord = (
   justification: "要允许我在项目根目录创建 c.txt 吗？",
   cwd: "/tmp/ws1/app",
   requestKind: "command_execution",
+  threadMessageId: null,
   resolvedByDiscordUserId: null,
   resolution: null,
   createdAt: "2026-04-17T00:00:00.000Z",
@@ -2829,20 +2830,24 @@ test("approval reconciliation rebuilds waiting-approval surfaces from stored app
       }),
       pendingApproval,
     ],
-    upsertApprovalMessage: async (approval) => {
+    upsertApprovalMessage: async (approval: ApprovalRecord) => {
       calls.push(`message:${approval.approvalKey}:${renderApprovalLifecycleMessage({
         approval,
       })}`);
     },
-    ensureOwnerControls: async (approval) => {
+    rememberPendingApproval: async (approval: ApprovalRecord) => {
+      calls.push(`remember:${approval.approvalKey}:${approval.requestId}`);
+    },
+    ensureOwnerControls: async (approval: ApprovalRecord) => {
       calls.push(`dm:${approval.approvalKey}:${renderApprovalOwnerDmPayload({
         approvalKey: approval.approvalKey,
         approval,
       }).content}`);
     },
-  });
+  } as never);
 
   expect(calls).toEqual([
+    "remember:turn-2:item-1:req-2",
     `message:turn-2:item-1:${renderApprovalLifecycleMessage({
       approval: createApprovalRecord({
         approvalKey: "turn-2:item-1",
@@ -2871,13 +2876,16 @@ test("approval reconciliation rebuilds waiting-approval surfaces from stored app
         requestId: "req-2",
       }),
     ],
-    upsertApprovalMessage: async (approval) => {
+    upsertApprovalMessage: async (approval: ApprovalRecord) => {
       calls.push(`message:${approval.approvalKey}:${approval.requestId}`);
     },
-    ensureOwnerControls: async (approval) => {
+    rememberPendingApproval: async (approval: ApprovalRecord) => {
+      calls.push(`remember:${approval.approvalKey}:${approval.requestId}`);
+    },
+    ensureOwnerControls: async (approval: ApprovalRecord) => {
       calls.push(`dm:${approval.approvalKey}:${approval.requestId}`);
     },
-  });
+  } as never);
 
   expect(calls).toEqual([]);
 });
@@ -2908,12 +2916,83 @@ test("approval reconciliation tolerates a locally answered approval that is stil
     upsertApprovalMessage: async (approval) => {
       calls.push(`message:${approval.approvalKey}:${approval.requestId}:${approval.status}`);
     },
+    rememberPendingApproval: async (approval) => {
+      calls.push(`remember:${approval.approvalKey}:${approval.requestId}:${approval.status}`);
+    },
     ensureOwnerControls: async (approval) => {
       calls.push(`dm:${approval.approvalKey}:${approval.requestId}:${approval.status}`);
     },
   });
 
-  expect(calls).toEqual([]);
+  expect(calls).toEqual([
+    "remember:turn-9:item-1:req-9:approved",
+    "message:turn-9:item-1:req-9:approved",
+  ]);
+});
+
+test("resume re-seeds a locally answered approval so resolved events without threadId still bind after restart", async () => {
+  const db = createDatabaseClient(":memory:");
+  applyMigrations(db);
+  const sessionRepo = createSessionRepo(db);
+  const approvalRepo = createApprovalRepo(db);
+  const runtimeApprovalKeysByRequestId = new Map<string, Set<string>>();
+
+  sessionRepo.insert({
+    discordThreadId: "discord-thread-1",
+    codexThreadId: "codex-1",
+    ownerDiscordUserId: "owner-1",
+    cwd: "/tmp/ws1/app",
+    state: "waiting-approval",
+  });
+
+  approvalRepo.insert({
+    approvalKey: "turn-1:call-1",
+    requestId: "req-dup",
+    codexThreadId: "codex-1",
+    discordThreadId: "discord-thread-1",
+    status: "approved",
+    resolvedByDiscordUserId: "owner-1",
+    resolution: "approved",
+  });
+  approvalRepo.insert({
+    approvalKey: "turn-2:call-1",
+    requestId: "req-dup",
+    codexThreadId: "codex-1",
+    discordThreadId: "discord-thread-1",
+    status: "approved",
+    resolvedByDiscordUserId: "owner-1",
+    resolution: "approved",
+  });
+
+  await reconcileResumedApprovalState({
+    runtimeState: "waiting-approval",
+    pendingApprovals: [],
+    latestApproval: createApprovalRecord({
+      approvalKey: "turn-2:call-1",
+      requestId: "req-dup",
+      status: "approved",
+    }),
+    upsertApprovalMessage: async () => {},
+    rememberPendingApproval: async (approval) => {
+      rememberRuntimeApprovalRequest(runtimeApprovalKeysByRequestId, approval);
+    },
+  });
+
+  expect(
+    resolveStoredApprovalForResolvedEvent({
+      approvalRepo,
+      runtimeApprovalKeysByRequestId,
+      event: {
+        requestId: "req-dup",
+      },
+    }),
+  ).toMatchObject({
+    approvalKey: "turn-2:call-1",
+    requestId: "req-dup",
+    status: "approved",
+  });
+
+  db.close();
 });
 
 test("managed session thread input is blocked for archived and deleted lifecycles", () => {
@@ -3512,6 +3591,7 @@ test("managed thread deletion detaches the Discord container without touching un
 test("approval interaction replies to Codex before persisting a terminal local decision", async () => {
   const calls: string[] = [];
   const approvalKey = "turn-1:item-1";
+  let status: ApprovalRecord["status"] = "pending";
 
   const handled = await handleApprovalInteraction({
     interaction: {
@@ -3542,19 +3622,24 @@ test("approval interaction replies to Codex before persisting a terminal local d
         requestId: "req-1",
         codexThreadId: "codex-thread-1",
         discordThreadId: "discord-thread-1",
-        status: "pending",
+        status,
       }),
       insert: () => {
+        status = "approved";
         calls.push("insert");
       },
     } as never,
-  });
+    afterPersistTerminalDecision: async (approval: ApprovalRecord) => {
+      calls.push(`surface:${approval.approvalKey}:${approval.status}`);
+    },
+  } as never);
 
   expect(handled).toBe(true);
   expect(calls).toEqual([
     "defer",
     "rpc",
     "insert",
+    "surface:turn-1:item-1:approved",
   ]);
 });
 
@@ -5213,6 +5298,63 @@ test("approval lifecycle recovery does not collide when long request ids share a
   });
 
   expect(recovered).toBeUndefined();
+});
+
+test("approval lifecycle recovery does not reuse a no-button message for a different approval key", async () => {
+  const lifecycle = renderApprovalLifecyclePayload({
+    approvalKey: "turn-1:item-1",
+    approval: createApprovalRecord({
+      approvalKey: "turn-1:item-1",
+      requestId: "req-shared",
+      status: "resolved",
+    }),
+  });
+
+  const recovered = await recoverApprovalLifecycleMessageFromHistory({
+    approvalKey: "turn-2:item-1",
+    requestId: "req-shared",
+    botUserId: "bot-1",
+    fetchPage: async () => [
+      {
+        id: "m1",
+        content: lifecycle.content,
+        editable: true,
+        author: { bot: true, id: "bot-1" },
+        components: [],
+      },
+    ],
+  });
+
+  expect(recovered).toBeUndefined();
+});
+
+test("approval lifecycle recovery can reuse a legacy no-button message when the request id is uniquely owned", async () => {
+  const lifecycle = renderApprovalLifecyclePayload({
+    approvalKey: "legacy:item-1",
+    approval: createApprovalRecord({
+      approvalKey: "legacy:item-1",
+      requestId: "req-legacy",
+      status: "resolved",
+    }),
+  });
+
+  const recovered = await recoverApprovalLifecycleMessageFromHistory({
+    approvalKey: "legacy:item-1",
+    requestId: "req-legacy",
+    allowRequestIdFallback: true,
+    botUserId: "bot-1",
+    fetchPage: async () => [
+      {
+        id: "m1",
+        content: lifecycle.content,
+        editable: true,
+        author: { bot: true, id: "bot-1" },
+        components: [],
+      },
+    ],
+  } as never);
+
+  expect(recovered?.id).toBe("m1");
 });
 
 test("status card renderer stays operational and compact", () => {

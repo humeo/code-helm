@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS approvals (
   justification TEXT,
   cwd TEXT,
   request_kind TEXT,
+  thread_message_id TEXT,
   resolved_by_discord_user_id TEXT,
   resolution TEXT,
   created_at TEXT NOT NULL,

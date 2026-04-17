@@ -60,7 +60,8 @@ const approvalsTableHasSnapshotColumns = (db: Database) => {
     && hasColumn(db, "approvals", "command_preview")
     && hasColumn(db, "approvals", "justification")
     && hasColumn(db, "approvals", "cwd")
-    && hasColumn(db, "approvals", "request_kind");
+    && hasColumn(db, "approvals", "request_kind")
+    && hasColumn(db, "approvals", "thread_message_id");
 };
 
 const assertLegacySessionsCanBackfillCwd = (
@@ -213,6 +214,7 @@ const rebuildApprovalsTableWithStableIdentity = (db: Database) => {
   const hasJustificationColumn = hasColumn(db, "approvals", "justification");
   const hasCwdColumn = hasColumn(db, "approvals", "cwd");
   const hasRequestKindColumn = hasColumn(db, "approvals", "request_kind");
+  const hasThreadMessageIdColumn = hasColumn(db, "approvals", "thread_message_id");
   const approvalKeySelect = hasApprovalKeyColumn
     ? "approval_key"
     : "printf('legacy:%s', approvals.request_id)";
@@ -231,6 +233,9 @@ const rebuildApprovalsTableWithStableIdentity = (db: Database) => {
   const cwdSelect = hasCwdColumn ? "approvals.cwd" : "NULL";
   const requestKindSelect = hasRequestKindColumn
     ? "approvals.request_kind"
+    : "NULL";
+  const threadMessageIdSelect = hasThreadMessageIdColumn
+    ? "approvals.thread_message_id"
     : "NULL";
   const approvalsSource = hasCodexThreadIdColumn
     ? "FROM approvals"
@@ -257,6 +262,7 @@ const rebuildApprovalsTableWithStableIdentity = (db: Database) => {
         justification TEXT,
         cwd TEXT,
         request_kind TEXT,
+        thread_message_id TEXT,
         resolved_by_discord_user_id TEXT,
         resolution TEXT,
         created_at TEXT NOT NULL,
@@ -278,6 +284,7 @@ const rebuildApprovalsTableWithStableIdentity = (db: Database) => {
         justification,
         cwd,
         request_kind,
+        thread_message_id,
         resolved_by_discord_user_id,
         resolution,
         created_at,
@@ -294,6 +301,7 @@ const rebuildApprovalsTableWithStableIdentity = (db: Database) => {
         ${justificationSelect},
         ${cwdSelect},
         ${requestKindSelect},
+        ${threadMessageIdSelect},
         approvals.resolved_by_discord_user_id,
         approvals.resolution,
         approvals.created_at,
@@ -328,6 +336,7 @@ const upgradeApprovalsSchema = (db: Database) => {
       ["justification", "TEXT"],
       ["cwd", "TEXT"],
       ["request_kind", "TEXT"],
+      ["thread_message_id", "TEXT"],
     ].filter(([columnName]) => !hasColumn(db, "approvals", columnName));
 
     for (const [columnName, columnType] of missingColumns) {

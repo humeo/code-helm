@@ -230,9 +230,11 @@ type DiscordChannelMessagePayload = DiscordMessagePayload & {
   allowedMentions?: MessageMentionOptions;
 };
 type ApprovalButtonMessage = {
+  id?: string;
   edit(payload: DiscordChannelMessagePayload): Promise<ApprovalButtonMessage>;
 };
 type ApprovalLifecycleMessage = {
+  id?: string;
   content: string;
   edit(payload: DiscordChannelMessagePayload): Promise<ApprovalLifecycleMessage>;
 };
@@ -1366,10 +1368,12 @@ export const canReuseApprovalLifecycleMessage = ({
   editable,
   author,
   botUserId,
+  allowRequestIdFallback,
 }: StatusCardCandidate & {
   approvalKey?: string;
   requestId: string;
   botUserId?: string;
+  allowRequestIdFallback?: boolean;
 }) => {
   if (
     !editable
@@ -1391,6 +1395,10 @@ export const canReuseApprovalLifecycleMessage = ({
       && parseApprovalCustomId(componentApprovalKey)?.approvalKey === approvalKey;
   }
 
+  if (approvalKey !== undefined && !allowRequestIdFallback) {
+    return false;
+  }
+
   return (
     content.startsWith(`Approval \`${requestId}\`:`)
     || content.includes(renderApprovalRequestIdText(requestId))
@@ -1404,6 +1412,7 @@ export const recoverApprovalLifecycleMessageFromHistory = async <
   requestId,
   fetchPage,
   botUserId,
+  allowRequestIdFallback,
   pageSize = 50,
   maxPages = 5,
 }: {
@@ -1411,6 +1420,7 @@ export const recoverApprovalLifecycleMessageFromHistory = async <
   requestId: string;
   fetchPage: (options: { limit: number; before?: string }) => Promise<T[]>;
   botUserId?: string;
+  allowRequestIdFallback?: boolean;
   pageSize?: number;
   maxPages?: number;
 }) => {
@@ -1427,6 +1437,7 @@ export const recoverApprovalLifecycleMessageFromHistory = async <
         approvalKey,
         requestId,
         botUserId,
+        allowRequestIdFallback,
       }));
 
     if (recovered) {
@@ -2345,6 +2356,7 @@ export const reconcileResumedApprovalState = async ({
   pendingApprovals,
   latestApproval,
   upsertApprovalMessage,
+  rememberPendingApproval,
   ensureOwnerControls,
 }: {
   runtimeState: SessionRuntimeState;
@@ -2383,6 +2395,19 @@ export const reconcileResumedApprovalState = async ({
       | "requestKind"
     >,
   ) => Promise<void> | void;
+  rememberPendingApproval?: (
+    approval: Pick<
+      ApprovalRecord,
+      | "approvalKey"
+      | "requestId"
+      | "status"
+      | "displayTitle"
+      | "commandPreview"
+      | "justification"
+      | "cwd"
+      | "requestKind"
+    >,
+  ) => Promise<void> | void;
   ensureOwnerControls?: (
     approval: Pick<
       ApprovalRecord,
@@ -2405,7 +2430,11 @@ export const reconcileResumedApprovalState = async ({
 
   if (!pendingApproval) {
     if (latestApproval && latestApproval.status !== "pending") {
-      return undefined;
+      if (latestApproval.status !== "resolved") {
+        await rememberPendingApproval?.(latestApproval);
+      }
+      await upsertApprovalMessage(latestApproval);
+      return latestApproval.approvalKey;
     }
 
     throw new Error(
@@ -2413,6 +2442,7 @@ export const reconcileResumedApprovalState = async ({
     );
   }
 
+  await rememberPendingApproval?.(pendingApproval);
   await upsertApprovalMessage(pendingApproval);
   await ensureOwnerControls?.(pendingApproval);
   return pendingApproval.approvalKey;
@@ -4036,6 +4066,8 @@ const recoverApprovalLifecycleMessage = async (
   approval: {
     approvalKey: string;
     requestId: string;
+    threadMessageId?: string | null;
+    allowRequestIdFallback?: boolean;
   },
 ) => {
   type RecoverableApprovalCandidate = ApprovalLifecycleMessage & StatusCardCandidate;
@@ -4045,48 +4077,113 @@ const recoverApprovalLifecycleMessage = async (
     return undefined;
   }
 
+  const toRecoverableApprovalCandidate = (
+    message: Message<boolean>,
+  ): RecoverableApprovalCandidate => {
+    const components: RecoverableMessageComponentRow[] = [];
+
+    for (const row of message.components) {
+      if (!("components" in row) || !Array.isArray(row.components)) {
+        continue;
+      }
+
+      components.push({
+        components: row.components.map((component: { customId?: unknown }) => ({
+          customId:
+            typeof component.customId === "string"
+              ? component.customId
+              : undefined,
+        })),
+      });
+    }
+
+    return {
+      id: message.id,
+      content: message.content,
+      editable: message.editable,
+      components,
+      author: {
+        bot: message.author?.bot,
+        id: message.author?.id,
+      },
+      edit: message.edit.bind(message),
+    };
+  };
+
+  if (approval.threadMessageId) {
+    try {
+      const message = await (
+        channel.messages as {
+          fetch(messageId: string): Promise<Message<boolean>>;
+        }
+      ).fetch(approval.threadMessageId);
+      const recoverable = toRecoverableApprovalCandidate(message);
+
+      if (
+        recoverable.editable
+        && recoverable.author?.bot === true
+        && (
+          client.user?.id === undefined
+          || recoverable.author.id === client.user.id
+        )
+      ) {
+        return recoverable;
+      }
+    } catch {}
+  }
+
   return recoverApprovalLifecycleMessageFromHistory<RecoverableApprovalCandidate>({
     approvalKey: approval.approvalKey,
     requestId: approval.requestId,
     botUserId: client.user?.id,
+    allowRequestIdFallback: approval.allowRequestIdFallback,
     fetchPage: async (options) => {
       const fetched = await channel.messages.fetch(options);
       const messages = fetched instanceof Map ? [...fetched.values()] : [...fetched];
-
-      const recoverableMessages: RecoverableApprovalCandidate[] = messages.map((message) => {
-        const components: RecoverableMessageComponentRow[] = [];
-
-        for (const row of message.components) {
-          if (!("components" in row) || !Array.isArray(row.components)) {
-            continue;
-          }
-
-          components.push({
-            components: row.components.map((component: { customId?: unknown }) => ({
-              customId:
-                typeof component.customId === "string"
-                  ? component.customId
-                  : undefined,
-            })),
-          });
-        }
-
-        return {
-          id: message.id,
-          content: message.content,
-          editable: message.editable,
-          components,
-          author: {
-            bot: message.author?.bot,
-            id: message.author?.id,
-          },
-          edit: message.edit.bind(message),
-        };
-      });
+      const recoverableMessages: RecoverableApprovalCandidate[] = messages.map(
+        toRecoverableApprovalCandidate,
+      );
 
       return recoverableMessages;
     },
   });
+};
+
+const persistApprovalThreadMessageReference = ({
+  approvalRepo,
+  approvalKey,
+  message,
+}: {
+  approvalRepo: ReturnType<typeof createApprovalRepo>;
+  approvalKey: string;
+  message?: ApprovalLifecycleMessage;
+}) => {
+  if (!message?.id) {
+    return;
+  }
+
+  approvalRepo.updateThreadMessageId(approvalKey, message.id);
+};
+
+const shouldAllowLegacyApprovalRequestIdFallback = ({
+  approvalRepo,
+  approval,
+}: {
+  approvalRepo: ReturnType<typeof createApprovalRepo>;
+  approval: Pick<
+    ApprovalRecord,
+    | "approvalKey"
+    | "requestId"
+    | "status"
+    | "threadMessageId"
+  >;
+}) => {
+  if (approval.status === "pending" || approval.threadMessageId) {
+    return false;
+  }
+
+  return approvalRepo.getUniqueByRequestId(approval.requestId)?.approvalKey
+    === approval.approvalKey;
 };
 
 const maybeSendApprovalDm = async ({
@@ -4168,12 +4265,16 @@ export const handleApprovalInteraction = async ({
   sessionRepo,
   approvalRepo,
   inFlightApprovalKeys,
+  afterPersistTerminalDecision,
 }: {
   interaction: ButtonInteraction;
   client: JsonRpcClient;
   sessionRepo: ReturnType<typeof createSessionRepo>;
   approvalRepo: ReturnType<typeof createApprovalRepo>;
   inFlightApprovalKeys?: Set<string>;
+  afterPersistTerminalDecision?: (
+    approval: ApprovalRecord,
+  ) => Promise<void> | void;
 }) => {
   const parsed = parseApprovalCustomId(interaction.customId);
 
@@ -4243,6 +4344,11 @@ export const handleApprovalInteraction = async ({
       resolvedByDiscordUserId: interaction.user.id,
       resolution: nextDecision.status,
     });
+    const storedApproval = approvalRepo.getByApprovalKey(approvalRecord.approvalKey);
+
+    if (storedApproval) {
+      await afterPersistTerminalDecision?.(storedApproval);
+    }
   } finally {
     inFlightApprovalKeys?.delete(approvalKey);
   }
@@ -4637,9 +4743,26 @@ const startCodeHelmRuntime = async (
           latestApproval: approvalRepo.getLatestByDiscordThreadId(
             session.discordThreadId,
           ),
+          rememberPendingApproval: async (approval) => {
+            rememberRuntimeApprovalRequest(
+              runtimeApprovalKeysByRequestId,
+              approval,
+            );
+          },
           upsertApprovalMessage: async (approval) => {
             const { approvalKey, requestId } = approval;
             const lifecycleState = approvalThreadMessages.get(approvalKey) ?? {};
+            const threadMessageId =
+              approvalRepo.getByApprovalKey(approvalKey)?.threadMessageId ?? null;
+            const allowRequestIdFallback = shouldAllowLegacyApprovalRequestIdFallback({
+              approvalRepo,
+              approval: {
+                approvalKey,
+                requestId,
+                status: approval.status,
+                threadMessageId,
+              },
+            });
             try {
               const pendingMessagePromise = upsertApprovalLifecycleMessage({
                 currentMessage: lifecycleState.message,
@@ -4651,6 +4774,8 @@ const startCodeHelmRuntime = async (
                     {
                       approvalKey,
                       requestId,
+                      threadMessageId,
+                      allowRequestIdFallback,
                     },
                   ),
                 payload: renderApprovalLifecyclePayload({
@@ -4672,6 +4797,11 @@ const startCodeHelmRuntime = async (
 
               if (threadMessage) {
                 lifecycleState.message = threadMessage;
+                persistApprovalThreadMessageReference({
+                  approvalRepo,
+                  approvalKey,
+                  message: threadMessage,
+                });
               }
             } catch (error) {
               try {
@@ -5271,6 +5401,57 @@ const startCodeHelmRuntime = async (
       sessionRepo,
       approvalRepo,
       inFlightApprovalKeys: approvalResolutionsInFlight,
+      afterPersistTerminalDecision: async (storedApproval) => {
+        const session = sessionRepo.getByDiscordThreadId(storedApproval.discordThreadId);
+        const dmMessage = approvalDmMessages.get(storedApproval.approvalKey);
+        const lifecycleState = approvalThreadMessages.get(storedApproval.approvalKey) ?? {};
+        const allowRequestIdFallback = shouldAllowLegacyApprovalRequestIdFallback({
+          approvalRepo,
+          approval: storedApproval,
+        });
+        const resolvedMessagePromise = reconcileApprovalResolutionSurface({
+          approval: storedApproval,
+          session,
+          currentThreadMessage: lifecycleState.message,
+          currentThreadMessagePromise: lifecycleState.pendingMessage,
+          recoverThreadMessage: async () =>
+            recoverApprovalLifecycleMessage(
+              bot.client,
+              storedApproval.discordThreadId,
+              {
+                approvalKey: storedApproval.approvalKey,
+                requestId: storedApproval.requestId,
+                threadMessageId: storedApproval.threadMessageId,
+                allowRequestIdFallback,
+              },
+            ),
+          sendThreadMessage: async (payload) =>
+            sendTextToChannel(
+              bot.client,
+              storedApproval.discordThreadId,
+              payload,
+            ),
+          dmMessage,
+        });
+        approvalThreadMessages.set(storedApproval.approvalKey, lifecycleState);
+        const threadMessage = await finalizeApprovalLifecycleMessageState({
+          state: lifecycleState,
+          operation: resolvedMessagePromise,
+        });
+
+        if (threadMessage) {
+          lifecycleState.message = threadMessage;
+          persistApprovalThreadMessageReference({
+            approvalRepo,
+            approvalKey: storedApproval.approvalKey,
+            message: threadMessage,
+          });
+        }
+
+        if (dmMessage) {
+          approvalDmMessages.delete(storedApproval.approvalKey);
+        }
+      },
     }).catch((error) => {
       logger.error("Approval interaction failed", error);
     });
@@ -5651,6 +5832,7 @@ const startCodeHelmRuntime = async (
               {
                 approvalKey,
                 requestId: approval.requestId,
+                threadMessageId: approval.threadMessageId,
               },
             ),
           payload: renderApprovalLifecyclePayload({
@@ -5672,6 +5854,11 @@ const startCodeHelmRuntime = async (
 
         if (threadMessage) {
           lifecycleState.message = threadMessage;
+          persistApprovalThreadMessageReference({
+            approvalRepo,
+            approvalKey,
+            message: threadMessage,
+          });
         }
       } catch (error) {
         stopDiscordTypingPulse(runtime);
@@ -5768,6 +5955,10 @@ const startCodeHelmRuntime = async (
         : undefined;
 
       const lifecycleState = approvalThreadMessages.get(storedApproval.approvalKey) ?? {};
+      const allowRequestIdFallback = shouldAllowLegacyApprovalRequestIdFallback({
+        approvalRepo,
+        approval: storedApproval,
+      });
       const resolvedMessagePromise = reconcileApprovalResolutionSurface({
         approval: storedApproval,
         session,
@@ -5780,6 +5971,8 @@ const startCodeHelmRuntime = async (
             {
               approvalKey: storedApproval.approvalKey,
               requestId: storedApproval.requestId,
+              threadMessageId: storedApproval.threadMessageId,
+              allowRequestIdFallback,
             },
           ),
         sendThreadMessage: async (payload) =>
@@ -5798,6 +5991,11 @@ const startCodeHelmRuntime = async (
 
       if (threadMessage) {
         lifecycleState.message = threadMessage;
+        persistApprovalThreadMessageReference({
+          approvalRepo,
+          approvalKey: storedApproval.approvalKey,
+          message: threadMessage,
+        });
       }
 
       if (dmMessage) {
