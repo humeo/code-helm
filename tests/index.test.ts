@@ -12,6 +12,11 @@ import type { SessionResumeState } from "../src/domain/types";
 import { createDatabaseClient } from "../src/db/client";
 import { applyMigrations } from "../src/db/migrate";
 import { createCurrentWorkdirRepo } from "../src/db/repos/current-workdirs";
+import {
+  createApprovalRepo,
+  type ApprovalRecord,
+} from "../src/db/repos/approvals";
+import { createSessionRepo } from "../src/db/repos/sessions";
 import { createWorkdirRepo } from "../src/db/repos/workdirs";
 import { createWorkspaceRepo } from "../src/db/repos/workspaces";
 import {
@@ -46,8 +51,10 @@ import {
   getSnapshotReconciliationFailureDisposition,
   isNotLoadedCodexThreadError,
   shouldProjectManagedSessionDiscordSurface,
+  persistApprovalRequestSnapshot,
   renderApprovalLifecycleMessage,
   renderApprovalLifecyclePayload,
+  renderApprovalOwnerDmPayload,
   detectThreadLanguageFromTexts,
   renderApprovalDeliveryFailureText,
   resumeManagedSession,
@@ -109,6 +116,26 @@ const createSessionRecord = (
   degradationReason: null,
   createdAt: "2026-04-09T00:00:00.000Z",
   updatedAt: "2026-04-09T00:00:00.000Z",
+  ...overrides,
+});
+
+const createApprovalRecord = (
+  overrides: Partial<ApprovalRecord> = {},
+): ApprovalRecord => ({
+  approvalKey: "turn-1:call-1",
+  requestId: "req-7",
+  codexThreadId: "codex-1",
+  discordThreadId: "discord-thread-1",
+  status: "pending",
+  displayTitle: "Command approval",
+  commandPreview: "touch c.txt",
+  justification: "要允许我在项目根目录创建 c.txt 吗？",
+  cwd: "/tmp/ws1/app",
+  requestKind: "command_execution",
+  resolvedByDiscordUserId: null,
+  resolution: null,
+  createdAt: "2026-04-17T00:00:00.000Z",
+  updatedAt: "2026-04-17T00:00:00.000Z",
   ...overrides,
 });
 
@@ -2552,6 +2579,12 @@ test("resume session applies the waiting-approval lifecycle message before reope
   >((resolve) => {
     resolveRecoveredMessage = resolve;
   });
+  const pendingApproval = createApprovalRecord({
+    approvalKey: "turn-1:item-1",
+  });
+  const pendingApprovalContent = renderApprovalLifecycleMessage({
+    approval: pendingApproval,
+  });
 
   const resumePromise = resumeManagedSession({
     session: createSessionRecord({
@@ -2574,8 +2607,8 @@ test("resume session applies the waiting-approval lifecycle message before reope
         currentMessagePromise: recoveredMessagePromise,
         recoverMessage: async () => undefined,
         payload: renderApprovalLifecyclePayload({
-          requestId: "req-7",
-          status: "pending",
+          approvalKey: pendingApproval.approvalKey,
+          approval: pendingApproval,
         }),
         sendMessage: async () => {
           throw new Error("should not send a replacement approval message");
@@ -2598,9 +2631,7 @@ test("resume session applies the waiting-approval lifecycle message before reope
     unarchiveThread: async () => {
       calls.push("unarchive");
       expect(approvalReconciled).toBe(true);
-      expect(lifecycleState.message?.content).toBe(
-        "Approval `req-7`: pending.",
-      );
+      expect(lifecycleState.message?.content).toBe(pendingApprovalContent);
       expect(lifecycleState.pendingMessage).toBeUndefined();
     },
     persistLifecycleState: async (lifecycleStateValue) => {
@@ -2640,7 +2671,7 @@ test("resume session applies the waiting-approval lifecycle message before reope
     statusCardState: "waiting-approval",
   });
   expect(calls).toEqual([
-    "approval:Approval `req-7`: pending.",
+    `approval:${pendingApprovalContent}`,
     "state:waiting-approval",
     "status:waiting-approval",
     "snapshot",
@@ -2778,40 +2809,70 @@ test("resume session fails closed when sync cannot establish a trustworthy view"
   expect(calls).toEqual([]);
 });
 
-test("approval reconciliation only rehydrates pending approval state", async () => {
+test("approval reconciliation rebuilds waiting-approval surfaces from stored approval rows", async () => {
   const calls: string[] = [];
+  const pendingApproval = createApprovalRecord();
+  const pendingContent = renderApprovalLifecycleMessage({
+    approval: pendingApproval,
+  });
 
   await reconcileResumedApprovalState({
     runtimeState: "waiting-approval",
     pendingApprovals: [
-      { approvalKey: "turn-2:item-1", requestId: "req-2", status: "pending" },
-      { approvalKey: "turn-1:item-1", requestId: "req-1", status: "pending" },
+      createApprovalRecord({
+        approvalKey: "turn-2:item-1",
+        requestId: "req-2",
+        commandPreview: "touch z.txt",
+      }),
+      pendingApproval,
     ],
-    upsertApprovalMessage: async (approvalKey, requestId, status) => {
-      calls.push(`message:${approvalKey}:${requestId}:${status}`);
+    upsertApprovalMessage: async (approval) => {
+      calls.push(`message:${approval.approvalKey}:${renderApprovalLifecycleMessage({
+        approval,
+      })}`);
     },
-    ensureOwnerControls: async (approvalKey, requestId, status) => {
-      calls.push(`dm:${approvalKey}:${requestId}:${status}`);
+    ensureOwnerControls: async (approval) => {
+      calls.push(`dm:${approval.approvalKey}:${renderApprovalOwnerDmPayload({
+        approvalKey: approval.approvalKey,
+        approval,
+      }).content}`);
     },
   });
 
   expect(calls).toEqual([
-    "message:turn-2:item-1:req-2:pending",
-    "dm:turn-2:item-1:req-2:pending",
+    `message:turn-2:item-1:${renderApprovalLifecycleMessage({
+      approval: createApprovalRecord({
+        approvalKey: "turn-2:item-1",
+        requestId: "req-2",
+        commandPreview: "touch z.txt",
+      }),
+    })}`,
+    `dm:turn-2:item-1:${renderApprovalLifecycleMessage({
+      approval: createApprovalRecord({
+        approvalKey: "turn-2:item-1",
+        requestId: "req-2",
+        commandPreview: "touch z.txt",
+      }),
+    })}`,
   ]);
+  expect(calls.join("\n")).not.toContain("Approval `req-2`: pending.");
+  expect(pendingContent).toContain("```sh\ntouch c.txt\n```");
 
   calls.length = 0;
 
   await reconcileResumedApprovalState({
     runtimeState: "running",
     pendingApprovals: [
-      { approvalKey: "turn-2:item-1", requestId: "req-2", status: "pending" },
+      createApprovalRecord({
+        approvalKey: "turn-2:item-1",
+        requestId: "req-2",
+      }),
     ],
-    upsertApprovalMessage: async (approvalKey, requestId, status) => {
-      calls.push(`message:${approvalKey}:${requestId}:${status}`);
+    upsertApprovalMessage: async (approval) => {
+      calls.push(`message:${approval.approvalKey}:${approval.requestId}`);
     },
-    ensureOwnerControls: async (approvalKey, requestId, status) => {
-      calls.push(`dm:${approvalKey}:${requestId}:${status}`);
+    ensureOwnerControls: async (approval) => {
+      calls.push(`dm:${approval.approvalKey}:${approval.requestId}`);
     },
   });
 
@@ -2836,16 +2897,16 @@ test("approval reconciliation tolerates a locally answered approval that is stil
   await reconcileResumedApprovalState({
     runtimeState: "waiting-approval",
     pendingApprovals: [],
-    latestApproval: {
+    latestApproval: createApprovalRecord({
       approvalKey: "turn-9:item-1",
       requestId: "req-9",
       status: "approved",
+    }),
+    upsertApprovalMessage: async (approval) => {
+      calls.push(`message:${approval.approvalKey}:${approval.requestId}:${approval.status}`);
     },
-    upsertApprovalMessage: async (approvalKey, requestId, status) => {
-      calls.push(`message:${approvalKey}:${requestId}:${status}`);
-    },
-    ensureOwnerControls: async (approvalKey, requestId, status) => {
-      calls.push(`dm:${approvalKey}:${requestId}:${status}`);
+    ensureOwnerControls: async (approval) => {
+      calls.push(`dm:${approval.approvalKey}:${approval.requestId}:${approval.status}`);
     },
   });
 
@@ -3365,8 +3426,17 @@ test("bootstrap thread title uses the first thread message from snapshot, not a 
 
 test("approval resolution updates DM and existing lifecycle message even while the thread is archived", async () => {
   const calls: string[] = [];
+  const pendingApproval = createApprovalRecord();
+  const resolvedApproval = createApprovalRecord({
+    status: "resolved",
+  });
+  const resolvedContent = renderApprovalLifecycleMessage({
+    approval: resolvedApproval,
+  });
   const lifecycleMessage = {
-    content: "Approval `req-1`: pending.",
+    content: renderApprovalLifecycleMessage({
+      approval: pendingApproval,
+    }),
     async edit(payload: { content?: string; components?: unknown[] }) {
       calls.push(`thread:${payload.content}:${payload.components?.length ?? 0}`);
       lifecycleMessage.content = payload.content ?? lifecycleMessage.content;
@@ -3381,8 +3451,7 @@ test("approval resolution updates DM and existing lifecycle message even while t
   };
 
   await reconcileApprovalResolutionSurface({
-    requestId: "req-1",
-    status: "approved",
+    approval: resolvedApproval,
     session: createSessionRecord({
       lifecycleState: "archived",
     }),
@@ -3397,9 +3466,11 @@ test("approval resolution updates DM and existing lifecycle message even while t
   });
 
   expect(calls).toEqual([
-    "dm:Approval resolved: `approved`.:0",
-    "thread:Approval `req-1`: approved.:0",
+    `dm:${resolvedContent}:0`,
+    `thread:${resolvedContent}:0`,
   ]);
+  expect(resolvedContent).toContain("```sh\ntouch c.txt\n```");
+  expect(resolvedContent).toContain("要允许我在项目根目录创建 c.txt 吗？");
 });
 
 test("managed thread deletion detaches the Discord container without touching unknown threads", () => {
@@ -4356,34 +4427,101 @@ test("streaming transcript message edits coalesce to the latest payload", async 
   expect(editDescriptions).toEqual(["first", "third"]);
 });
 
-test("approval lifecycle thread message is compact and request-scoped", () => {
-  expect(
-    renderApprovalLifecycleMessage({
-      requestId: "req-7",
-      status: "pending",
-    }),
-  ).toBe("Approval `req-7`: pending.");
-  expect(
-    renderApprovalLifecycleMessage({
-      requestId: "req-7",
-      status: "approved",
-    }),
-  ).toBe("Approval `req-7`: approved.");
-});
+test("live command approvals persist snapshot data before lifecycle rendering", () => {
+  const db = createDatabaseClient(":memory:");
+  applyMigrations(db);
+  const sessionRepo = createSessionRepo(db);
+  const approvalRepo = createApprovalRepo(db);
 
-test("approval lifecycle payload includes thread buttons only while pending", () => {
-  const pending = renderApprovalLifecyclePayload({
+  sessionRepo.insert({
+    discordThreadId: "discord-thread-1",
+    codexThreadId: "codex-1",
+    ownerDiscordUserId: "owner-1",
+    cwd: "/tmp/ws1/app",
+    state: "waiting-approval",
+  });
+
+  const approval = persistApprovalRequestSnapshot({
+    approvalRepo,
+    session: createSessionRecord({
+      codexThreadId: "codex-1",
+      discordThreadId: "discord-thread-1",
+    }),
+    method: "item/commandExecution/requestApproval",
+    event: {
+      requestId: "req-7",
+      threadId: "codex-1",
+      turnId: "turn-1",
+      itemId: "call-1",
+      cmd: "touch c.txt",
+      justification: "要允许我在项目根目录创建 c.txt 吗？",
+      cwd: "/tmp/ws1/app",
+    },
+  });
+
+  expect(approvalRepo.getByApprovalKey("turn-1:call-1")).toMatchObject({
+    approvalKey: "turn-1:call-1",
     requestId: "req-7",
     status: "pending",
+    displayTitle: "Command approval",
+    commandPreview: "touch c.txt",
+    justification: "要允许我在项目根目录创建 c.txt 吗？",
+    cwd: "/tmp/ws1/app",
+    requestKind: "command_execution",
   });
-  const approved = renderApprovalLifecyclePayload({
-    requestId: "req-7",
-    status: "approved",
+  expect(renderApprovalLifecycleMessage({
+    approval,
+  })).toBe(
+    "**Command approval**\n"
+      + "Status: `Pending`\n\n"
+      + "```sh\n"
+      + "touch c.txt\n"
+      + "```\n\n"
+      + "要允许我在项目根目录创建 c.txt 吗？\n\n"
+      + "CWD: `/tmp/ws1/app`\n"
+      + "Kind: `command_execution`\n"
+      + "Request ID: `req-7`",
+  );
+
+  db.close();
+});
+
+test("owner approval DMs reuse the same stored approval body as the thread card", () => {
+  const approval = createApprovalRecord();
+  const threadPayload = renderApprovalLifecyclePayload({
+    approvalKey: approval.approvalKey,
+    approval,
+  });
+  const dmPayload = renderApprovalOwnerDmPayload({
+    approvalKey: approval.approvalKey,
+    approval,
   });
 
-  expect(pending.content).toBe("Approval `req-7`: pending.");
+  expect(dmPayload.content).toBe(threadPayload.content);
+  expect((dmPayload.components ?? []).length).toBe(1);
+  expect(dmPayload.content).not.toContain("Request: `req-7`");
+});
+
+test("approval lifecycle payload keeps the stored approval body and only drops controls after resolution", () => {
+  const pendingApproval = createApprovalRecord();
+  const pending = renderApprovalLifecyclePayload({
+    approvalKey: pendingApproval.approvalKey,
+    approval: pendingApproval,
+  });
+  const approved = renderApprovalLifecyclePayload({
+    approvalKey: pendingApproval.approvalKey,
+    approval: createApprovalRecord({
+      status: "approved",
+    }),
+  });
+
+  expect(pending.content).toBe(
+    renderApprovalLifecycleMessage({
+      approval: pendingApproval,
+    }),
+  );
   expect((pending.components ?? []).length).toBe(1);
-  expect(approved.content).toBe("Approval `req-7`: approved.");
+  expect(approved.content).toContain("Status: `Approved`");
   expect(approved.components).toEqual([]);
 });
 

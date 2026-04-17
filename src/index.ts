@@ -30,6 +30,7 @@ import {
 } from "./codex/supervisor";
 import {
   approvalRequestMethods,
+  type ApprovalRequestMethod,
 } from "./codex/protocol-types";
 import type {
   CodexAgentMessageItem,
@@ -87,7 +88,11 @@ import type {
   SessionResumeState,
   SessionRuntimeState,
 } from "./domain/types";
-import { applyApprovalResolutionSignal, renderApprovalUi } from "./discord/approval-ui";
+import {
+  applyApprovalResolutionSignal,
+  type ApprovalUiButton,
+  renderApprovalLifecyclePayload as renderStoredApprovalLifecyclePayload,
+} from "./discord/approval-ui";
 import { createDiscordBot } from "./discord/bot";
 import {
   buildControlChannelCommands,
@@ -219,7 +224,7 @@ type DiscordChannelMessagePayload = DiscordMessagePayload & {
   components?: DiscordMessageComponents;
 };
 type ApprovalButtonMessage = {
-  edit(payload: { content: string; components: [] }): Promise<ApprovalButtonMessage>;
+  edit(payload: DiscordChannelMessagePayload): Promise<ApprovalButtonMessage>;
 };
 type ApprovalLifecycleMessage = {
   content: string;
@@ -1155,38 +1160,121 @@ export const upsertStreamingTranscriptMessage = async <T extends {
 };
 
 export const renderApprovalLifecycleMessage = ({
-  requestId,
-  status,
+  approval,
 }: {
-  requestId: string;
-  status: ApprovalStatus;
+  approval: Pick<
+    ApprovalRecord,
+    | "requestId"
+    | "status"
+    | "displayTitle"
+    | "commandPreview"
+    | "justification"
+    | "cwd"
+    | "requestKind"
+  >;
 }) => {
-  if (status === "pending") {
-    return `Approval \`${requestId}\`: pending.`;
+  return renderStoredApprovalLifecyclePayload({
+    approval: {
+      requestId: approval.requestId,
+      status: approval.status,
+      displayTitle: approval.displayTitle,
+      commandPreview: approval.commandPreview,
+      justification: approval.justification,
+      cwd: approval.cwd,
+      requestKind: approval.requestKind,
+    },
+  }).content;
+};
+
+const buildApprovalComponents = (
+  approvalKey: string,
+  buttons: ApprovalUiButton[] = ["approve", "decline", "cancel"],
+) => {
+  if (buttons.length === 0) {
+    return [];
   }
 
-  return `Approval \`${requestId}\`: ${status}.`;
+  const componentByButton: Record<ApprovalUiButton, ButtonBuilder> = {
+    approve: new ButtonBuilder()
+      .setCustomId(buildApprovalCustomId(approvalKey, "approve"))
+      .setLabel("Approve")
+      .setStyle(ButtonStyle.Success),
+    decline: new ButtonBuilder()
+      .setCustomId(buildApprovalCustomId(approvalKey, "decline"))
+      .setLabel("Decline")
+      .setStyle(ButtonStyle.Danger),
+    cancel: new ButtonBuilder()
+      .setCustomId(buildApprovalCustomId(approvalKey, "cancel"))
+      .setLabel("Cancel")
+      .setStyle(ButtonStyle.Secondary),
+  };
+
+  return [
+    new ActionRowBuilder<ButtonBuilder>().addComponents(
+      ...buttons.map((button) => componentByButton[button]),
+    ),
+  ];
 };
 
 export const renderApprovalLifecyclePayload = ({
   approvalKey,
-  requestId,
-  status,
+  approval,
 }: {
   approvalKey?: string;
-  requestId: string;
-  status: ApprovalStatus;
+  approval: Pick<
+    ApprovalRecord,
+    | "approvalKey"
+    | "requestId"
+    | "status"
+    | "displayTitle"
+    | "commandPreview"
+    | "justification"
+    | "cwd"
+    | "requestKind"
+  >;
 }) => {
+  const lifecycle = renderStoredApprovalLifecyclePayload({
+    approval: {
+      requestId: approval.requestId,
+      status: approval.status,
+      displayTitle: approval.displayTitle,
+      commandPreview: approval.commandPreview,
+      justification: approval.justification,
+      cwd: approval.cwd,
+      requestKind: approval.requestKind,
+    },
+  });
+
   return {
-    content: renderApprovalLifecycleMessage({
-      requestId,
-      status,
-    }),
-    components:
-      status === "pending"
-        ? buildApprovalComponents(approvalKey ?? requestId)
-        : [],
+    content: lifecycle.content,
+    components: buildApprovalComponents(
+      approvalKey ?? approval.approvalKey ?? approval.requestId,
+      lifecycle.buttons,
+    ),
   };
+};
+
+export const renderApprovalOwnerDmPayload = ({
+  approvalKey,
+  approval,
+}: {
+  approvalKey?: string;
+  approval: Pick<
+    ApprovalRecord,
+    | "approvalKey"
+    | "requestId"
+    | "status"
+    | "displayTitle"
+    | "commandPreview"
+    | "justification"
+    | "cwd"
+    | "requestKind"
+  >;
+}) => {
+  return renderApprovalLifecyclePayload({
+    approvalKey,
+    approval,
+  });
 };
 
 export type ThreadLanguage = "en" | "zh";
@@ -1295,6 +1383,7 @@ export const canReuseApprovalLifecycleMessage = ({
 
   return (
     content.startsWith(`Approval \`${requestId}\`:`)
+    || content.includes(`Request ID: \`${requestId}\``)
   );
 };
 
@@ -1705,6 +1794,83 @@ const buildApprovalKey = ({
   return `${turnId}:${itemId}`;
 };
 
+const approvalRequestKindByMethod: Record<ApprovalRequestMethod, string> = {
+  "item/commandExecution/requestApproval": "command_execution",
+  "item/fileChange/requestApproval": "file_change",
+  "item/permissions/requestApproval": "permissions",
+};
+
+const approvalDisplayTitleByRequestKind: Record<string, string> = {
+  command_execution: "Command approval",
+  file_change: "File change approval",
+  permissions: "Permissions approval",
+};
+
+const readApprovalEventString = (
+  event: ApprovalRequestEvent,
+  key: string,
+) => {
+  const value = event[key];
+
+  return typeof value === "string" && value.length > 0 ? value : null;
+};
+
+const extractApprovalSnapshotFromRequest = ({
+  method,
+  event,
+}: {
+  method: ApprovalRequestMethod;
+  event: ApprovalRequestEvent;
+}) => {
+  const requestKind = approvalRequestKindByMethod[method];
+
+  return {
+    displayTitle: approvalDisplayTitleByRequestKind[requestKind] ?? "Approval request",
+    commandPreview:
+      method === "item/commandExecution/requestApproval"
+        ? readApprovalEventString(event, "cmd")
+        : null,
+    justification: readApprovalEventString(event, "justification"),
+    cwd: readApprovalEventString(event, "cwd"),
+    requestKind,
+  };
+};
+
+export const persistApprovalRequestSnapshot = ({
+  approvalRepo,
+  session,
+  method,
+  event,
+}: {
+  approvalRepo: ReturnType<typeof createApprovalRepo>;
+  session: Pick<SessionRecord, "codexThreadId" | "discordThreadId">;
+  method: ApprovalRequestMethod;
+  event: ApprovalRequestEvent;
+}) => {
+  const approvalKey = buildApprovalKey(event);
+  const snapshot = extractApprovalSnapshotFromRequest({
+    method,
+    event,
+  });
+
+  approvalRepo.insert({
+    approvalKey,
+    requestId: event.requestId,
+    codexThreadId: session.codexThreadId,
+    discordThreadId: session.discordThreadId,
+    status: "pending",
+    ...snapshot,
+  });
+
+  const approval = approvalRepo.getByApprovalKey(approvalKey);
+
+  if (!approval) {
+    throw new Error(`Approval ${approvalKey} was not persisted`);
+  }
+
+  return approval;
+};
+
 const buildApprovalCustomId = (approvalKey: string, action: ApprovalAction) => {
   return `${approvalButtonPrefix}|${encodeURIComponent(approvalKey)}|${action}`;
 };
@@ -2074,17 +2240,53 @@ export const reconcileResumedApprovalState = async ({
   ensureOwnerControls,
 }: {
   runtimeState: SessionRuntimeState;
-  pendingApprovals: Array<Pick<ApprovalRecord, "approvalKey" | "requestId" | "status">>;
-  latestApproval?: Pick<ApprovalRecord, "approvalKey" | "requestId" | "status"> | null;
+  pendingApprovals: Array<Pick<
+    ApprovalRecord,
+    | "approvalKey"
+    | "requestId"
+    | "status"
+    | "displayTitle"
+    | "commandPreview"
+    | "justification"
+    | "cwd"
+    | "requestKind"
+  >>;
+  latestApproval?: Pick<
+    ApprovalRecord,
+    | "approvalKey"
+    | "requestId"
+    | "status"
+    | "displayTitle"
+    | "commandPreview"
+    | "justification"
+    | "cwd"
+    | "requestKind"
+  > | null;
   upsertApprovalMessage: (
-    approvalKey: string,
-    requestId: string,
-    status: Extract<ApprovalStatus, "pending">,
+    approval: Pick<
+      ApprovalRecord,
+      | "approvalKey"
+      | "requestId"
+      | "status"
+      | "displayTitle"
+      | "commandPreview"
+      | "justification"
+      | "cwd"
+      | "requestKind"
+    >,
   ) => Promise<void> | void;
   ensureOwnerControls?: (
-    approvalKey: string,
-    requestId: string,
-    status: Extract<ApprovalStatus, "pending">,
+    approval: Pick<
+      ApprovalRecord,
+      | "approvalKey"
+      | "requestId"
+      | "status"
+      | "displayTitle"
+      | "commandPreview"
+      | "justification"
+      | "cwd"
+      | "requestKind"
+    >,
   ) => Promise<void> | void;
 }) => {
   if (runtimeState !== "waiting-approval") {
@@ -2103,23 +2305,13 @@ export const reconcileResumedApprovalState = async ({
     );
   }
 
-  await upsertApprovalMessage(
-    pendingApproval.approvalKey,
-    pendingApproval.requestId,
-    "pending",
-  );
-  await ensureOwnerControls?.(
-    pendingApproval.approvalKey,
-    pendingApproval.requestId,
-    "pending",
-  );
+  await upsertApprovalMessage(pendingApproval);
+  await ensureOwnerControls?.(pendingApproval);
   return pendingApproval.approvalKey;
 };
 
 export const reconcileApprovalResolutionSurface = async ({
-  approvalKey,
-  requestId,
-  status,
+  approval,
   session,
   currentThreadMessage,
   currentThreadMessagePromise,
@@ -2127,9 +2319,17 @@ export const reconcileApprovalResolutionSurface = async ({
   sendThreadMessage,
   dmMessage,
 }: {
-  approvalKey?: string;
-  requestId: string;
-  status: ApprovalStatus;
+  approval: Pick<
+    ApprovalRecord,
+    | "approvalKey"
+    | "requestId"
+    | "status"
+    | "displayTitle"
+    | "commandPreview"
+    | "justification"
+    | "cwd"
+    | "requestKind"
+  >;
   session?: Pick<SessionRecord, "lifecycleState"> | null;
   currentThreadMessage?: ApprovalLifecycleMessage;
   currentThreadMessagePromise?: Promise<ApprovalLifecycleMessage | undefined>;
@@ -2138,9 +2338,13 @@ export const reconcileApprovalResolutionSurface = async ({
   dmMessage?: ApprovalButtonMessage;
 }) => {
   if (dmMessage) {
+    const dmPayload = renderApprovalOwnerDmPayload({
+      approvalKey: approval.approvalKey,
+      approval,
+    });
     await dmMessage.edit({
-      content: `Approval resolved: \`${status}\`.`,
-      components: [],
+      content: dmPayload.content,
+      components: dmPayload.components ?? [],
     });
   }
 
@@ -2149,9 +2353,8 @@ export const reconcileApprovalResolutionSurface = async ({
     currentMessagePromise: currentThreadMessagePromise,
     recoverMessage: recoverThreadMessage,
     payload: renderApprovalLifecyclePayload({
-      approvalKey,
-      requestId,
-      status,
+      approvalKey: approval.approvalKey,
+      approval,
     }),
     sendMessage:
       session && shouldProjectManagedSessionDiscordSurface(session)
@@ -3778,58 +3981,35 @@ const recoverApprovalLifecycleMessage = async (
   });
 };
 
-const buildApprovalComponents = (approvalKey: string) => {
-  return [
-    new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder()
-        .setCustomId(buildApprovalCustomId(approvalKey, "approve"))
-        .setLabel("Approve")
-        .setStyle(ButtonStyle.Success),
-      new ButtonBuilder()
-        .setCustomId(buildApprovalCustomId(approvalKey, "decline"))
-        .setLabel("Decline")
-        .setStyle(ButtonStyle.Danger),
-      new ButtonBuilder()
-        .setCustomId(buildApprovalCustomId(approvalKey, "cancel"))
-        .setLabel("Cancel")
-        .setStyle(ButtonStyle.Secondary),
-    ),
-  ];
-};
-
 const maybeSendApprovalDm = async ({
   client,
-  approvalKey,
-  requestId,
+  approval,
   ownerId,
-  threadId,
 }: {
   client: Client;
-  approvalKey: string;
-  requestId: string;
+  approval: Pick<
+    ApprovalRecord,
+    | "approvalKey"
+    | "requestId"
+    | "status"
+    | "displayTitle"
+    | "commandPreview"
+    | "justification"
+    | "cwd"
+    | "requestKind"
+  >;
   ownerId: string;
-  threadId: string;
 }) => {
-  const approval = {
-    requestId: String(requestId),
-    status: "pending" as const,
-  };
-  const ui = renderApprovalUi({
-    approval,
-    viewerId: ownerId,
-    ownerId,
-  });
-
-  if (ui.kind !== "controls") {
+  if (approval.status !== "pending") {
     return undefined;
   }
 
   const owner = await client.users.fetch(ownerId);
 
-  return owner.send({
-    content: `Approval pending for session <#${threadId}>.\nRequest: \`${approval.requestId}\`.`,
-    components: buildApprovalComponents(approvalKey),
-  });
+  return owner.send(renderApprovalOwnerDmPayload({
+    approvalKey: approval.approvalKey,
+    approval,
+  }));
 };
 
 export const handleApprovalInteraction = async ({
@@ -4300,7 +4480,8 @@ const startCodeHelmRuntime = async (
           latestApproval: approvalRepo.getLatestByDiscordThreadId(
             session.discordThreadId,
           ),
-          upsertApprovalMessage: async (approvalKey, requestId) => {
+          upsertApprovalMessage: async (approval) => {
+            const { approvalKey, requestId } = approval;
             const lifecycleState = approvalThreadMessages.get(approvalKey) ?? {};
             try {
               const pendingMessagePromise = upsertApprovalLifecycleMessage({
@@ -4317,8 +4498,7 @@ const startCodeHelmRuntime = async (
                   ),
                 payload: renderApprovalLifecyclePayload({
                   approvalKey,
-                  requestId,
-                  status: "pending",
+                  approval,
                 }),
                 sendMessage: async (payload) =>
                   sendTextToChannel(
@@ -4347,7 +4527,8 @@ const startCodeHelmRuntime = async (
               throw error;
             }
           },
-          ensureOwnerControls: async (approvalKey, requestId) => {
+          ensureOwnerControls: async (approval) => {
+            const approvalKey = approval.approvalKey;
             if (approvalDmMessages.has(approvalKey)) {
               return;
             }
@@ -4355,10 +4536,8 @@ const startCodeHelmRuntime = async (
             try {
               const dmMessage = await maybeSendApprovalDm({
                 client: bot.client,
-                approvalKey,
-                requestId,
+                approval,
                 ownerId: session.ownerDiscordUserId,
-                threadId: session.discordThreadId,
               });
 
               if (dmMessage) {
@@ -5255,7 +5434,10 @@ const startCodeHelmRuntime = async (
     });
   });
 
-  const handleApprovalRequestEvent = (event: ApprovalRequestEvent) => {
+  const handleApprovalRequestEvent = (
+    method: ApprovalRequestMethod,
+    event: ApprovalRequestEvent,
+  ) => {
     void (async () => {
       const session = sessionRepo.getByCodexThreadId(event.threadId);
 
@@ -5263,20 +5445,19 @@ const startCodeHelmRuntime = async (
         return;
       }
 
-      const approvalKey = buildApprovalKey(event);
+      const approval = persistApprovalRequestSnapshot({
+        approvalRepo,
+        session,
+        method,
+        event,
+      });
+      const approvalKey = approval.approvalKey;
 
       const isReadOnlySession = session.state === "degraded";
 
       if (!isReadOnlySession) {
         updateSessionStateIfWritable(session, "waiting-approval");
       }
-      approvalRepo.insert({
-        approvalKey,
-        requestId: event.requestId,
-        codexThreadId: session.codexThreadId,
-        discordThreadId: session.discordThreadId,
-        status: "pending",
-      });
       if (!shouldProjectManagedSessionDiscordSurface(session)) {
         return;
       }
@@ -5295,7 +5476,6 @@ const startCodeHelmRuntime = async (
           state: "waiting-approval",
         });
       }
-      const requestId = String(event.requestId);
       const lifecycleState = approvalThreadMessages.get(approvalKey) ?? {};
       try {
         const pendingMessagePromise = upsertApprovalLifecycleMessage({
@@ -5307,13 +5487,12 @@ const startCodeHelmRuntime = async (
               session.discordThreadId,
               {
                 approvalKey,
-                requestId,
+                requestId: approval.requestId,
               },
             ),
           payload: renderApprovalLifecyclePayload({
             approvalKey,
-            requestId,
-            status: "pending",
+            approval,
           }),
           sendMessage: async (payload) =>
             sendTextToChannel(
@@ -5347,10 +5526,8 @@ const startCodeHelmRuntime = async (
       try {
         const dmMessage = await maybeSendApprovalDm({
           client: bot.client,
-          approvalKey,
-          requestId: String(event.requestId),
+          approval,
           ownerId: session.ownerDiscordUserId,
-          threadId: session.discordThreadId,
         });
 
         if (dmMessage) {
@@ -5368,7 +5545,9 @@ const startCodeHelmRuntime = async (
   };
 
   for (const method of approvalRequestMethods) {
-    codexClient.on(method, handleApprovalRequestEvent);
+    codexClient.on(method, (event) => {
+      handleApprovalRequestEvent(method, event);
+    });
   }
 
   codexClient.on("serverRequest/resolved", (event) => {
@@ -5386,6 +5565,11 @@ const startCodeHelmRuntime = async (
         {
           requestId: approvalRecord.requestId,
           status: approvalRecord.status,
+          displayTitle: approvalRecord.displayTitle,
+          commandPreview: approvalRecord.commandPreview,
+          justification: approvalRecord.justification,
+          cwd: approvalRecord.cwd,
+          requestKind: approvalRecord.requestKind,
         },
         {
           type: "serverRequest/resolved",
@@ -5399,40 +5583,48 @@ const startCodeHelmRuntime = async (
         codexThreadId: approvalRecord.codexThreadId,
         discordThreadId: approvalRecord.discordThreadId,
         status: outcome.approval.status,
+        displayTitle: approvalRecord.displayTitle,
+        commandPreview: approvalRecord.commandPreview,
+        justification: approvalRecord.justification,
+        cwd: approvalRecord.cwd,
+        requestKind: approvalRecord.requestKind,
       });
+      const storedApproval = approvalRepo.getByApprovalKey(approvalRecord.approvalKey);
 
-      const session = sessionRepo.getByDiscordThreadId(approvalRecord.discordThreadId);
+      if (!storedApproval) {
+        return;
+      }
+
+      const session = sessionRepo.getByDiscordThreadId(storedApproval.discordThreadId);
 
       const dmMessage = outcome.closeActiveUi
-        ? approvalDmMessages.get(approvalRecord.approvalKey)
+        ? approvalDmMessages.get(storedApproval.approvalKey)
         : undefined;
 
-      const lifecycleState = approvalThreadMessages.get(approvalRecord.approvalKey) ?? {};
+      const lifecycleState = approvalThreadMessages.get(storedApproval.approvalKey) ?? {};
       const resolvedMessagePromise = reconcileApprovalResolutionSurface({
-        approvalKey: approvalRecord.approvalKey,
-        requestId,
-        status: outcome.approval.status,
+        approval: storedApproval,
         session,
         currentThreadMessage: lifecycleState.message,
         currentThreadMessagePromise: lifecycleState.pendingMessage,
         recoverThreadMessage: async () =>
           recoverApprovalLifecycleMessage(
             bot.client,
-            approvalRecord.discordThreadId,
+            storedApproval.discordThreadId,
             {
-              approvalKey: approvalRecord.approvalKey,
-              requestId,
+              approvalKey: storedApproval.approvalKey,
+              requestId: storedApproval.requestId,
             },
           ),
         sendThreadMessage: async (payload) =>
           sendTextToChannel(
             bot.client,
-            approvalRecord.discordThreadId,
+            storedApproval.discordThreadId,
             payload,
           ),
         dmMessage,
       });
-      approvalThreadMessages.set(approvalRecord.approvalKey, lifecycleState);
+      approvalThreadMessages.set(storedApproval.approvalKey, lifecycleState);
       const threadMessage = await finalizeApprovalLifecycleMessageState({
         state: lifecycleState,
         operation: resolvedMessagePromise,
@@ -5443,7 +5635,7 @@ const startCodeHelmRuntime = async (
       }
 
       if (dmMessage) {
-        approvalDmMessages.delete(approvalRecord.approvalKey);
+        approvalDmMessages.delete(storedApproval.approvalKey);
       }
     })().catch((error) => {
       logger.error("Failed to process serverRequest/resolved event", error);
