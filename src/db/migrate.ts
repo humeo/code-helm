@@ -55,6 +55,14 @@ const approvalsTableHasStableIdentityColumns = (db: Database) => {
     && hasColumn(db, "approvals", "codex_thread_id");
 };
 
+const approvalsTableHasSnapshotColumns = (db: Database) => {
+  return hasColumn(db, "approvals", "display_title")
+    && hasColumn(db, "approvals", "command_preview")
+    && hasColumn(db, "approvals", "justification")
+    && hasColumn(db, "approvals", "cwd")
+    && hasColumn(db, "approvals", "request_kind");
+};
+
 const assertLegacySessionsCanBackfillCwd = (
   db: Database,
   hasCwdColumn: boolean,
@@ -200,12 +208,30 @@ const assertLegacyApprovalsSessionRefsExist = (db: Database) => {
 const rebuildApprovalsTableWithStableIdentity = (db: Database) => {
   const hasApprovalKeyColumn = hasColumn(db, "approvals", "approval_key");
   const hasCodexThreadIdColumn = hasColumn(db, "approvals", "codex_thread_id");
+  const hasDisplayTitleColumn = hasColumn(db, "approvals", "display_title");
+  const hasCommandPreviewColumn = hasColumn(db, "approvals", "command_preview");
+  const hasJustificationColumn = hasColumn(db, "approvals", "justification");
+  const hasCwdColumn = hasColumn(db, "approvals", "cwd");
+  const hasRequestKindColumn = hasColumn(db, "approvals", "request_kind");
   const approvalKeySelect = hasApprovalKeyColumn
     ? "approval_key"
     : "printf('legacy:%s', approvals.request_id)";
   const codexThreadIdSelect = hasCodexThreadIdColumn
     ? "approvals.codex_thread_id"
     : "sessions.codex_thread_id";
+  const displayTitleSelect = hasDisplayTitleColumn
+    ? "approvals.display_title"
+    : "NULL";
+  const commandPreviewSelect = hasCommandPreviewColumn
+    ? "approvals.command_preview"
+    : "NULL";
+  const justificationSelect = hasJustificationColumn
+    ? "approvals.justification"
+    : "NULL";
+  const cwdSelect = hasCwdColumn ? "approvals.cwd" : "NULL";
+  const requestKindSelect = hasRequestKindColumn
+    ? "approvals.request_kind"
+    : "NULL";
   const approvalsSource = hasCodexThreadIdColumn
     ? "FROM approvals"
     : `FROM approvals
@@ -226,6 +252,11 @@ const rebuildApprovalsTableWithStableIdentity = (db: Database) => {
         codex_thread_id TEXT NOT NULL,
         discord_thread_id TEXT NOT NULL,
         status TEXT NOT NULL,
+        display_title TEXT,
+        command_preview TEXT,
+        justification TEXT,
+        cwd TEXT,
+        request_kind TEXT,
         resolved_by_discord_user_id TEXT,
         resolution TEXT,
         created_at TEXT NOT NULL,
@@ -242,6 +273,11 @@ const rebuildApprovalsTableWithStableIdentity = (db: Database) => {
         codex_thread_id,
         discord_thread_id,
         status,
+        display_title,
+        command_preview,
+        justification,
+        cwd,
+        request_kind,
         resolved_by_discord_user_id,
         resolution,
         created_at,
@@ -253,6 +289,11 @@ const rebuildApprovalsTableWithStableIdentity = (db: Database) => {
         ${codexThreadIdSelect},
         approvals.discord_thread_id,
         approvals.status,
+        ${displayTitleSelect},
+        ${commandPreviewSelect},
+        ${justificationSelect},
+        ${cwdSelect},
+        ${requestKindSelect},
         approvals.resolved_by_discord_user_id,
         approvals.resolution,
         approvals.created_at,
@@ -277,6 +318,21 @@ const upgradeApprovalsSchema = (db: Database) => {
     || !approvalsTableHasStableIdentityColumns(db)
   ) {
     rebuildApprovalsTableWithStableIdentity(db);
+    return;
+  }
+
+  if (!approvalsTableHasSnapshotColumns(db)) {
+    const missingColumns = [
+      ["display_title", "TEXT"],
+      ["command_preview", "TEXT"],
+      ["justification", "TEXT"],
+      ["cwd", "TEXT"],
+      ["request_kind", "TEXT"],
+    ].filter(([columnName]) => !hasColumn(db, "approvals", columnName));
+
+    for (const [columnName, columnType] of missingColumns) {
+      db.exec(`ALTER TABLE approvals ADD COLUMN ${columnName} ${columnType}`);
+    }
   }
 };
 

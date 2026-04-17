@@ -63,6 +63,11 @@ test("repo upsert preserves terminal status and resolution metadata on resolved 
     codexThreadId: "codex-1",
     discordThreadId: "123",
     status: "approved",
+    displayTitle: null,
+    commandPreview: null,
+    justification: null,
+    cwd: null,
+    requestKind: null,
     resolvedByDiscordUserId: "u1",
     resolution: "approved",
     createdAt: expect.any(String),
@@ -191,6 +196,50 @@ test("numeric approval request ids round-trip through persistence", () => {
   db.close();
 });
 
+test("approval snapshot fields survive a status-only update", () => {
+  const db = createMigratedDb();
+  seedWorkspaceGraph(db);
+  const repo = createApprovalRepo(db);
+
+  repo.insert({
+    approvalKey: "turn-1:item-1",
+    requestId: 9,
+    discordThreadId: "123",
+    status: "pending",
+    displayTitle: "Command approval",
+    commandPreview: "touch c.txt",
+    justification: "要允许我在项目根目录创建 c.txt 吗？",
+    cwd: "/tmp/ws1/app",
+    requestKind: "command",
+  });
+
+  repo.insert({
+    approvalKey: "turn-1:item-1",
+    requestId: 9,
+    discordThreadId: "123",
+    status: "approved",
+    resolvedByDiscordUserId: "u1",
+    resolution: "approved",
+  });
+
+  expect(repo.getByApprovalKey("turn-1:item-1")).toMatchObject({
+    approvalKey: "turn-1:item-1",
+    requestId: "9",
+    codexThreadId: "codex-1",
+    discordThreadId: "123",
+    status: "approved",
+    displayTitle: "Command approval",
+    commandPreview: "touch c.txt",
+    justification: "要允许我在项目根目录创建 c.txt 吗？",
+    cwd: "/tmp/ws1/app",
+    requestKind: "command",
+    resolvedByDiscordUserId: "u1",
+    resolution: "approved",
+  });
+
+  db.close();
+});
+
 test("repo can list pending approvals for a Discord thread newest first", () => {
   const db = createMigratedDb();
   seedWorkspaceGraph(db);
@@ -233,6 +282,11 @@ test("repo can list pending approvals for a Discord thread newest first", () => 
       codexThreadId: "codex-1",
       discordThreadId: "123",
       status: "pending",
+      displayTitle: null,
+      commandPreview: null,
+      justification: null,
+      cwd: null,
+      requestKind: null,
       resolvedByDiscordUserId: null,
       resolution: null,
       createdAt: expect.any(String),
@@ -244,6 +298,11 @@ test("repo can list pending approvals for a Discord thread newest first", () => 
       codexThreadId: "codex-1",
       discordThreadId: "123",
       status: "pending",
+      displayTitle: null,
+      commandPreview: null,
+      justification: null,
+      cwd: null,
+      requestKind: null,
       resolvedByDiscordUserId: null,
       resolution: null,
       createdAt: expect.any(String),
@@ -290,12 +349,134 @@ test("approval rows follow a rebound Discord thread for the managed session", ()
       codexThreadId: "codex-1",
       discordThreadId: "replacement-thread",
       status: "pending",
+      displayTitle: null,
+      commandPreview: null,
+      justification: null,
+      cwd: null,
+      requestKind: null,
       resolvedByDiscordUserId: null,
       resolution: null,
       createdAt: expect.any(String),
       updatedAt: expect.any(String),
     },
   ]);
+
+  db.close();
+});
+
+test("migrations backfill nullable approval snapshot fields for legacy approvals", () => {
+  const db = createDatabaseClient(":memory:");
+
+  db.exec(`
+    CREATE TABLE workspaces (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      root_path TEXT NOT NULL UNIQUE,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE workdirs (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      label TEXT NOT NULL,
+      absolute_path TEXT NOT NULL UNIQUE,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (workspace_id) REFERENCES workspaces(id)
+    );
+
+    CREATE TABLE sessions (
+      discord_thread_id TEXT PRIMARY KEY,
+      codex_thread_id TEXT NOT NULL UNIQUE,
+      owner_discord_user_id TEXT NOT NULL,
+      workdir_id TEXT NOT NULL,
+      state TEXT NOT NULL,
+      lifecycle_state TEXT NOT NULL DEFAULT 'active' CHECK (lifecycle_state IN ('active', 'archived', 'deleted')),
+      degradation_reason TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (workdir_id) REFERENCES workdirs(id)
+    );
+
+    CREATE TABLE approvals (
+      request_id TEXT PRIMARY KEY,
+      discord_thread_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      resolved_by_discord_user_id TEXT,
+      resolution TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (discord_thread_id) REFERENCES sessions(discord_thread_id)
+    );
+  `);
+
+  db.exec(`
+    INSERT INTO workspaces (id, name, root_path, created_at, updated_at)
+    VALUES ('ws1', 'Main Workspace', '/tmp/ws1', '2026-04-09T00:00:00.000Z', '2026-04-09T00:00:00.000Z');
+
+    INSERT INTO workdirs (id, workspace_id, label, absolute_path, created_at, updated_at)
+    VALUES ('wd1', 'ws1', 'App', '/tmp/ws1/app', '2026-04-09T00:00:00.000Z', '2026-04-09T00:00:00.000Z');
+
+    INSERT INTO sessions (
+      discord_thread_id,
+      codex_thread_id,
+      owner_discord_user_id,
+      workdir_id,
+      state,
+      lifecycle_state,
+      degradation_reason,
+      created_at,
+      updated_at
+    ) VALUES (
+      'legacy-thread',
+      'codex-legacy',
+      'legacy-user',
+      'wd1',
+      'idle',
+      'active',
+      NULL,
+      '2026-04-09T00:00:00.000Z',
+      '2026-04-09T00:00:00.000Z'
+    );
+
+    INSERT INTO approvals (
+      request_id,
+      discord_thread_id,
+      status,
+      resolved_by_discord_user_id,
+      resolution,
+      created_at,
+      updated_at
+    ) VALUES (
+      'legacy-approval',
+      'legacy-thread',
+      'pending',
+      NULL,
+      NULL,
+      '2026-04-09T00:00:00.000Z',
+      '2026-04-09T00:00:00.000Z'
+    );
+  `);
+
+  applyMigrations(db);
+
+  expect(createApprovalRepo(db).getByApprovalKey("legacy:legacy-approval")).toEqual({
+    approvalKey: "legacy:legacy-approval",
+    requestId: "legacy-approval",
+    codexThreadId: "codex-legacy",
+    discordThreadId: "legacy-thread",
+    status: "pending",
+    displayTitle: null,
+    commandPreview: null,
+    justification: null,
+    cwd: null,
+    requestKind: null,
+    resolvedByDiscordUserId: null,
+    resolution: null,
+    createdAt: expect.any(String),
+    updatedAt: expect.any(String),
+  });
 
   db.close();
 });
@@ -418,6 +599,11 @@ test("approval rows survive a rebuilt sessions schema and still follow rebound D
       codexThreadId: "codex-legacy",
       discordThreadId: "replacement-thread",
       status: "pending",
+      displayTitle: null,
+      commandPreview: null,
+      justification: null,
+      cwd: null,
+      requestKind: null,
       resolvedByDiscordUserId: null,
       resolution: null,
       createdAt: expect.any(String),
@@ -546,6 +732,11 @@ test("migrations rebuild legacy approvals so rebinds cascade to the replacement 
       codexThreadId: "legacy-codex",
       discordThreadId: "replacement-thread",
       status: "pending",
+      displayTitle: null,
+      commandPreview: null,
+      justification: null,
+      cwd: null,
+      requestKind: null,
       resolvedByDiscordUserId: null,
       resolution: null,
       createdAt: expect.any(String),

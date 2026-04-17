@@ -10,6 +10,11 @@ export type ApprovalRecord = {
   codexThreadId: string;
   discordThreadId: string;
   status: ApprovalStatus;
+  displayTitle: string | null;
+  commandPreview: string | null;
+  justification: string | null;
+  cwd: string | null;
+  requestKind: string | null;
   resolvedByDiscordUserId: string | null;
   resolution: string | null;
   createdAt: string;
@@ -22,6 +27,11 @@ export type InsertApprovalInput = {
   codexThreadId?: string;
   discordThreadId: string;
   status: ApprovalStatus;
+  displayTitle?: string | null;
+  commandPreview?: string | null;
+  justification?: string | null;
+  cwd?: string | null;
+  requestKind?: string | null;
   resolvedByDiscordUserId?: string | null;
   resolution?: string | null;
 };
@@ -32,6 +42,11 @@ type ApprovalRow = {
   codex_thread_id: string;
   discord_thread_id: string;
   status: string;
+  display_title: string | null;
+  command_preview: string | null;
+  justification: string | null;
+  cwd: string | null;
+  request_kind: string | null;
   resolved_by_discord_user_id: string | null;
   resolution: string | null;
   created_at: string;
@@ -49,6 +64,11 @@ const mapApproval = (row: ApprovalRow | null): ApprovalRecord | null => {
     codexThreadId: row.codex_thread_id,
     discordThreadId: row.discord_thread_id,
     status: row.status as ApprovalStatus,
+    displayTitle: row.display_title,
+    commandPreview: row.command_preview,
+    justification: row.justification,
+    cwd: row.cwd,
+    requestKind: row.request_kind,
     resolvedByDiscordUserId: row.resolved_by_discord_user_id,
     resolution: row.resolution,
     createdAt: row.created_at,
@@ -74,16 +94,26 @@ export const createApprovalRepo = (db: Database) => {
       codex_thread_id,
       discord_thread_id,
       status,
+      display_title,
+      command_preview,
+      justification,
+      cwd,
+      request_kind,
       resolved_by_discord_user_id,
       resolution,
       created_at,
       updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(approval_key) DO UPDATE SET
       discord_thread_id = excluded.discord_thread_id,
       codex_thread_id = excluded.codex_thread_id,
       request_id = excluded.request_id,
       status = excluded.status,
+      display_title = excluded.display_title,
+      command_preview = excluded.command_preview,
+      justification = excluded.justification,
+      cwd = excluded.cwd,
+      request_kind = excluded.request_kind,
       resolved_by_discord_user_id = excluded.resolved_by_discord_user_id,
       resolution = excluded.resolution,
       updated_at = excluded.updated_at`,
@@ -147,6 +177,24 @@ export const createApprovalRepo = (db: Database) => {
         input.resolution !== undefined
           ? input.resolution
           : existing?.resolution ?? null;
+      const displayTitle =
+        input.displayTitle !== undefined
+          ? input.displayTitle
+          : existing?.displayTitle ?? null;
+      const commandPreview =
+        input.commandPreview !== undefined
+          ? input.commandPreview
+          : existing?.commandPreview ?? null;
+      const justification =
+        input.justification !== undefined
+          ? input.justification
+          : existing?.justification ?? null;
+      const cwd =
+        input.cwd !== undefined ? input.cwd : existing?.cwd ?? null;
+      const requestKind =
+        input.requestKind !== undefined
+          ? input.requestKind
+          : existing?.requestKind ?? null;
 
       if (existing && isTerminalApprovalStatus(existing.status)) {
         return;
@@ -166,6 +214,11 @@ export const createApprovalRepo = (db: Database) => {
         codexThreadId,
         input.discordThreadId,
         input.status,
+        displayTitle,
+        commandPreview,
+        justification,
+        cwd,
+        requestKind,
         resolvedByDiscordUserId,
         resolution,
         timestamp,
