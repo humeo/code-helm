@@ -10,12 +10,16 @@ type ApprovalLifecyclePayload = {
 const {
   applyApprovalResolutionSignal,
   renderApprovalLifecyclePayload,
+  renderApprovalStaleStatusText,
 } = approvalUi as unknown as {
   applyApprovalResolutionSignal: typeof approvalUi.applyApprovalResolutionSignal;
   renderApprovalLifecyclePayload: (input: {
     approvalKey?: string;
     approval: ApprovalState;
   }) => ApprovalLifecyclePayload;
+  renderApprovalStaleStatusText: (input: {
+    approval: ApprovalState;
+  }) => string;
 };
 
 const createApproval = (
@@ -99,4 +103,14 @@ test("terminal approval cards keep the snapshot body but hide action buttons", (
   expect(rendered.content).toContain("touch c.txt");
   expect(rendered.content).toContain("Request ID: `0`");
   expect(rendered.buttons).toEqual([]);
+});
+
+test("renders stale status text from the shared approval title", () => {
+  expect(
+    renderApprovalStaleStatusText({
+      approval: createApproval({
+        status: "declined",
+      }),
+    }),
+  ).toBe("Command approval is already declined.");
 });
