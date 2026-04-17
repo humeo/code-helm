@@ -57,6 +57,14 @@ const approvalButtons: ApprovalUiButton[] = [
 ];
 
 const fallbackApprovalTitle = "Approval request";
+const discordMessageCharacterLimit = 2000;
+const approvalTitleCharacterLimit = 160;
+const approvalCommandPreviewCharacterLimit = 640;
+const approvalJustificationCharacterLimit = 700;
+const approvalCwdCharacterLimit = 180;
+const approvalRequestKindCharacterLimit = 80;
+const approvalRequestIdCharacterLimit = 80;
+const approvalTruncationSuffix = "…";
 
 const normalizeApprovalDisplaySnapshot = (
   approval: ApprovalState,
@@ -78,40 +86,86 @@ const toApprovalStatusLabel = (status: ApprovalState["status"]) => {
   return `${status.slice(0, 1).toUpperCase()}${status.slice(1)}`;
 };
 
+const truncateApprovalText = (value: string, maxLength: number) => {
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  if (maxLength <= approvalTruncationSuffix.length) {
+    return approvalTruncationSuffix.slice(0, maxLength);
+  }
+
+  return `${value.slice(0, maxLength - approvalTruncationSuffix.length).trimEnd()}${approvalTruncationSuffix}`;
+};
+
+const sanitizeApprovalCommandPreview = (value: string) => {
+  return value.replaceAll("```", "``\u200b`");
+};
+
 const renderApprovalLifecycleBody = (
   approval: ApprovalState,
   snapshot: ApprovalDisplaySnapshot,
 ) => {
   const lines = [
-    `**${toApprovalTitle(snapshot)}**`,
+    `**${truncateApprovalText(toApprovalTitle(snapshot), approvalTitleCharacterLimit)}**`,
     `Status: \`${toApprovalStatusLabel(approval.status)}\``,
   ];
 
   if (snapshot.commandPreview) {
-    lines.push("", "```sh", snapshot.commandPreview, "```");
+    lines.push(
+      "",
+      "```sh",
+      truncateApprovalText(
+        sanitizeApprovalCommandPreview(snapshot.commandPreview),
+        approvalCommandPreviewCharacterLimit,
+      ),
+      "```",
+    );
   }
 
   if (snapshot.justification) {
-    lines.push("", snapshot.justification);
+    lines.push(
+      "",
+      truncateApprovalText(
+        snapshot.justification,
+        approvalJustificationCharacterLimit,
+      ),
+    );
   }
 
   const metadata: string[] = [];
 
   if (snapshot.cwd) {
-    metadata.push(`CWD: \`${snapshot.cwd}\``);
+    metadata.push(
+      `CWD: \`${truncateApprovalText(snapshot.cwd, approvalCwdCharacterLimit)}\``,
+    );
   }
 
   if (snapshot.requestKind) {
-    metadata.push(`Kind: \`${snapshot.requestKind}\``);
+    metadata.push(
+      `Kind: \`${truncateApprovalText(
+        snapshot.requestKind,
+        approvalRequestKindCharacterLimit,
+      )}\``,
+    );
   }
 
-  metadata.push(`Request ID: \`${approval.requestId}\``);
+  metadata.push(
+    `Request ID: \`${truncateApprovalText(
+      approval.requestId,
+      approvalRequestIdCharacterLimit,
+    )}\``,
+  );
 
   if (metadata.length > 0) {
     lines.push("", ...metadata);
   }
 
-  return lines.join("\n");
+  const content = lines.join("\n");
+
+  return content.length <= discordMessageCharacterLimit
+    ? content
+    : truncateApprovalText(content, discordMessageCharacterLimit);
 };
 
 export const applyApprovalResolutionSignal = (

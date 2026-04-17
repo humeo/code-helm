@@ -105,6 +105,37 @@ test("terminal approval cards keep the snapshot body but hide action buttons", (
   expect(rendered.buttons).toEqual([]);
 });
 
+test("bounds rich approval content to Discord's message limit", () => {
+  const rendered = renderApprovalLifecyclePayload({
+    approval: createApproval({
+      requestId: `req-${"1234567890".repeat(30)}`,
+      displayTitle: `Command approval ${"title ".repeat(60)}`,
+      commandPreview: `bun run deploy ${"--flag ".repeat(220)}`,
+      justification: `Need this approval because ${"context ".repeat(220)}`,
+      cwd: `/tmp/${"nested/".repeat(80)}app`,
+      requestKind: `command-${"kind-".repeat(40)}`,
+    }),
+  });
+
+  expect(rendered.content.length).toBeLessThanOrEqual(2000);
+  expect(rendered.content).toContain("Command approval");
+  expect(rendered.content).toContain("Request ID: `req-");
+  expect(rendered.content).toContain("…");
+});
+
+test("renders command previews with embedded triple backticks safely", () => {
+  const rendered = renderApprovalLifecyclePayload({
+    approval: createApproval({
+      commandPreview: 'printf "safe"\n```danger```\necho "done"',
+    }),
+  });
+
+  expect(rendered.content).toContain('printf "safe"');
+  expect(rendered.content).toContain("danger");
+  expect(rendered.content).toContain("``\u200b`");
+  expect(rendered.content.match(/```/g) ?? []).toHaveLength(2);
+});
+
 test("renders stale status text from the shared approval title", () => {
   expect(
     renderApprovalStaleStatusText({
