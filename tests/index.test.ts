@@ -1317,7 +1317,7 @@ test("create session does not render an initial idle status card", async () => {
   });
 });
 
-test("unmanaged session with matching workdir creates a new Discord thread and session row", async () => {
+test("unmanaged idle session with matching workdir resumes the new Discord thread instead of plain sync", async () => {
   const { services, calls, getSessionByCodexThreadId } = createControlChannelServicesFixture();
 
   await services.setCurrentWorkdir({
@@ -1350,7 +1350,8 @@ test("unmanaged session with matching workdir creates a new Discord thread and s
       state: "idle",
     },
   ]);
-  expect(calls.syncedThreads).toEqual(["discord-thread-new-1"]);
+  expect(calls.resumedThreads).toEqual(["discord-thread-new-1"]);
+  expect(calls.syncedThreads).toEqual([]);
   expect(getSessionByCodexThreadId("codex-thread-1")).toMatchObject({
     discordThreadId: "discord-thread-new-1",
     codexThreadId: "codex-thread-1",
@@ -1397,7 +1398,7 @@ test("archived managed session syncs and reopens the same Discord thread", async
   });
 });
 
-test("active managed session reuses the existing Discord thread instead of creating a duplicate", async () => {
+test("active idle managed session reuses and resumes the existing Discord thread instead of creating a duplicate", async () => {
   const { services, calls } = createControlChannelServicesFixture({
     existingSession: createSessionRecord({
       discordThreadId: "discord-thread-active",
@@ -1421,8 +1422,8 @@ test("active managed session reuses the existing Discord thread instead of creat
 
   expect(calls.usabilityChecks).toEqual(["discord-thread-active"]);
   expect(calls.createVisibleSessionThread).toHaveLength(0);
-  expect(calls.syncedThreads).toEqual(["discord-thread-active"]);
-  expect(calls.resumedThreads).toEqual([]);
+  expect(calls.resumedThreads).toEqual(["discord-thread-active"]);
+  expect(calls.syncedThreads).toEqual([]);
   expect(result).toEqual({
     reply: {
       content: "Attached session <#discord-thread-active>. Session is writable.",
@@ -1430,7 +1431,7 @@ test("active managed session reuses the existing Discord thread instead of creat
   });
 });
 
-test("deleted or unusable managed thread creates a replacement Discord thread through rebindDiscordThread", async () => {
+test("deleted or unusable idle managed thread resumes the replacement Discord thread through rebindDiscordThread", async () => {
   const { services, calls, getSessionByCodexThreadId } = createControlChannelServicesFixture({
     existingSession: createSessionRecord({
       discordThreadId: "discord-thread-deleted",
@@ -1472,7 +1473,8 @@ test("deleted or unusable managed thread creates a replacement Discord thread th
       lifecycleState: "active",
     },
   ]);
-  expect(calls.syncedThreads).toEqual(["discord-thread-new-1"]);
+  expect(calls.resumedThreads).toEqual(["discord-thread-new-1"]);
+  expect(calls.syncedThreads).toEqual([]);
   expect(getSessionByCodexThreadId("codex-thread-1")).toMatchObject({
     discordThreadId: "discord-thread-new-1",
     lifecycleState: "active",
@@ -1790,6 +1792,10 @@ test("waiting-approval replacement attach resumes the replacement thread instead
 
 test("untrusted create attach rolls back the new discord thread into a deleted binding", async () => {
   const { services, calls, getSessionByCodexThreadId } = createControlChannelServicesFixture({
+    readThreadStatus: {
+      type: "active",
+      activeFlags: [],
+    },
     syncOutcome: createResumeOutcome("untrusted"),
   });
 
@@ -1830,6 +1836,10 @@ test("untrusted replacement attach rebinds back to the original deleted thread",
       lifecycleState: "deleted",
     }),
     discordThreadUsable: false,
+    readThreadStatus: {
+      type: "active",
+      activeFlags: [],
+    },
     syncOutcome: createResumeOutcome("untrusted"),
   });
 
@@ -1873,6 +1883,10 @@ test("untrusted replacement attach rebinds back to the original deleted thread",
 
 test("attached busy sessions stay non-writable", async () => {
   const { services, calls } = createControlChannelServicesFixture({
+    readThreadStatus: {
+      type: "active",
+      activeFlags: [],
+    },
     syncOutcome: createResumeOutcome("busy"),
   });
 
@@ -1900,6 +1914,10 @@ test("attached busy sessions stay non-writable", async () => {
 
 test("attached degraded or error sessions stay read-only", async () => {
   const readOnlyFixture = createControlChannelServicesFixture({
+    readThreadStatus: {
+      type: "active",
+      activeFlags: [],
+    },
     syncOutcome: createResumeOutcome("read-only"),
   });
 
@@ -1925,6 +1943,7 @@ test("attached degraded or error sessions stay read-only", async () => {
   expect(readOnlyFixture.calls.sentTexts).toEqual([]);
 
   const errorFixture = createControlChannelServicesFixture({
+    readThreadStatus: { type: "systemError" },
     syncOutcome: createResumeOutcome("error"),
   });
 
@@ -2158,6 +2177,67 @@ test("resume session restores idle sessions as writable after sync", async () =>
     statusCardState: "idle",
   });
   expect(calls).toEqual([
+    "state:idle",
+    "status:idle",
+    "snapshot",
+    "unarchive",
+    "lifecycle:active",
+  ]);
+});
+
+test("resume session materializes the Codex thread before reading the snapshot", async () => {
+  const calls: string[] = [];
+  const initialSnapshot = createThreadReadResult({
+    status: { type: "idle" },
+    turns: [],
+  });
+
+  const result = await resumeManagedSession({
+    session: createSessionRecord({
+      lifecycleState: "archived",
+      state: "idle",
+    }),
+    materializeThread: async () => {
+      calls.push("resume-thread");
+    },
+    readThread: async () => {
+      calls.push("read");
+      return initialSnapshot;
+    },
+    archiveThread: async () => {
+      calls.push("archive");
+    },
+    unarchiveThread: async () => {
+      calls.push("unarchive");
+    },
+    persistLifecycleState: async (lifecycleState) => {
+      calls.push(`lifecycle:${lifecycleState}`);
+    },
+    persistRuntimeState: async (runtimeState) => {
+      calls.push(`state:${runtimeState}`);
+    },
+    updateStatusCard: async (runtimeState) => {
+      calls.push(`status:${runtimeState}`);
+    },
+    syncTranscriptSnapshot: async (snapshot) => {
+      expect(snapshot).toBe(initialSnapshot);
+      calls.push("snapshot");
+    },
+  });
+
+  expect(result).toEqual({
+    kind: "ready",
+    session: {
+      lifecycleState: "active",
+      runtimeState: "idle",
+      accessMode: "writable",
+    },
+    persistedRuntimeState: "idle",
+    statusCardState: "idle",
+  });
+  expect(calls).toEqual([
+    "resume-thread",
+    "read",
     "state:idle",
     "status:idle",
     "snapshot",
@@ -4933,6 +5013,39 @@ test("start-turn recovery resumes not-loaded threads and retries once", async ()
   });
   expect(calls).toEqual([
     "start:codex-thread-1",
+    "resume:codex-thread-1",
+    "start:codex-thread-1",
+  ]);
+});
+
+test("start-turn can materialize the thread before the first attempt", async () => {
+  const calls: string[] = [];
+
+  const result = await startTurnWithThreadResumeRetry({
+    request: {
+      threadId: "codex-thread-1",
+      input: { kind: "discord-message", content: "有哪些文件" },
+    },
+    resumeBeforeStart: true,
+    startTurn: async (request) => {
+      calls.push(`start:${request.threadId}`);
+      return { ok: true, threadId: request.threadId };
+    },
+    resumeThread: async ({ threadId }) => {
+      calls.push(`resume:${threadId}`);
+      return {
+        thread: {
+          id: threadId,
+        },
+      };
+    },
+  });
+
+  expect(result).toEqual({
+    ok: true,
+    threadId: "codex-thread-1",
+  });
+  expect(calls).toEqual([
     "resume:codex-thread-1",
     "start:codex-thread-1",
   ]);

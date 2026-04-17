@@ -571,11 +571,19 @@ export const startTurnWithThreadResumeRetry = async <TResult>({
   request,
   startTurn,
   resumeThread,
+  resumeBeforeStart = false,
 }: {
   request: StartTurnParams;
   startTurn: (request: StartTurnParams) => Promise<TResult>;
   resumeThread: (params: { threadId: string }) => Promise<unknown>;
+  resumeBeforeStart?: boolean;
 }) => {
+  if (resumeBeforeStart) {
+    await resumeThread({
+      threadId: request.threadId,
+    });
+  }
+
   return retryCodexThreadOperationAfterResume({
     threadId: request.threadId,
     operation: () => startTurn(request),
@@ -2154,6 +2162,7 @@ export const reconcileApprovalResolutionSurface = async ({
 
 export const resumeManagedSession = async ({
   session,
+  materializeThread,
   readThread,
   archiveThread,
   persistRuntimeState,
@@ -2165,6 +2174,7 @@ export const resumeManagedSession = async ({
   syncTranscriptSnapshot,
 }: {
   session: Pick<SessionRecord, "state" | "lifecycleState" | "degradationReason">;
+  materializeThread?: () => Promise<void> | void;
   readThread: () => Promise<ThreadReadResult>;
   archiveThread: () => Promise<void>;
   persistRuntimeState: (
@@ -2185,6 +2195,7 @@ export const resumeManagedSession = async ({
   ) => Promise<void>;
   syncTranscriptSnapshot: (readResult: ThreadReadResult) => Promise<void>;
 }): Promise<SessionResumeState> => {
+  await materializeThread?.();
   const readResult = await readThread();
   const syncedRuntimeState = inferSyncedSessionRuntimeState(readResult.thread);
   const outcome = resolveResumeSessionState({
@@ -3399,9 +3410,11 @@ export const createControlChannelServices = ({
           throw new Error(`Managed session ${codexThreadId} disappeared during attach`);
         }
 
+        const syncedRuntimeState = inferSyncedSessionRuntimeState(snapshot.thread);
         const shouldResumeIntoDiscordThread =
           attachmentKind === "reopen"
-          || inferSyncedSessionRuntimeState(snapshot.thread) === "waiting-approval";
+          || syncedRuntimeState === "idle"
+          || syncedRuntimeState === "waiting-approval";
         const result =
           shouldResumeIntoDiscordThread
             ? await resumeManagedSessionIntoDiscordThread(attachedSession)
@@ -4234,6 +4247,7 @@ const startCodeHelmRuntime = async (
         resumeThread: async ({ threadId }) => codexClient.resumeThread({
           threadId,
         }),
+        resumeBeforeStart: true,
       });
       const refreshedSession = sessionRepo.getByCodexThreadId(session.codexThreadId);
 
@@ -4257,6 +4271,11 @@ const startCodeHelmRuntime = async (
 
     return resumeManagedSession({
       session,
+      materializeThread: async () => {
+        await codexClient.resumeThread({
+          threadId: session.codexThreadId,
+        });
+      },
       readThread: async () =>
         readThreadForSnapshotReconciliation({
           codexClient,
