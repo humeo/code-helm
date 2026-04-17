@@ -92,6 +92,7 @@ import {
   applyApprovalResolutionSignal,
   type ApprovalUiButton,
   renderApprovalLifecyclePayload as renderStoredApprovalLifecyclePayload,
+  renderApprovalStaleStatusText,
 } from "./discord/approval-ui";
 import { createDiscordBot } from "./discord/bot";
 import {
@@ -4012,6 +4013,47 @@ const maybeSendApprovalDm = async ({
   }));
 };
 
+const renderStaleApprovalInteractionText = ({
+  approval,
+}: {
+  approval: Pick<
+    ApprovalRecord,
+    | "requestId"
+    | "status"
+    | "displayTitle"
+    | "commandPreview"
+    | "justification"
+    | "cwd"
+    | "requestKind"
+  >;
+}) => {
+  const commandPreview = approval.commandPreview?.trim() || null;
+  const displayTitle = approval.displayTitle?.trim() || null;
+  const context = commandPreview ?? displayTitle;
+
+  if (approval.status === "resolved") {
+    return context
+      ? `That approval already finished or was resolved elsewhere: ${context}`
+      : "That approval already finished or was resolved elsewhere.";
+  }
+
+  if (context) {
+    return `That approval was already ${approval.status}: ${context}`;
+  }
+
+  return renderApprovalStaleStatusText({
+    approval: {
+      requestId: approval.requestId,
+      status: approval.status,
+      displayTitle: "That approval",
+      commandPreview: null,
+      justification: approval.justification,
+      cwd: approval.cwd,
+      requestKind: approval.requestKind,
+    },
+  }).replace(" is already ", " was already ");
+};
+
 export const handleApprovalInteraction = async ({
   interaction,
   client,
@@ -4053,7 +4095,9 @@ export const handleApprovalInteraction = async ({
 
   if (!shouldAcceptApprovalInteraction(approvalRecord.status)) {
     await interaction.reply({
-      content: "That approval is no longer pending.",
+      content: renderStaleApprovalInteractionText({
+        approval: approvalRecord,
+      }),
       ephemeral: true,
     });
     return true;

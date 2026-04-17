@@ -3656,6 +3656,104 @@ test("approval interaction does not persist a terminal local decision when the C
   ]);
 });
 
+const expectStaleApprovalInteractionReply = async ({
+  approval,
+  expectedContent,
+}: {
+  approval: Partial<ApprovalRecord>;
+  expectedContent: string;
+}) => {
+  const calls: string[] = [];
+  const replies: Array<{ content: string; ephemeral: boolean }> = [];
+
+  const handled = await handleApprovalInteraction({
+    interaction: {
+      customId: `approval|${encodeURIComponent(approval.approvalKey ?? "turn-1:item-1")}|approve`,
+      user: { id: "owner-1" },
+      deferUpdate: async () => {
+        calls.push("defer");
+      },
+      reply: async (payload: { content: string; ephemeral: boolean }) => {
+        calls.push("reply");
+        replies.push(payload);
+      },
+    } as never,
+    client: {
+      replyToServerRequest: async () => {
+        calls.push("rpc");
+      },
+    } as never,
+    sessionRepo: {
+      getByDiscordThreadId: () =>
+        createSessionRecord({
+          discordThreadId: "discord-thread-1",
+          ownerDiscordUserId: "owner-1",
+        }),
+    } as never,
+    approvalRepo: {
+      getByApprovalKey: () => createApprovalRecord(approval),
+      insert: () => {
+        calls.push("insert");
+      },
+    } as never,
+  });
+
+  expect(handled).toBe(true);
+  expect(calls).toEqual(["reply"]);
+  expect(replies).toEqual([
+    {
+      content: expectedContent,
+      ephemeral: true,
+    },
+  ]);
+};
+
+test("approval interaction reports approved stale approvals with the saved command preview", async () => {
+  await expectStaleApprovalInteractionReply({
+    approval: {
+      approvalKey: "turn-1:item-approved",
+      status: "approved",
+      commandPreview: "touch c.txt",
+    },
+    expectedContent: "That approval was already approved: touch c.txt",
+  });
+});
+
+test("approval interaction reports declined stale approvals with the saved command preview", async () => {
+  await expectStaleApprovalInteractionReply({
+    approval: {
+      approvalKey: "turn-1:item-declined",
+      status: "declined",
+      commandPreview: "touch c.txt",
+    },
+    expectedContent: "That approval was already declined: touch c.txt",
+  });
+});
+
+test("approval interaction falls back softly when a canceled approval has no preview", async () => {
+  await expectStaleApprovalInteractionReply({
+    approval: {
+      approvalKey: "turn-1:item-canceled",
+      status: "canceled",
+      commandPreview: null,
+      displayTitle: null,
+    },
+    expectedContent: "That approval was already canceled.",
+  });
+});
+
+test("approval interaction explains when an approval was already resolved elsewhere", async () => {
+  await expectStaleApprovalInteractionReply({
+    approval: {
+      approvalKey: "turn-1:item-resolved",
+      status: "resolved",
+      commandPreview: "touch c.txt",
+    },
+    expectedContent:
+      "That approval already finished or was resolved elsewhere: touch c.txt",
+  });
+});
+
 test("approval interaction rejects concurrent resolution attempts for the same request", async () => {
   const calls: string[] = [];
   let releaseRpc: (() => void) | undefined;
