@@ -75,6 +75,23 @@ test("approval events are reduced by request id through the full lifecycle", () 
   } satisfies ApprovalState);
 });
 
+test("terminal approval statuses outrank a later resolved event", () => {
+  for (const status of ["approved", "declined", "canceled"] as const) {
+    expect(
+      reduceApprovalEvent(
+        {
+          requestId: "9",
+          status,
+        },
+        {
+          type: "serverRequest/resolved",
+          requestId: 9,
+        },
+      ).status,
+    ).toBe(status);
+  }
+});
+
 test("owner approval UI shows buttons while other viewers get status only", () => {
   const approval = {
     requestId: "req-1",

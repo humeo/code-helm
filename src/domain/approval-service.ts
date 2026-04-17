@@ -10,10 +10,18 @@ export type ApprovalStatus =
 
 export type ApprovalRequestId = string | number;
 
+export type ApprovalSnapshotFields = {
+  displayTitle?: string | null;
+  commandPreview?: string | null;
+  justification?: string | null;
+  cwd?: string | null;
+  requestKind?: string | null;
+};
+
 export type ApprovalState = {
   requestId: string;
   status: ApprovalStatus;
-};
+} & ApprovalSnapshotFields;
 
 export type ApprovalEvent =
   | {
@@ -66,6 +74,35 @@ export const isTerminalApprovalStatus = (status: ApprovalStatus) => {
   return status === "approved" || status === "declined" || status === "canceled";
 };
 
+const approvalStatusPrecedence: Record<ApprovalStatus, number> = {
+  pending: 0,
+  resolved: 1,
+  approved: 2,
+  declined: 2,
+  canceled: 2,
+};
+
+export const applyApprovalStatusPrecedence = (
+  currentStatus: ApprovalStatus | undefined,
+  nextStatus: ApprovalStatus,
+) => {
+  if (!currentStatus) {
+    return nextStatus;
+  }
+
+  if (isTerminalApprovalStatus(currentStatus)) {
+    return currentStatus;
+  }
+
+  if (isTerminalApprovalStatus(nextStatus)) {
+    return nextStatus;
+  }
+
+  return approvalStatusPrecedence[nextStatus] >= approvalStatusPrecedence[currentStatus]
+    ? nextStatus
+    : currentStatus;
+};
+
 export const reduceApprovalEvent = (
   current: ApprovalState | undefined,
   event: ApprovalEvent,
@@ -76,18 +113,24 @@ export const reduceApprovalEvent = (
     return current;
   }
 
-  if (
-    event.type === "serverRequest/resolved" &&
-    current &&
-    isTerminalApprovalStatus(current.status)
-  ) {
-    return current;
-  }
-
-  return createApprovalState(
-    requestId,
+  const nextStatus = applyApprovalStatusPrecedence(
+    current?.status,
     approvalStatusByEventType[event.type],
   );
+
+  if (current) {
+    if (current.status === nextStatus) {
+      return current;
+    }
+
+    return {
+      ...current,
+      requestId,
+      status: nextStatus,
+    };
+  }
+
+  return createApprovalState(requestId, nextStatus);
 };
 
 export const shouldShowApprovalControls = (ownership: SessionOwnership) => {

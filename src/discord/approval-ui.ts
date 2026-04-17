@@ -1,5 +1,5 @@
 import {
-  isTerminalApprovalStatus,
+  applyApprovalStatusPrecedence,
   shouldShowApprovalControls,
   normalizeApprovalRequestId,
   type ApprovalState,
@@ -37,11 +37,82 @@ export type ApprovalResolutionOutcome = {
   closeActiveUi: boolean;
 };
 
+export type ApprovalDisplaySnapshot = {
+  displayTitle: string | null;
+  commandPreview: string | null;
+  justification: string | null;
+  cwd: string | null;
+  requestKind: string | null;
+};
+
+export type ApprovalLifecycleRender = {
+  content: string;
+  buttons: ApprovalUiButton[];
+};
+
 const approvalButtons: ApprovalUiButton[] = [
   "approve",
   "decline",
   "cancel",
 ];
+
+const fallbackApprovalTitle = "Approval request";
+
+const normalizeApprovalDisplaySnapshot = (
+  approval: ApprovalState,
+): ApprovalDisplaySnapshot => {
+  return {
+    displayTitle: approval.displayTitle ?? null,
+    commandPreview: approval.commandPreview ?? null,
+    justification: approval.justification ?? null,
+    cwd: approval.cwd ?? null,
+    requestKind: approval.requestKind ?? null,
+  };
+};
+
+const toApprovalTitle = (snapshot: ApprovalDisplaySnapshot) => {
+  return snapshot.displayTitle ?? fallbackApprovalTitle;
+};
+
+const toApprovalStatusLabel = (status: ApprovalState["status"]) => {
+  return `${status.slice(0, 1).toUpperCase()}${status.slice(1)}`;
+};
+
+const renderApprovalLifecycleBody = (
+  approval: ApprovalState,
+  snapshot: ApprovalDisplaySnapshot,
+) => {
+  const lines = [
+    `**${toApprovalTitle(snapshot)}**`,
+    `Status: \`${toApprovalStatusLabel(approval.status)}\``,
+  ];
+
+  if (snapshot.commandPreview) {
+    lines.push("", "```sh", snapshot.commandPreview, "```");
+  }
+
+  if (snapshot.justification) {
+    lines.push("", snapshot.justification);
+  }
+
+  const metadata: string[] = [];
+
+  if (snapshot.cwd) {
+    metadata.push(`CWD: \`${snapshot.cwd}\``);
+  }
+
+  if (snapshot.requestKind) {
+    metadata.push(`Kind: \`${snapshot.requestKind}\``);
+  }
+
+  metadata.push(`Request ID: \`${approval.requestId}\``);
+
+  if (metadata.length > 0) {
+    lines.push("", ...metadata);
+  }
+
+  return lines.join("\n");
+};
 
 export const applyApprovalResolutionSignal = (
   approval: ApprovalState,
@@ -56,20 +127,43 @@ export const applyApprovalResolutionSignal = (
     };
   }
 
-  if (isTerminalApprovalStatus(approval.status)) {
-    return {
-      approval,
-      closeActiveUi: true,
-    };
-  }
+  const nextStatus = applyApprovalStatusPrecedence(approval.status, "resolved");
 
   return {
-    approval: {
-      requestId,
-      status: "resolved",
-    },
+    approval:
+      nextStatus === approval.status
+        ? approval
+        : {
+            ...approval,
+            requestId,
+            status: nextStatus,
+          },
     closeActiveUi: true,
   };
+};
+
+export const renderApprovalLifecyclePayload = ({
+  approval,
+}: {
+  approvalKey?: string;
+  approval: ApprovalState;
+}): ApprovalLifecycleRender => {
+  const snapshot = normalizeApprovalDisplaySnapshot(approval);
+
+  return {
+    content: renderApprovalLifecycleBody(approval, snapshot),
+    buttons: approval.status === "pending" ? approvalButtons : [],
+  };
+};
+
+export const renderApprovalStaleStatusText = ({
+  approval,
+}: {
+  approval: ApprovalState;
+}) => {
+  const snapshot = normalizeApprovalDisplaySnapshot(approval);
+
+  return `${toApprovalTitle(snapshot)} is already ${approval.status}.`;
 };
 
 export const renderApprovalUi = ({
