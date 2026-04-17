@@ -10,6 +10,7 @@ type ApprovalLifecyclePayload = {
 const {
   applyApprovalResolutionSignal,
   renderApprovalLifecyclePayload,
+  renderApprovalRequestIdText,
   renderApprovalStaleStatusText,
 } = approvalUi as unknown as {
   applyApprovalResolutionSignal: typeof approvalUi.applyApprovalResolutionSignal;
@@ -17,6 +18,7 @@ const {
     approvalKey?: string;
     approval: ApprovalState;
   }) => ApprovalLifecyclePayload;
+  renderApprovalRequestIdText: (requestId: ApprovalState["requestId"]) => string;
   renderApprovalStaleStatusText: (input: {
     approval: ApprovalState;
   }) => string;
@@ -121,6 +123,20 @@ test("bounds rich approval content to Discord's message limit", () => {
   expect(rendered.content).toContain("Command approval");
   expect(rendered.content).toContain("Request ID: `req-");
   expect(rendered.content).toContain("…");
+});
+
+test("renders request id metadata with the truncated lifecycle form", () => {
+  const requestId = `req-${"1234567890".repeat(30)}`;
+  const requestIdText = renderApprovalRequestIdText(requestId);
+  const rendered = renderApprovalLifecyclePayload({
+    approval: createApproval({
+      requestId,
+    }),
+  });
+
+  expect(requestIdText).toContain("Request ID: `req-");
+  expect(requestIdText).toContain("…");
+  expect(rendered.content).toContain(requestIdText);
 });
 
 test("renders command previews with embedded triple backticks safely", () => {

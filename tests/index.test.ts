@@ -3757,6 +3757,53 @@ test("approval interaction explains when an approval was already resolved elsewh
   });
 });
 
+test("approval interaction bounds stale replies to Discord-safe lengths", async () => {
+  const replies: Array<{ content: string; ephemeral: boolean }> = [];
+  const longCommandPreview = `bun run deploy ${"--flag ".repeat(400)}`.trim();
+
+  const handled = await handleApprovalInteraction({
+    interaction: {
+      customId: "approval|turn-1%3Aitem-approved|approve",
+      user: { id: "owner-1" },
+      deferUpdate: async () => {
+        throw new Error("stale approval should reply immediately");
+      },
+      reply: async (payload: { content: string; ephemeral: boolean }) => {
+        replies.push(payload);
+      },
+    } as never,
+    client: {
+      replyToServerRequest: async () => {
+        throw new Error("stale approval should not hit RPC");
+      },
+    } as never,
+    sessionRepo: {
+      getByDiscordThreadId: () =>
+        createSessionRecord({
+          discordThreadId: "discord-thread-1",
+          ownerDiscordUserId: "owner-1",
+        }),
+    } as never,
+    approvalRepo: {
+      getByApprovalKey: () =>
+        createApprovalRecord({
+          approvalKey: "turn-1:item-approved",
+          status: "approved",
+          commandPreview: longCommandPreview,
+        }),
+    } as never,
+  });
+
+  expect(handled).toBe(true);
+  expect(replies).toHaveLength(1);
+  expect(replies[0]?.ephemeral).toBe(true);
+  expect(replies[0]?.content.length).toBeLessThanOrEqual(2000);
+  expect(replies[0]?.content).toStartWith(
+    "That approval was already approved: bun run deploy",
+  );
+  expect(replies[0]?.content).toContain("…");
+});
+
 test("approval interaction rejects concurrent resolution attempts for the same request", async () => {
   const calls: string[] = [];
   let releaseRpc: (() => void) | undefined;
@@ -5099,6 +5146,34 @@ test("approval lifecycle recovery prefers the approval-key-scoped thread message
   });
 
   expect(recovered?.id).toBe("m2");
+});
+
+test("approval lifecycle recovery matches resolved no-button messages with truncated request ids", async () => {
+  const requestId = `req-${"1234567890".repeat(12)}`;
+  const lifecycle = renderApprovalLifecyclePayload({
+    approval: createApprovalRecord({
+      requestId,
+      status: "resolved",
+    }),
+  });
+
+  const recovered = await recoverApprovalLifecycleMessageFromHistory({
+    requestId,
+    botUserId: "bot-1",
+    fetchPage: async () => [
+      {
+        id: "m1",
+        content: lifecycle.content,
+        editable: true,
+        author: { bot: true, id: "bot-1" },
+        components: [],
+      },
+    ],
+  });
+
+  expect(lifecycle.content).toContain("Request ID: `req-");
+  expect(lifecycle.content).toContain("…");
+  expect(recovered?.id).toBe("m1");
 });
 
 test("status card renderer stays operational and compact", () => {

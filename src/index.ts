@@ -91,9 +91,11 @@ import type {
 } from "./domain/types";
 import {
   applyApprovalResolutionSignal,
+  renderApprovalRequestIdText,
   type ApprovalUiButton,
   renderApprovalLifecyclePayload as renderStoredApprovalLifecyclePayload,
   renderApprovalStaleStatusText,
+  truncateApprovalText,
 } from "./discord/approval-ui";
 import { createDiscordBot } from "./discord/bot";
 import {
@@ -1385,7 +1387,7 @@ export const canReuseApprovalLifecycleMessage = ({
 
   return (
     content.startsWith(`Approval \`${requestId}\`:`)
-    || content.includes(`Request ID: \`${requestId}\``)
+    || content.includes(renderApprovalRequestIdText(requestId))
   );
 };
 
@@ -4129,28 +4131,29 @@ const renderStaleApprovalInteractionText = ({
   const commandPreview = approval.commandPreview?.trim() || null;
   const displayTitle = approval.displayTitle?.trim() || null;
   const context = commandPreview ?? displayTitle;
+  let message: string;
 
   if (approval.status === "resolved") {
-    return context
+    message = context
       ? `That approval already finished or was resolved elsewhere: ${context}`
       : "That approval already finished or was resolved elsewhere.";
+  } else if (context) {
+    message = `That approval was already ${approval.status}: ${context}`;
+  } else {
+    message = renderApprovalStaleStatusText({
+      approval: {
+        requestId: approval.requestId,
+        status: approval.status,
+        displayTitle: "That approval",
+        commandPreview: null,
+        justification: approval.justification,
+        cwd: approval.cwd,
+        requestKind: approval.requestKind,
+      },
+    }).replace(" is already ", " was already ");
   }
 
-  if (context) {
-    return `That approval was already ${approval.status}: ${context}`;
-  }
-
-  return renderApprovalStaleStatusText({
-    approval: {
-      requestId: approval.requestId,
-      status: approval.status,
-      displayTitle: "That approval",
-      commandPreview: null,
-      justification: approval.justification,
-      cwd: approval.cwd,
-      requestKind: approval.requestKind,
-    },
-  }).replace(" is already ", " was already ");
+  return truncateApprovalText(message, 2000);
 };
 
 export const handleApprovalInteraction = async ({

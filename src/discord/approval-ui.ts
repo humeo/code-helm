@@ -86,7 +86,7 @@ const toApprovalStatusLabel = (status: ApprovalState["status"]) => {
   return `${status.slice(0, 1).toUpperCase()}${status.slice(1)}`;
 };
 
-const truncateApprovalText = (value: string, maxLength: number) => {
+export const truncateApprovalText = (value: string, maxLength: number) => {
   if (value.length <= maxLength) {
     return value;
   }
@@ -100,6 +100,15 @@ const truncateApprovalText = (value: string, maxLength: number) => {
 
 const sanitizeApprovalCommandPreview = (value: string) => {
   return value.replaceAll("```", "``\u200b`");
+};
+
+export const renderApprovalRequestIdText = (
+  requestId: ApprovalState["requestId"],
+) => {
+  return `Request ID: \`${truncateApprovalText(
+    requestId,
+    approvalRequestIdCharacterLimit,
+  )}\``;
 };
 
 const renderApprovalLifecycleBody = (
@@ -150,12 +159,7 @@ const renderApprovalLifecycleBody = (
     );
   }
 
-  metadata.push(
-    `Request ID: \`${truncateApprovalText(
-      approval.requestId,
-      approvalRequestIdCharacterLimit,
-    )}\``,
-  );
+  metadata.push(renderApprovalRequestIdText(approval.requestId));
 
   if (metadata.length > 0) {
     lines.push("", ...metadata);
