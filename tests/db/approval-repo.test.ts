@@ -522,6 +522,7 @@ test("migrations add missing approval snapshot columns without rebuilding stable
       codex_thread_id TEXT NOT NULL,
       discord_thread_id TEXT NOT NULL,
       status TEXT NOT NULL,
+      legacy_note TEXT,
       resolved_by_discord_user_id TEXT,
       resolution TEXT,
       created_at TEXT NOT NULL,
@@ -567,6 +568,7 @@ test("migrations add missing approval snapshot columns without rebuilding stable
       codex_thread_id,
       discord_thread_id,
       status,
+      legacy_note,
       resolved_by_discord_user_id,
       resolution,
       created_at,
@@ -577,6 +579,7 @@ test("migrations add missing approval snapshot columns without rebuilding stable
       'codex-stable',
       'stable-thread',
       'pending',
+      'keep-me',
       NULL,
       NULL,
       '2026-04-09T00:00:00.000Z',
@@ -601,6 +604,16 @@ test("migrations add missing approval snapshot columns without rebuilding stable
     resolvedByDiscordUserId: null,
     resolution: null,
   });
+
+  const approvalColumns = db
+    .prepare("PRAGMA table_info(approvals)")
+    .all() as Array<{ name: string }>;
+  expect(approvalColumns.map((column) => column.name)).toContain("legacy_note");
+  expect(
+    db.prepare(
+      "SELECT legacy_note FROM approvals WHERE approval_key = ?",
+    ).get("turn-1:item-1"),
+  ).toEqual({ legacy_note: "keep-me" });
 
   const snapshotColumns = db
     .prepare("PRAGMA table_info(approvals)")
