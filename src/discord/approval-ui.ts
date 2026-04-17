@@ -98,6 +98,24 @@ export const truncateApprovalText = (value: string, maxLength: number) => {
   return `${value.slice(0, maxLength - approvalTruncationSuffix.length).trimEnd()}${approvalTruncationSuffix}`;
 };
 
+const truncateApprovalMiddleText = (value: string, maxLength: number) => {
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  if (maxLength <= approvalTruncationSuffix.length) {
+    return approvalTruncationSuffix.slice(0, maxLength);
+  }
+
+  const availableLength = maxLength - approvalTruncationSuffix.length;
+  const prefixLength = Math.ceil(availableLength / 2);
+  const suffixLength = Math.floor(availableLength / 2);
+
+  return `${value.slice(0, prefixLength)}${approvalTruncationSuffix}${value.slice(
+    value.length - suffixLength,
+  )}`;
+};
+
 const sanitizeApprovalCommandPreview = (value: string) => {
   return value.replaceAll("```", "``\u200b`");
 };
@@ -105,7 +123,7 @@ const sanitizeApprovalCommandPreview = (value: string) => {
 export const renderApprovalRequestIdText = (
   requestId: ApprovalState["requestId"],
 ) => {
-  return `Request ID: \`${truncateApprovalText(
+  return `Request ID: \`${truncateApprovalMiddleText(
     requestId,
     approvalRequestIdCharacterLimit,
   )}\``;

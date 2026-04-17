@@ -3667,7 +3667,11 @@ const expectStaleApprovalInteractionReply = async ({
   expectedContent: string;
 }) => {
   const calls: string[] = [];
-  const replies: Array<{ content: string; ephemeral: boolean }> = [];
+  const replies: Array<{
+    content: string;
+    ephemeral: boolean;
+    allowedMentions?: { parse: string[] };
+  }> = [];
 
   const handled = await handleApprovalInteraction({
     interaction: {
@@ -3676,7 +3680,11 @@ const expectStaleApprovalInteractionReply = async ({
       deferUpdate: async () => {
         calls.push("defer");
       },
-      reply: async (payload: { content: string; ephemeral: boolean }) => {
+      reply: async (payload: {
+        content: string;
+        ephemeral: boolean;
+        allowedMentions?: { parse: string[] };
+      }) => {
         calls.push("reply");
         replies.push(payload);
       },
@@ -3707,6 +3715,7 @@ const expectStaleApprovalInteractionReply = async ({
     {
       content: expectedContent,
       ephemeral: true,
+      allowedMentions: { parse: [] },
     },
   ]);
 };
@@ -4956,6 +4965,8 @@ test("owner approval DMs reuse the same stored approval body as the thread card"
   expect(dmPayload.content).toBe(threadPayload.content);
   expect((dmPayload.components ?? []).length).toBe(1);
   expect(dmPayload.content).not.toContain("Request: `req-7`");
+  expect(dmPayload.allowedMentions).toEqual({ parse: [] });
+  expect(threadPayload.allowedMentions).toEqual({ parse: [] });
 });
 
 test("approval lifecycle payload keeps the stored approval body and only drops controls after resolution", () => {
@@ -5174,6 +5185,34 @@ test("approval lifecycle recovery matches resolved no-button messages with trunc
   expect(lifecycle.content).toContain("Request ID: `req-");
   expect(lifecycle.content).toContain("…");
   expect(recovered?.id).toBe("m1");
+});
+
+test("approval lifecycle recovery does not collide when long request ids share a prefix", async () => {
+  const sharedPrefix = `req-${"1234567890".repeat(8)}`;
+  const requestId = `${sharedPrefix}-alpha-tail`;
+  const otherRequestId = `${sharedPrefix}-omega-tail`;
+  const otherLifecycle = renderApprovalLifecyclePayload({
+    approval: createApprovalRecord({
+      requestId: otherRequestId,
+      status: "resolved",
+    }),
+  });
+
+  const recovered = await recoverApprovalLifecycleMessageFromHistory({
+    requestId,
+    botUserId: "bot-1",
+    fetchPage: async () => [
+      {
+        id: "m1",
+        content: otherLifecycle.content,
+        editable: true,
+        author: { bot: true, id: "bot-1" },
+        components: [],
+      },
+    ],
+  });
+
+  expect(recovered).toBeUndefined();
 });
 
 test("status card renderer stays operational and compact", () => {

@@ -136,7 +136,17 @@ test("renders request id metadata with the truncated lifecycle form", () => {
 
   expect(requestIdText).toContain("Request ID: `req-");
   expect(requestIdText).toContain("…");
+  expect(requestIdText).toContain("7890`");
   expect(rendered.content).toContain(requestIdText);
+});
+
+test("renders long request ids with both prefix and suffix to reduce collisions", () => {
+  const requestId = `req-${"a".repeat(72)}-suffix`;
+  const requestIdText = renderApprovalRequestIdText(requestId);
+
+  expect(requestIdText).toContain("Request ID: `req-");
+  expect(requestIdText).toContain("…");
+  expect(requestIdText).toContain("-suffix`");
 });
 
 test("renders command previews with embedded triple backticks safely", () => {

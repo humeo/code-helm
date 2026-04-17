@@ -14,6 +14,7 @@ import {
   type ButtonInteraction,
   type AnyThreadChannel,
   type Client,
+  type MessageMentionOptions,
   type RESTPostAPIChatInputApplicationCommandsJSONBody,
 } from "discord.js";
 import { z } from "zod";
@@ -226,6 +227,7 @@ type ApprovalAction = "approve" | "decline" | "cancel";
 type DiscordMessageComponents = ActionRowBuilder<ButtonBuilder>[];
 type DiscordChannelMessagePayload = DiscordMessagePayload & {
   components?: DiscordMessageComponents;
+  allowedMentions?: MessageMentionOptions;
 };
 type ApprovalButtonMessage = {
   edit(payload: DiscordChannelMessagePayload): Promise<ApprovalButtonMessage>;
@@ -313,6 +315,9 @@ type TranscriptRuntime = {
 
 const sessionSnapshotPollIntervalMs = 15_000;
 const discordTypingPulseIntervalMs = 8_000;
+const approvalAllowedMentions = {
+  parse: [],
+} satisfies MessageMentionOptions;
 
 export const shouldRenderLiveAssistantTranscriptBubble = (
   phase: string | null | undefined,
@@ -1255,6 +1260,7 @@ export const renderApprovalLifecyclePayload = ({
       approvalKey ?? approval.approvalKey ?? approval.requestId,
       lifecycle.buttons,
     ),
+    allowedMentions: approvalAllowedMentions,
   };
 };
 
@@ -2445,7 +2451,7 @@ export const reconcileApprovalResolutionSurface = async ({
       approval,
     });
     await dmMessage.edit({
-      content: dmPayload.content,
+      ...dmPayload,
       components: dmPayload.components ?? [],
     });
   }
@@ -4181,6 +4187,7 @@ export const handleApprovalInteraction = async ({
     await interaction.reply({
       content: "That approval is no longer available.",
       ephemeral: true,
+      allowedMentions: approvalAllowedMentions,
     });
     return true;
   }
@@ -4191,6 +4198,7 @@ export const handleApprovalInteraction = async ({
     await interaction.reply({
       content: "Only the session owner can resolve this approval.",
       ephemeral: true,
+      allowedMentions: approvalAllowedMentions,
     });
     return true;
   }
@@ -4201,6 +4209,7 @@ export const handleApprovalInteraction = async ({
         approval: approvalRecord,
       }),
       ephemeral: true,
+      allowedMentions: approvalAllowedMentions,
     });
     return true;
   }
@@ -4212,6 +4221,7 @@ export const handleApprovalInteraction = async ({
     await interaction.reply({
       content: "That approval is already being resolved.",
       ephemeral: true,
+      allowedMentions: approvalAllowedMentions,
     });
     return true;
   }
