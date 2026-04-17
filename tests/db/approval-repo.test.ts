@@ -481,6 +481,136 @@ test("migrations backfill nullable approval snapshot fields for legacy approvals
   db.close();
 });
 
+test("migrations add missing approval snapshot columns without rebuilding stable tables", () => {
+  const db = createDatabaseClient(":memory:");
+
+  db.exec(`
+    CREATE TABLE workspaces (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      root_path TEXT NOT NULL UNIQUE,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE workdirs (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      label TEXT NOT NULL,
+      absolute_path TEXT NOT NULL UNIQUE,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (workspace_id) REFERENCES workspaces(id)
+    );
+
+    CREATE TABLE sessions (
+      discord_thread_id TEXT PRIMARY KEY,
+      codex_thread_id TEXT NOT NULL UNIQUE,
+      owner_discord_user_id TEXT NOT NULL,
+      workdir_id TEXT NOT NULL,
+      state TEXT NOT NULL,
+      lifecycle_state TEXT NOT NULL DEFAULT 'active' CHECK (lifecycle_state IN ('active', 'archived', 'deleted')),
+      degradation_reason TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (workdir_id) REFERENCES workdirs(id)
+    );
+
+    CREATE TABLE approvals (
+      approval_key TEXT PRIMARY KEY,
+      request_id TEXT NOT NULL,
+      codex_thread_id TEXT NOT NULL,
+      discord_thread_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      resolved_by_discord_user_id TEXT,
+      resolution TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (discord_thread_id)
+        REFERENCES sessions(discord_thread_id)
+        ON UPDATE CASCADE
+    );
+  `);
+
+  db.exec(`
+    INSERT INTO workspaces (id, name, root_path, created_at, updated_at)
+    VALUES ('ws1', 'Main Workspace', '/tmp/ws1', '2026-04-09T00:00:00.000Z', '2026-04-09T00:00:00.000Z');
+
+    INSERT INTO workdirs (id, workspace_id, label, absolute_path, created_at, updated_at)
+    VALUES ('wd1', 'ws1', 'App', '/tmp/ws1/app', '2026-04-09T00:00:00.000Z', '2026-04-09T00:00:00.000Z');
+
+    INSERT INTO sessions (
+      discord_thread_id,
+      codex_thread_id,
+      owner_discord_user_id,
+      workdir_id,
+      state,
+      lifecycle_state,
+      degradation_reason,
+      created_at,
+      updated_at
+    ) VALUES (
+      'stable-thread',
+      'codex-stable',
+      'stable-user',
+      'wd1',
+      'idle',
+      'active',
+      NULL,
+      '2026-04-09T00:00:00.000Z',
+      '2026-04-09T00:00:00.000Z'
+    );
+
+    INSERT INTO approvals (
+      approval_key,
+      request_id,
+      codex_thread_id,
+      discord_thread_id,
+      status,
+      resolved_by_discord_user_id,
+      resolution,
+      created_at,
+      updated_at
+    ) VALUES (
+      'turn-1:item-1',
+      '9',
+      'codex-stable',
+      'stable-thread',
+      'pending',
+      NULL,
+      NULL,
+      '2026-04-09T00:00:00.000Z',
+      '2026-04-09T00:00:00.000Z'
+    );
+  `);
+
+  applyMigrations(db);
+
+  const repo = createApprovalRepo(db);
+  expect(repo.getByApprovalKey("turn-1:item-1")).toMatchObject({
+    approvalKey: "turn-1:item-1",
+    requestId: "9",
+    codexThreadId: "codex-stable",
+    discordThreadId: "stable-thread",
+    status: "pending",
+    displayTitle: null,
+    commandPreview: null,
+    justification: null,
+    cwd: null,
+    requestKind: null,
+    resolvedByDiscordUserId: null,
+    resolution: null,
+  });
+
+  const snapshotColumns = db
+    .prepare("PRAGMA table_info(approvals)")
+    .all() as Array<{ name: string }>;
+  expect(snapshotColumns.map((column) => column.name)).toContain("display_title");
+  expect(snapshotColumns.map((column) => column.name)).toContain("request_kind");
+
+  db.close();
+});
+
 test("approval rows survive a rebuilt sessions schema and still follow rebound Discord threads", () => {
   const db = createDatabaseClient(":memory:");
 
