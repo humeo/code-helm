@@ -85,6 +85,7 @@ import {
   tryRecoverStatusCardMessage,
   upsertStatusCardMessage,
   handleApprovalInteraction,
+  shouldHandlePersistedApprovalRequestAtRuntime,
   finalizeLiveTurnProcessMessage,
   renderLiveTurnProcessMessage,
   seedTranscriptRuntimeSeenItemsFromSnapshot,
@@ -4767,6 +4768,129 @@ test("resolved events without threadId fail safe when duplicate live approvals s
   ).toBeNull();
   expect(approvalRepo.getByApprovalKey(firstApproval.approvalKey)?.status).toBe("pending");
   expect(approvalRepo.getByApprovalKey(secondApproval.approvalKey)?.status).toBe("pending");
+
+  db.close();
+});
+
+test("resolved events without threadId fall back to the unique persisted request when runtime associations are empty", () => {
+  const db = createDatabaseClient(":memory:");
+  applyMigrations(db);
+  const sessionRepo = createSessionRepo(db);
+  const approvalRepo = createApprovalRepo(db);
+
+  sessionRepo.insert({
+    discordThreadId: "discord-thread-1",
+    codexThreadId: "codex-1",
+    ownerDiscordUserId: "owner-1",
+    cwd: "/tmp/ws1/app",
+    state: "waiting-approval",
+  });
+
+  const approval = persistApprovalRequestSnapshot({
+    approvalRepo,
+    session: createSessionRecord({
+      codexThreadId: "codex-1",
+      discordThreadId: "discord-thread-1",
+    }),
+    method: "item/commandExecution/requestApproval",
+    event: {
+      requestId: "req-unique",
+      threadId: "codex-1",
+      turnId: "turn-1",
+      itemId: "call-1",
+      cmd: "touch unique.txt",
+      justification: "Allow the unique command?",
+      cwd: "/tmp/ws1/app",
+    },
+  });
+
+  expect(
+    resolveStoredApprovalForResolvedEvent({
+      approvalRepo,
+      runtimeApprovalKeysByRequestId: new Map(),
+      event: {
+        requestId: "req-unique",
+      },
+    }),
+  ).toMatchObject({
+    approvalKey: approval.approvalKey,
+    requestId: approval.requestId,
+    status: "pending",
+  });
+
+  db.close();
+});
+
+test("stale replayed pending approvals do not reopen runtime handling after resolution", () => {
+  const db = createDatabaseClient(":memory:");
+  applyMigrations(db);
+  const sessionRepo = createSessionRepo(db);
+  const approvalRepo = createApprovalRepo(db);
+  const runtimeApprovalKeysByRequestId = new Map<string, Set<string>>();
+
+  sessionRepo.insert({
+    discordThreadId: "discord-thread-1",
+    codexThreadId: "codex-1",
+    ownerDiscordUserId: "owner-1",
+    cwd: "/tmp/ws1/app",
+    state: "waiting-approval",
+  });
+
+  persistApprovalRequestSnapshot({
+    approvalRepo,
+    session: createSessionRecord({
+      codexThreadId: "codex-1",
+      discordThreadId: "discord-thread-1",
+    }),
+    method: "item/commandExecution/requestApproval",
+    event: {
+      requestId: "req-stale",
+      threadId: "codex-1",
+      turnId: "turn-1",
+      itemId: "call-1",
+      cmd: "touch stale.txt",
+      justification: "Allow the stale command?",
+      cwd: "/tmp/ws1/app",
+    },
+  });
+
+  approvalRepo.insert({
+    approvalKey: "turn-1:call-1",
+    requestId: "req-stale",
+    codexThreadId: "codex-1",
+    discordThreadId: "discord-thread-1",
+    status: "resolved",
+  });
+
+  const replayedApproval = persistApprovalRequestSnapshot({
+    approvalRepo,
+    session: createSessionRecord({
+      codexThreadId: "codex-1",
+      discordThreadId: "discord-thread-1",
+    }),
+    method: "item/commandExecution/requestApproval",
+    event: {
+      requestId: "req-stale",
+      threadId: "codex-1",
+      turnId: "turn-1",
+      itemId: "call-1",
+      cmd: "touch stale.txt",
+      justification: "Allow the stale command?",
+      cwd: "/tmp/ws1/app",
+    },
+  });
+
+  const shouldHandleReplay = shouldHandlePersistedApprovalRequestAtRuntime(
+    replayedApproval,
+  );
+
+  if (shouldHandleReplay) {
+    rememberRuntimeApprovalRequest(runtimeApprovalKeysByRequestId, replayedApproval);
+  }
+
+  expect(replayedApproval.status).toBe("resolved");
+  expect(shouldHandleReplay).toBe(false);
+  expect(runtimeApprovalKeysByRequestId.size).toBe(0);
 
   db.close();
 });

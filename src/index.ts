@@ -1863,6 +1863,21 @@ export const rememberRuntimeApprovalRequest = (
   ).add(approval.approvalKey);
 };
 
+export const shouldHandlePersistedApprovalRequestAtRuntime = (
+  approval: Pick<ApprovalRecord, "approvalKey" | "requestId" | "status">,
+) => {
+  if (approval.status === "pending") {
+    return true;
+  }
+
+  logger.debug("Skipping stale replayed approval request at runtime", {
+    approvalKey: approval.approvalKey,
+    requestId: approval.requestId,
+    status: approval.status,
+  });
+  return false;
+};
+
 const forgetRuntimeApprovalRequest = (
   runtimeApprovalKeysByRequestId: Map<string, Set<string>>,
   approval: Pick<ApprovalRecord, "approvalKey" | "requestId">,
@@ -5580,6 +5595,11 @@ const startCodeHelmRuntime = async (
         method,
         event,
       });
+
+      if (!shouldHandlePersistedApprovalRequestAtRuntime(approval)) {
+        return;
+      }
+
       rememberRuntimeApprovalRequest(runtimeApprovalKeysByRequestId, approval);
       const approvalKey = approval.approvalKey;
 
