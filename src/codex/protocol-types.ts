@@ -89,6 +89,74 @@ export type ApprovalRequestEvent = ApprovalRequestParams & {
   requestId: JsonRpcId;
 };
 
+export type ApprovalRequestDecisionPayload = {
+  decision: string;
+  label?: string | null;
+  consequence?: string | null;
+} & Record<string, unknown>;
+
+const asApprovalDecisionPayload = (
+  value: unknown,
+): ApprovalRequestDecisionPayload | null => {
+  if (typeof value === "string") {
+    return {
+      decision: value,
+    };
+  }
+
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const candidate = value as Record<string, unknown>;
+  const providerDecisionCandidate =
+    candidate.decision
+    ?? candidate.providerDecision
+    ?? candidate.key;
+
+  if (typeof providerDecisionCandidate !== "string" || providerDecisionCandidate.length === 0) {
+    return null;
+  }
+
+  const label =
+    typeof candidate.label === "string"
+      ? candidate.label
+      : typeof candidate.title === "string"
+        ? candidate.title
+        : undefined;
+  const consequence =
+    typeof candidate.consequence === "string"
+      ? candidate.consequence
+      : candidate.consequence === null
+        ? null
+        : typeof candidate.description === "string"
+          ? candidate.description
+          : undefined;
+
+  return {
+    ...candidate,
+    decision: providerDecisionCandidate,
+    label,
+    consequence,
+  };
+};
+
+export const getApprovalRequestDecisionPayloads = (
+  event: ApprovalRequestEvent,
+): ApprovalRequestDecisionPayload[] | null => {
+  const candidate = event as Record<string, unknown>;
+  const availableDecisions =
+    candidate.availableDecisions ?? candidate.available_decisions;
+
+  if (!Array.isArray(availableDecisions)) {
+    return null;
+  }
+
+  return availableDecisions
+    .map(asApprovalDecisionPayload)
+    .filter((payload): payload is ApprovalRequestDecisionPayload => payload !== null);
+};
+
 export const approvalRequestMethods = [
   "item/commandExecution/requestApproval",
   "item/fileChange/requestApproval",

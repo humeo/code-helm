@@ -1,4 +1,8 @@
 import { canControlSession } from "./session-service";
+import type {
+  ApprovalRequestDecisionPayload,
+  ApprovalRequestMethod,
+} from "../codex/protocol-types";
 import type { SessionOwnership } from "./types";
 
 export type ApprovalStatus =
@@ -11,11 +15,23 @@ export type ApprovalStatus =
 export type ApprovalRequestId = string | number;
 
 export type ApprovalSnapshotFields = {
+  questionText?: string | null;
   displayTitle?: string | null;
   commandPreview?: string | null;
   justification?: string | null;
   cwd?: string | null;
   requestKind?: string | null;
+  decisions?: PersistedApprovalDecision[] | null;
+  resolvedProviderDecision?: string | null;
+  resolvedElsewhere?: boolean;
+  resolvedBySurface?: string | null;
+};
+
+export type PersistedApprovalDecision = {
+  key: string;
+  providerDecision: string;
+  label: string;
+  consequence?: string | null;
 };
 
 export type ApprovalState = {
@@ -135,4 +151,83 @@ export const reduceApprovalEvent = (
 
 export const shouldShowApprovalControls = (ownership: SessionOwnership) => {
   return canControlSession(ownership);
+};
+
+const commandDecisionLabels: Record<string, string> = {
+  accept: "Yes, proceed",
+  acceptForSession: "Yes, and don't ask again for this command in this session",
+  acceptWithExecpolicyAmendment:
+    "Yes, proceed and save this decision for this command policy",
+  applyNetworkPolicyAmendment:
+    "Yes, proceed and apply this network policy amendment",
+  decline: "No, continue without running it",
+  cancel: "No, and tell Codex what to do differently",
+};
+
+const fileChangeDecisionLabels: Record<string, string> = {
+  accept: "Yes, proceed",
+  acceptForSession: "Yes, and don't ask again for these files",
+  decline: "No, continue without applying it",
+  cancel: "No, and tell Codex what to do differently",
+};
+
+const toDecisionLabelsByMethod = (
+  requestMethod: ApprovalRequestMethod,
+): Record<string, string> => {
+  if (requestMethod === "item/commandExecution/requestApproval") {
+    return commandDecisionLabels;
+  }
+
+  if (requestMethod === "item/fileChange/requestApproval") {
+    return fileChangeDecisionLabels;
+  }
+
+  return {};
+};
+
+const humanizeProviderDecision = (providerDecision: string) => {
+  return providerDecision
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replaceAll("_", " ")
+    .replace(/^./, (first) => first.toUpperCase());
+};
+
+export const createPersistedApprovalDecisions = ({
+  availableDecisions,
+  requestMethod,
+}: {
+  availableDecisions: ReadonlyArray<ApprovalRequestDecisionPayload | string>;
+  requestMethod: ApprovalRequestMethod;
+}) => {
+  const labelsByDecision = toDecisionLabelsByMethod(requestMethod);
+  const seen = new Set<string>();
+  const decisions: PersistedApprovalDecision[] = [];
+
+  for (const candidate of availableDecisions) {
+    const normalizedCandidate =
+      typeof candidate === "string"
+        ? { decision: candidate }
+        : candidate;
+    const providerDecision = normalizedCandidate.decision?.trim();
+
+    if (!providerDecision || seen.has(providerDecision)) {
+      continue;
+    }
+
+    seen.add(providerDecision);
+    decisions.push({
+      key: providerDecision,
+      providerDecision,
+      label:
+        normalizedCandidate.label?.trim()
+        || labelsByDecision[providerDecision]
+        || humanizeProviderDecision(providerDecision),
+      consequence:
+        normalizedCandidate.consequence !== undefined
+          ? normalizedCandidate.consequence
+          : null,
+    });
+  }
+
+  return decisions;
 };

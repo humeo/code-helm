@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
 import {
+  createPersistedApprovalDecisions,
   reduceApprovalEvent,
   shouldShowApprovalControls,
+  type PersistedApprovalDecision,
   type ApprovalState,
 } from "../../src/domain/approval-service";
 import {
@@ -93,9 +95,23 @@ test("terminal approval statuses outrank a later resolved event", () => {
 });
 
 test("owner approval UI shows buttons while other viewers get status only", () => {
+  const decisions = [
+    {
+      key: "accept",
+      providerDecision: "accept",
+      label: "Yes, proceed",
+    },
+    {
+      key: "cancel",
+      providerDecision: "cancel",
+      label: "No, and tell Codex what to do differently",
+    },
+  ] satisfies PersistedApprovalDecision[];
+
   const approval = {
     requestId: "req-1",
     status: "pending",
+    decisions,
   } satisfies ApprovalState;
 
   expect(
@@ -108,7 +124,7 @@ test("owner approval UI shows buttons while other viewers get status only", () =
     kind: "controls",
     requestId: "req-1",
     status: "pending",
-    buttons: ["approve", "decline", "cancel"],
+    buttons: decisions,
   });
 
   expect(
@@ -122,6 +138,28 @@ test("owner approval UI shows buttons while other viewers get status only", () =
     requestId: "req-1",
     status: "pending",
   });
+});
+
+test("provider-backed decisions preserve offered order and labels", () => {
+  expect(
+    createPersistedApprovalDecisions({
+      availableDecisions: ["accept", "cancel"],
+      requestMethod: "item/commandExecution/requestApproval",
+    }),
+  ).toEqual([
+    {
+      key: "accept",
+      providerDecision: "accept",
+      label: "Yes, proceed",
+      consequence: null,
+    },
+    {
+      key: "cancel",
+      providerDecision: "cancel",
+      label: "No, and tell Codex what to do differently",
+      consequence: null,
+    },
+  ] satisfies PersistedApprovalDecision[]);
 });
 
 test("serverRequest/resolved signal closes the active approval UI immediately", () => {
