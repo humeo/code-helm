@@ -82,6 +82,42 @@ test("repo upsert preserves terminal status and resolution metadata on resolved 
   db.close();
 });
 
+test("repo enriches terminal approvals with resolved-ack origin metadata", () => {
+  const db = createMigratedDb();
+  seedWorkspaceGraph(db);
+  const repo = createApprovalRepo(db);
+
+  repo.insert({
+    approvalKey: "turn-1:call-1",
+    requestId: "req-1",
+    discordThreadId: "123",
+    status: "approved",
+    displayTitle: "Command approval",
+    commandPreview: "touch i.txt",
+  });
+
+  repo.insert({
+    approvalKey: "turn-1:call-1",
+    requestId: "req-1",
+    discordThreadId: "123",
+    status: "resolved",
+    resolvedProviderDecision: "accept",
+    resolvedBySurface: "discord_thread",
+    resolvedElsewhere: true,
+  });
+
+  expect(repo.getByApprovalKey("turn-1:call-1")).toMatchObject({
+    status: "approved",
+    displayTitle: "Command approval",
+    commandPreview: "touch i.txt",
+    resolvedProviderDecision: "accept",
+    resolvedBySurface: "discord_thread",
+    resolvedElsewhere: true,
+  });
+
+  db.close();
+});
+
 test("repo ignores stale pending replays after a terminal approval", () => {
   const db = createMigratedDb();
   seedWorkspaceGraph(db);
@@ -752,6 +788,10 @@ test("migrations add missing approval snapshot columns without rebuilding stable
     justification: null,
     cwd: null,
     requestKind: null,
+    decisionCatalog: null,
+    resolvedProviderDecision: null,
+    resolvedBySurface: null,
+    resolvedElsewhere: false,
     resolvedByDiscordUserId: null,
     resolution: null,
   });
@@ -771,6 +811,29 @@ test("migrations add missing approval snapshot columns without rebuilding stable
     .all() as Array<{ name: string }>;
   expect(snapshotColumns.map((column) => column.name)).toContain("display_title");
   expect(snapshotColumns.map((column) => column.name)).toContain("request_kind");
+  expect(snapshotColumns.map((column) => column.name)).toContain("decision_catalog");
+  expect(snapshotColumns.map((column) => column.name)).toContain(
+    "resolved_provider_decision",
+  );
+  expect(snapshotColumns.map((column) => column.name)).toContain("resolved_by_surface");
+  expect(snapshotColumns.map((column) => column.name)).toContain("resolved_elsewhere");
+
+  expect(
+    db.prepare(
+      `SELECT
+        decision_catalog,
+        resolved_provider_decision,
+        resolved_by_surface,
+        resolved_elsewhere
+      FROM approvals
+      WHERE approval_key = ?`,
+    ).get("turn-1:item-1"),
+  ).toEqual({
+    decision_catalog: null,
+    resolved_provider_decision: null,
+    resolved_by_surface: null,
+    resolved_elsewhere: 0,
+  });
 
   db.close();
 });

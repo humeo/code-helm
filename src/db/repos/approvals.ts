@@ -120,6 +120,24 @@ const mergeSnapshotField = (
   return null;
 };
 
+const hasResolutionOriginMetadata = (input: InsertApprovalInput) => {
+  return input.resolvedProviderDecision !== undefined
+    || input.resolvedBySurface !== undefined
+    || input.resolvedElsewhere !== undefined;
+};
+
+const isResolutionOriginOnlyAck = (input: InsertApprovalInput) => {
+  return input.codexThreadId === undefined
+    && input.displayTitle === undefined
+    && input.commandPreview === undefined
+    && input.justification === undefined
+    && input.cwd === undefined
+    && input.requestKind === undefined
+    && input.decisionCatalog === undefined
+    && input.resolvedByDiscordUserId === undefined
+    && input.resolution === undefined;
+};
+
 export const createApprovalRepo = (db: Database) => {
   const insertStatement = db.prepare(
     `INSERT INTO approvals (
@@ -208,6 +226,14 @@ export const createApprovalRepo = (db: Database) => {
           updated_at = ?
       WHERE approval_key = ?`,
   );
+  const updateResolutionOriginMetadataStatement = db.prepare(
+    `UPDATE approvals
+      SET resolved_provider_decision = ?,
+          resolved_by_surface = ?,
+          resolved_elsewhere = ?,
+          updated_at = ?
+      WHERE approval_key = ?`,
+  );
 
   return {
     insert(input: InsertApprovalInput) {
@@ -268,6 +294,19 @@ export const createApprovalRepo = (db: Database) => {
           : existing?.resolvedElsewhere ?? false;
 
       if (existing && isTerminalApprovalStatus(existing.status)) {
+        if (
+          input.status === "resolved"
+          && hasResolutionOriginMetadata(input)
+          && isResolutionOriginOnlyAck(input)
+        ) {
+          updateResolutionOriginMetadataStatement.run(
+            resolvedProviderDecision,
+            resolvedBySurface,
+            resolvedElsewhere ? 1 : 0,
+            timestamp,
+            approvalKey,
+          );
+        }
         return;
       }
 
