@@ -118,6 +118,55 @@ test("repo enriches terminal approvals with resolved-ack origin metadata", () =>
   db.close();
 });
 
+test("repo enriches terminal approvals with resolved metadata from snapshot-bearing writes", () => {
+  const db = createMigratedDb();
+  seedWorkspaceGraph(db);
+  const repo = createApprovalRepo(db);
+
+  repo.insert({
+    approvalKey: "turn-1:call-2",
+    requestId: "req-2",
+    codexThreadId: "codex-1",
+    discordThreadId: "123",
+    status: "approved",
+    displayTitle: "Command approval",
+    commandPreview: "touch j.txt",
+    justification: "Allow writing j.txt?",
+    cwd: "/tmp/ws1/app",
+    requestKind: "command_execution",
+  });
+
+  repo.insert({
+    approvalKey: "turn-1:call-2",
+    requestId: "req-2",
+    codexThreadId: "codex-1",
+    discordThreadId: "123",
+    status: "resolved",
+    displayTitle: "Command approval",
+    commandPreview: "touch j.txt",
+    justification: "Allow writing j.txt?",
+    cwd: "/tmp/ws1/app",
+    requestKind: "command_execution",
+    resolvedProviderDecision: "cancel",
+    resolvedBySurface: "codex_remote",
+    resolvedElsewhere: true,
+  });
+
+  expect(repo.getByApprovalKey("turn-1:call-2")).toMatchObject({
+    status: "approved",
+    displayTitle: "Command approval",
+    commandPreview: "touch j.txt",
+    justification: "Allow writing j.txt?",
+    cwd: "/tmp/ws1/app",
+    requestKind: "command_execution",
+    resolvedProviderDecision: "cancel",
+    resolvedBySurface: "codex_remote",
+    resolvedElsewhere: true,
+  });
+
+  db.close();
+});
+
 test("repo ignores stale pending replays after a terminal approval", () => {
   const db = createMigratedDb();
   seedWorkspaceGraph(db);
