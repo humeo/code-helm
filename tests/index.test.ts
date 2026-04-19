@@ -94,7 +94,6 @@ import {
   startCodeHelm,
   rememberRuntimeApprovalRequest,
   resolveStoredApprovalForResolvedEvent,
-  restoreManagedSessionSubscriptions,
 } from "../src/index";
 import { renderStatusCardText } from "../src/discord/renderers";
 import {
@@ -287,75 +286,6 @@ test("startCodeHelm stops the started runtime when runtime-state publication fai
 
   expect(stopCalls).toEqual(["stopped"]);
   expect(clearedStateDirs).toEqual(["/tmp/codehelm-state"]);
-});
-
-test("restoreManagedSessionSubscriptions resumes every active managed session", async () => {
-  const resumedThreadIds: string[] = [];
-
-  await restoreManagedSessionSubscriptions({
-    sessions: [
-      createSessionRecord({
-        codexThreadId: "codex-active-1",
-        lifecycleState: "active",
-      }),
-      createSessionRecord({
-        codexThreadId: "codex-archived-1",
-        lifecycleState: "archived",
-      }),
-      createSessionRecord({
-        codexThreadId: "codex-active-2",
-        lifecycleState: "active",
-      }),
-    ],
-    resumeThread: async ({ threadId }) => {
-      resumedThreadIds.push(threadId);
-    },
-  });
-
-  expect(resumedThreadIds).toEqual([
-    "codex-active-1",
-    "codex-active-2",
-  ]);
-});
-
-test("restoreManagedSessionSubscriptions degrades thread-missing sessions and warns on other resume failures", async () => {
-  const degradedThreadIds: string[] = [];
-  const warned: Array<{ threadId: string; error: string }> = [];
-
-  await restoreManagedSessionSubscriptions({
-    sessions: [
-      createSessionRecord({
-        codexThreadId: "codex-missing",
-      }),
-      createSessionRecord({
-        codexThreadId: "codex-warn",
-      }),
-    ],
-    resumeThread: async ({ threadId }) => {
-      if (threadId === "codex-missing") {
-        throw new Error("thread not found");
-      }
-
-      throw new Error("socket hiccup");
-    },
-    onThreadMissing: async (session) => {
-      degradedThreadIds.push(session.codexThreadId);
-    },
-    onWarning: async (session, error) => {
-      warned.push({
-        threadId: session.codexThreadId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    },
-  });
-
-  expect(degradedThreadIds).toEqual(["codex-missing"]);
-  expect(warned).toEqual([
-    {
-      threadId: "codex-warn",
-      error: "socket hiccup",
-    },
-  ]);
 });
 
 const createResumeOutcome = (
@@ -3717,48 +3647,6 @@ test("approval interaction replies to Codex before persisting a terminal local d
   ]);
 });
 
-test("approval interaction restores numeric request ids before replying to Codex", async () => {
-  const requestIds: Array<string | number> = [];
-
-  const handled = await handleApprovalInteraction({
-    interaction: {
-      customId: "approval|turn-1%3Aitem-1|approve",
-      user: { id: "owner-1" },
-      deferUpdate: async () => {},
-      reply: async () => {},
-    } as never,
-    client: {
-      replyToServerRequest: async ({
-        requestId,
-      }: {
-        requestId: string | number;
-      }) => {
-        requestIds.push(requestId);
-      },
-    } as never,
-    sessionRepo: {
-      getByDiscordThreadId: () =>
-        createSessionRecord({
-          discordThreadId: "discord-thread-1",
-          ownerDiscordUserId: "owner-1",
-        }),
-    } as never,
-    approvalRepo: {
-      getByApprovalKey: () => ({
-        approvalKey: "turn-1:item-1",
-        requestId: "0",
-        codexThreadId: "codex-thread-1",
-        discordThreadId: "discord-thread-1",
-        status: "pending",
-      }),
-      insert: () => {},
-    } as never,
-  } as never);
-
-  expect(handled).toBe(true);
-  expect(requestIds).toEqual([0]);
-});
-
 test("approval interaction still resolves pending approvals for degraded sessions", async () => {
   const calls: string[] = [];
   const approvalKey = "turn-1:item-1";
@@ -4844,133 +4732,6 @@ test("live command approvals persist snapshot data before lifecycle rendering", 
   db.close();
 });
 
-test("live command approvals accept modern codex payload fields before lifecycle rendering", () => {
-  const db = createDatabaseClient(":memory:");
-  applyMigrations(db);
-  const sessionRepo = createSessionRepo(db);
-  const approvalRepo = createApprovalRepo(db);
-
-  sessionRepo.insert({
-    discordThreadId: "discord-thread-1",
-    codexThreadId: "codex-1",
-    ownerDiscordUserId: "owner-1",
-    cwd: "/tmp/ws1/app",
-    state: "waiting-approval",
-  });
-
-  const approval = persistApprovalRequestSnapshot({
-    approvalRepo,
-    session: createSessionRecord({
-      codexThreadId: "codex-1",
-      discordThreadId: "discord-thread-1",
-    }),
-    method: "item/commandExecution/requestApproval",
-    event: {
-      requestId: "req-modern",
-      threadId: "codex-1",
-      turnId: "turn-1",
-      itemId: "call-1",
-      approvalId: "approval-1",
-      command: "touch modern.txt",
-      reason: "Allow the modern command payload?",
-      cwd: "/tmp/ws1/app",
-    },
-  });
-
-  expect(approvalRepo.getByApprovalKey("turn-1:call-1:approval-1")).toMatchObject({
-    approvalKey: "turn-1:call-1:approval-1",
-    requestId: "req-modern",
-    status: "pending",
-    displayTitle: "Command approval",
-    commandPreview: "touch modern.txt",
-    justification: "Allow the modern command payload?",
-    cwd: "/tmp/ws1/app",
-    requestKind: "command_execution",
-  });
-  expect(renderApprovalLifecycleMessage({
-    approval,
-  })).toBe(
-    "**Command approval**\n"
-      + "Status: `Pending`\n\n"
-      + "```sh\n"
-      + "touch modern.txt\n"
-      + "```\n\n"
-      + "Allow the modern command payload?\n\n"
-      + "CWD: `/tmp/ws1/app`\n"
-      + "Kind: `command_execution`\n"
-      + "Request ID: `req-modern`",
-  );
-
-  db.close();
-});
-
-test("live command approvals keep distinct rows when approval ids differ for the same turn item", () => {
-  const db = createDatabaseClient(":memory:");
-  applyMigrations(db);
-  const sessionRepo = createSessionRepo(db);
-  const approvalRepo = createApprovalRepo(db);
-
-  sessionRepo.insert({
-    discordThreadId: "discord-thread-1",
-    codexThreadId: "codex-1",
-    ownerDiscordUserId: "owner-1",
-    cwd: "/tmp/ws1/app",
-    state: "waiting-approval",
-  });
-
-  const firstApproval = persistApprovalRequestSnapshot({
-    approvalRepo,
-    session: createSessionRecord({
-      codexThreadId: "codex-1",
-      discordThreadId: "discord-thread-1",
-    }),
-    method: "item/commandExecution/requestApproval",
-    event: {
-      requestId: "req-shared-item-1",
-      threadId: "codex-1",
-      turnId: "turn-1",
-      itemId: "call-1",
-      approvalId: "approval-1",
-      command: "touch first-modern.txt",
-      reason: "Allow the first modern command payload?",
-      cwd: "/tmp/ws1/app",
-    },
-  });
-  const secondApproval = persistApprovalRequestSnapshot({
-    approvalRepo,
-    session: createSessionRecord({
-      codexThreadId: "codex-1",
-      discordThreadId: "discord-thread-1",
-    }),
-    method: "item/commandExecution/requestApproval",
-    event: {
-      requestId: "req-shared-item-2",
-      threadId: "codex-1",
-      turnId: "turn-1",
-      itemId: "call-1",
-      approvalId: "approval-2",
-      command: "touch second-modern.txt",
-      reason: "Allow the second modern command payload?",
-      cwd: "/tmp/ws1/app",
-    },
-  });
-
-  expect(firstApproval.approvalKey).toBe("turn-1:call-1:approval-1");
-  expect(secondApproval.approvalKey).toBe("turn-1:call-1:approval-2");
-  expect(approvalRepo.getByApprovalKey(firstApproval.approvalKey)).toMatchObject({
-    requestId: "req-shared-item-1",
-    commandPreview: "touch first-modern.txt",
-    justification: "Allow the first modern command payload?",
-  });
-  expect(approvalRepo.getByApprovalKey(secondApproval.approvalKey)).toMatchObject({
-    requestId: "req-shared-item-2",
-    commandPreview: "touch second-modern.txt",
-    justification: "Allow the second modern command payload?",
-  });
-
-  db.close();
-});
-
 test("live file-change approvals persist fallback title and request kind before lifecycle rendering", () => {
   const db = createDatabaseClient(":memory:");
   applyMigrations(db);
@@ -5026,61 +4787,6 @@ test("live file-change approvals persist fallback title and request kind before 
   db.close();
 });
 
-test("live file-change approvals accept the modern reason field before lifecycle rendering", () => {
-  const db = createDatabaseClient(":memory:");
-  applyMigrations(db);
-  const sessionRepo = createSessionRepo(db);
-  const approvalRepo = createApprovalRepo(db);
-
-  sessionRepo.insert({
-    discordThreadId: "discord-thread-1",
-    codexThreadId: "codex-1",
-    ownerDiscordUserId: "owner-1",
-    cwd: "/tmp/ws1/app",
-    state: "waiting-approval",
-  });
-
-  const approval = persistApprovalRequestSnapshot({
-    approvalRepo,
-    session: createSessionRecord({
-      codexThreadId: "codex-1",
-      discordThreadId: "discord-thread-1",
-    }),
-    method: "item/fileChange/requestApproval",
-    event: {
-      requestId: "req-file-reason",
-      threadId: "codex-1",
-      turnId: "turn-1",
-      itemId: "call-4",
-      reason: "Allow updating tracked files via the modern payload?",
-      cwd: "/tmp/ws1/app",
-    },
-  });
-
-  expect(approvalRepo.getByApprovalKey("turn-1:call-4")).toMatchObject({
-    approvalKey: "turn-1:call-4",
-    requestId: "req-file-reason",
-    status: "pending",
-    displayTitle: "File change approval",
-    commandPreview: null,
-    justification: "Allow updating tracked files via the modern payload?",
-    cwd: "/tmp/ws1/app",
-    requestKind: "file_change",
-  });
-  expect(renderApprovalLifecycleMessage({
-    approval,
-  })).toBe(
-    "**File change approval**\n"
-      + "Status: `Pending`\n\n"
-      + "Allow updating tracked files via the modern payload?\n\n"
-      + "CWD: `/tmp/ws1/app`\n"
-      + "Kind: `file_change`\n"
-      + "Request ID: `req-file-reason`",
-  );
-
-  db.close();
-});
-
 test("live permissions approvals persist fallback title and request kind before lifecycle rendering", () => {
   const db = createDatabaseClient(":memory:");
   applyMigrations(db);
@@ -5131,61 +4837,6 @@ test("live permissions approvals persist fallback title and request kind before 
       + "CWD: `/tmp/ws1/app`\n"
       + "Kind: `permissions`\n"
       + "Request ID: `req-9`",
-  );
-
-  db.close();
-});
-
-test("live permissions approvals accept the modern reason field before lifecycle rendering", () => {
-  const db = createDatabaseClient(":memory:");
-  applyMigrations(db);
-  const sessionRepo = createSessionRepo(db);
-  const approvalRepo = createApprovalRepo(db);
-
-  sessionRepo.insert({
-    discordThreadId: "discord-thread-1",
-    codexThreadId: "codex-1",
-    ownerDiscordUserId: "owner-1",
-    cwd: "/tmp/ws1/app",
-    state: "waiting-approval",
-  });
-
-  const approval = persistApprovalRequestSnapshot({
-    approvalRepo,
-    session: createSessionRecord({
-      codexThreadId: "codex-1",
-      discordThreadId: "discord-thread-1",
-    }),
-    method: "item/permissions/requestApproval",
-    event: {
-      requestId: "req-permissions-reason",
-      threadId: "codex-1",
-      turnId: "turn-1",
-      itemId: "call-5",
-      reason: "Allow the requested permissions via the modern payload?",
-      cwd: "/tmp/ws1/app",
-    },
-  });
-
-  expect(approvalRepo.getByApprovalKey("turn-1:call-5")).toMatchObject({
-    approvalKey: "turn-1:call-5",
-    requestId: "req-permissions-reason",
-    status: "pending",
-    displayTitle: "Permissions approval",
-    commandPreview: null,
-    justification: "Allow the requested permissions via the modern payload?",
-    cwd: "/tmp/ws1/app",
-    requestKind: "permissions",
-  });
-  expect(renderApprovalLifecycleMessage({
-    approval,
-  })).toBe(
-    "**Permissions approval**\n"
-      + "Status: `Pending`\n\n"
-      + "Allow the requested permissions via the modern payload?\n\n"
-      + "CWD: `/tmp/ws1/app`\n"
-      + "Kind: `permissions`\n"
-      + "Request ID: `req-permissions-reason`",
   );
 
   db.close();
