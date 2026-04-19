@@ -31,6 +31,7 @@ import {
 } from "./codex/supervisor";
 import {
   approvalRequestMethods,
+  getApprovalRequestDecisionPayloads,
   type ApprovalRequestMethod,
 } from "./codex/protocol-types";
 import type {
@@ -60,7 +61,11 @@ import { createCurrentWorkdirRepo } from "./db/repos/current-workdirs";
 import { createSessionRepo, type SessionRecord } from "./db/repos/sessions";
 import { createWorkdirRepo } from "./db/repos/workdirs";
 import { createWorkspaceRepo } from "./db/repos/workspaces";
-import type { ApprovalStatus } from "./domain/approval-service";
+import {
+  createPersistedApprovalDecisions,
+  type ApprovalStatus,
+  type PersistedApprovalDecision,
+} from "./domain/approval-service";
 import { shouldDegradeDiscordToReadOnly } from "./domain/external-modification";
 import {
   canControlSession,
@@ -93,7 +98,6 @@ import type {
 import {
   applyApprovalResolutionSignal,
   renderApprovalRequestIdText,
-  type ApprovalUiButton,
   renderApprovalLifecyclePayload as renderStoredApprovalLifecyclePayload,
   renderApprovalStaleStatusText,
   truncateApprovalText,
@@ -134,6 +138,8 @@ import {
 import { logger } from "./logger";
 
 const approvalButtonPrefix = "approval";
+const approvalComponentRowLimit = 5;
+const approvalButtonLabelCharacterLimit = 80;
 type WorkdirConfig = {
   id: string;
   label: string;
@@ -223,15 +229,10 @@ export const resolveLegacyWorkspaceBootstrap = (
   return parseLegacyWorkspaceBootstrap(env);
 };
 
-type ApprovalAction = "approve" | "decline" | "cancel";
 type DiscordMessageComponents = ActionRowBuilder<ButtonBuilder>[];
 type DiscordChannelMessagePayload = DiscordMessagePayload & {
   components?: DiscordMessageComponents;
   allowedMentions?: MessageMentionOptions;
-};
-type ApprovalButtonMessage = {
-  id?: string;
-  edit(payload: DiscordChannelMessagePayload): Promise<ApprovalButtonMessage>;
 };
 type ApprovalLifecycleMessage = {
   id?: string;
@@ -1182,6 +1183,10 @@ export const renderApprovalLifecycleMessage = ({
     | "justification"
     | "cwd"
     | "requestKind"
+    | "decisionCatalog"
+    | "resolvedProviderDecision"
+    | "resolvedBySurface"
+    | "resolvedElsewhere"
   >;
 }) => {
   return renderStoredApprovalLifecyclePayload({
@@ -1193,38 +1198,111 @@ export const renderApprovalLifecycleMessage = ({
       justification: approval.justification,
       cwd: approval.cwd,
       requestKind: approval.requestKind,
+      decisions: parseStoredApprovalDecisions(approval.decisionCatalog),
+      resolvedProviderDecision: approval.resolvedProviderDecision,
+      resolvedBySurface: approval.resolvedBySurface,
+      resolvedElsewhere: approval.resolvedElsewhere,
     },
   }).content;
 };
 
+const parseStoredApprovalDecisions = (
+  decisionCatalog: string | null,
+): PersistedApprovalDecision[] | null => {
+  if (decisionCatalog === null) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(decisionCatalog);
+
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed.flatMap((entry) => {
+      if (!entry || typeof entry !== "object") {
+        return [];
+      }
+
+      const candidate = entry as Record<string, unknown>;
+
+      if (
+        typeof candidate.key !== "string"
+        || typeof candidate.providerDecision !== "string"
+        || typeof candidate.label !== "string"
+      ) {
+        return [];
+      }
+
+      return [{
+        key: candidate.key,
+        providerDecision: candidate.providerDecision,
+        label: candidate.label,
+        consequence:
+          typeof candidate.consequence === "string"
+          || candidate.consequence === null
+            ? candidate.consequence
+            : null,
+      } satisfies PersistedApprovalDecision];
+    });
+  } catch {
+    return [];
+  }
+};
+
+const approvalButtonStyle = (providerDecision: string) => {
+  if (providerDecision === "decline") {
+    return ButtonStyle.Danger;
+  }
+
+  if (providerDecision === "cancel") {
+    return ButtonStyle.Secondary;
+  }
+
+  return ButtonStyle.Success;
+};
+
+const isSupportedApprovalProviderDecision = (providerDecision: string) => {
+  return providerDecision === "accept"
+    || providerDecision === "acceptForSession"
+    || providerDecision === "acceptWithExecpolicyAmendment"
+    || providerDecision === "applyNetworkPolicyAmendment"
+    || providerDecision === "decline"
+    || providerDecision === "cancel";
+};
+
 const buildApprovalComponents = (
   approvalKey: string,
-  buttons: ApprovalUiButton[] = ["approve", "decline", "cancel"],
+  decisions: PersistedApprovalDecision[] = [],
 ) => {
-  if (buttons.length === 0) {
+  const renderableDecisions = decisions.filter((decision) =>
+    isSupportedApprovalProviderDecision(decision.providerDecision)
+  );
+
+  if (renderableDecisions.length === 0) {
     return [];
   }
 
-  const componentByButton: Record<ApprovalUiButton, ButtonBuilder> = {
-    approve: new ButtonBuilder()
-      .setCustomId(buildApprovalCustomId(approvalKey, "approve"))
-      .setLabel("Approve")
-      .setStyle(ButtonStyle.Success),
-    decline: new ButtonBuilder()
-      .setCustomId(buildApprovalCustomId(approvalKey, "decline"))
-      .setLabel("Decline")
-      .setStyle(ButtonStyle.Danger),
-    cancel: new ButtonBuilder()
-      .setCustomId(buildApprovalCustomId(approvalKey, "cancel"))
-      .setLabel("Cancel")
-      .setStyle(ButtonStyle.Secondary),
-  };
+  const buttons = renderableDecisions.map((decision) =>
+    new ButtonBuilder()
+      .setCustomId(buildApprovalCustomId(approvalKey, decision.key))
+      .setLabel(
+        truncateApprovalText(decision.label, approvalButtonLabelCharacterLimit),
+      )
+      .setStyle(approvalButtonStyle(decision.providerDecision))
+  );
+  const rows: DiscordMessageComponents = [];
 
-  return [
-    new ActionRowBuilder<ButtonBuilder>().addComponents(
-      ...buttons.map((button) => componentByButton[button]),
-    ),
-  ];
+  for (let index = 0; index < buttons.length; index += approvalComponentRowLimit) {
+    rows.push(
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        ...buttons.slice(index, index + approvalComponentRowLimit),
+      ),
+    );
+  }
+
+  return rows;
 };
 
 export const renderApprovalLifecyclePayload = ({
@@ -1242,6 +1320,10 @@ export const renderApprovalLifecyclePayload = ({
     | "justification"
     | "cwd"
     | "requestKind"
+    | "decisionCatalog"
+    | "resolvedProviderDecision"
+    | "resolvedBySurface"
+    | "resolvedElsewhere"
   >;
 }) => {
   const lifecycle = renderStoredApprovalLifecyclePayload({
@@ -1253,6 +1335,10 @@ export const renderApprovalLifecyclePayload = ({
       justification: approval.justification,
       cwd: approval.cwd,
       requestKind: approval.requestKind,
+      decisions: parseStoredApprovalDecisions(approval.decisionCatalog),
+      resolvedProviderDecision: approval.resolvedProviderDecision,
+      resolvedBySurface: approval.resolvedBySurface,
+      resolvedElsewhere: approval.resolvedElsewhere,
     },
   });
 
@@ -1260,7 +1346,7 @@ export const renderApprovalLifecyclePayload = ({
     content: lifecycle.content,
     components: buildApprovalComponents(
       approvalKey ?? approval.approvalKey ?? approval.requestId,
-      lifecycle.buttons,
+      lifecycle.decisions,
     ),
     allowedMentions: approvalAllowedMentions,
   };
@@ -1281,6 +1367,10 @@ export const renderApprovalOwnerDmPayload = ({
     | "justification"
     | "cwd"
     | "requestKind"
+    | "decisionCatalog"
+    | "resolvedProviderDecision"
+    | "resolvedBySurface"
+    | "resolvedElsewhere"
   >;
 }) => {
   return renderApprovalLifecyclePayload({
@@ -1811,8 +1901,18 @@ const isRenamableThreadChannel = (
 const buildApprovalKey = ({
   turnId,
   itemId,
-}: Pick<ApprovalRequestEvent, "turnId" | "itemId">) => {
-  return `${turnId}:${itemId}`;
+  approvalId,
+}: Pick<ApprovalRequestEvent, "turnId" | "itemId"> & {
+  approvalId?: unknown;
+}) => {
+  const normalizedApprovalId =
+    typeof approvalId === "string" && approvalId.length > 0
+      ? approvalId
+      : null;
+
+  return normalizedApprovalId
+    ? `${turnId}:${itemId}:${normalizedApprovalId}`
+    : `${turnId}:${itemId}`;
 };
 
 const approvalRequestKindByMethod: Record<ApprovalRequestMethod, string> = {
@@ -1836,6 +1936,21 @@ const readApprovalEventString = (
   return typeof value === "string" && value.length > 0 ? value : null;
 };
 
+const readApprovalEventStringFromCandidates = (
+  event: ApprovalRequestEvent,
+  ...keys: string[]
+) => {
+  for (const key of keys) {
+    const value = readApprovalEventString(event, key);
+
+    if (value) {
+      return value;
+    }
+  }
+
+  return null;
+};
+
 const extractApprovalSnapshotFromRequest = ({
   method,
   event,
@@ -1849,12 +1964,31 @@ const extractApprovalSnapshotFromRequest = ({
     displayTitle: approvalDisplayTitleByRequestKind[requestKind] ?? "Approval request",
     commandPreview:
       method === "item/commandExecution/requestApproval"
-        ? readApprovalEventString(event, "cmd")
+        ? readApprovalEventStringFromCandidates(event, "command", "cmd")
         : null,
-    justification: readApprovalEventString(event, "justification"),
+    justification: readApprovalEventStringFromCandidates(event, "justification", "reason"),
     cwd: readApprovalEventString(event, "cwd"),
     requestKind,
   };
+};
+
+const extractApprovalDecisionCatalogFromRequest = ({
+  method,
+  event,
+}: {
+  method: ApprovalRequestMethod;
+  event: ApprovalRequestEvent;
+}) => {
+  const decisionPayloads = getApprovalRequestDecisionPayloads(event);
+
+  if (decisionPayloads === null) {
+    return null;
+  }
+
+  return JSON.stringify(createPersistedApprovalDecisions({
+    availableDecisions: decisionPayloads,
+    requestMethod: method,
+  }));
 };
 
 const getRuntimeApprovalRequestAssociations = (
@@ -1966,8 +2100,16 @@ export const persistApprovalRequestSnapshot = ({
   method: ApprovalRequestMethod;
   event: ApprovalRequestEvent;
 }) => {
-  const approvalKey = buildApprovalKey(event);
+  const approvalKey = buildApprovalKey({
+    turnId: event.turnId,
+    itemId: event.itemId,
+    approvalId: event.approvalId,
+  });
   const snapshot = extractApprovalSnapshotFromRequest({
+    method,
+    event,
+  });
+  const decisionCatalog = extractApprovalDecisionCatalogFromRequest({
     method,
     event,
   });
@@ -1978,6 +2120,7 @@ export const persistApprovalRequestSnapshot = ({
     codexThreadId: session.codexThreadId,
     discordThreadId: session.discordThreadId,
     status: "pending",
+    decisionCatalog,
     ...snapshot,
   });
 
@@ -1990,48 +2133,72 @@ export const persistApprovalRequestSnapshot = ({
   return approval;
 };
 
-const buildApprovalCustomId = (approvalKey: string, action: ApprovalAction) => {
-  return `${approvalButtonPrefix}|${encodeURIComponent(approvalKey)}|${action}`;
+const buildApprovalCustomId = (approvalKey: string, decisionKey: string) => {
+  return `${approvalButtonPrefix}|${encodeURIComponent(approvalKey)}|${encodeURIComponent(decisionKey)}`;
 };
 
 const parseApprovalCustomId = (customId: string) => {
-  const [prefix, encodedApprovalKey, action] = customId.split("|");
+  const [prefix, encodedApprovalKey, encodedDecisionKey] = customId.split("|");
 
   if (
     prefix !== approvalButtonPrefix ||
     !encodedApprovalKey ||
-    (action !== "approve" && action !== "decline" && action !== "cancel")
+    !encodedDecisionKey
   ) {
     return null;
   }
 
+  const decodedDecisionKey = decodeURIComponent(encodedDecisionKey);
+
   return {
     approvalKey: decodeURIComponent(encodedApprovalKey),
-    action,
+    decisionKey: decodedDecisionKey === "approve" ? "accept" : decodedDecisionKey,
   } as const;
 };
 
-const approvalDecision = (action: ApprovalAction): {
-  providerDecision: "accept" | "decline" | "cancel";
-  status: ApprovalStatus;
-} => {
-  if (action === "approve") {
-    return {
-      providerDecision: "accept",
-      status: "approved",
-    };
+const approvalDecisionStatus = (
+  providerDecision: string,
+): ApprovalStatus => {
+  if (providerDecision === "decline") {
+    return "declined";
   }
 
-  if (action === "decline") {
-    return {
-      providerDecision: "decline",
-      status: "declined",
-    };
+  if (providerDecision === "cancel") {
+    return "canceled";
+  }
+
+  return "approved";
+};
+
+const resolveApprovalInteractionDecision = ({
+  approval,
+  decisionKey,
+}: {
+  approval: Pick<ApprovalRecord, "decisionCatalog">;
+  decisionKey: string;
+}): {
+  providerDecision: string;
+  status: ApprovalStatus;
+} | null => {
+  const persistedDecisions = parseStoredApprovalDecisions(approval.decisionCatalog);
+  const persistedDecision = persistedDecisions?.find(
+    (decision) =>
+      decision.key === decisionKey
+      && isSupportedApprovalProviderDecision(decision.providerDecision),
+  );
+  const providerDecision =
+    persistedDecision?.providerDecision
+    ?? (isSupportedApprovalProviderDecision(decisionKey)
+      ? decisionKey
+      : null);
+
+  if (!providerDecision) {
+    return null;
   }
 
   return {
-    providerDecision: "cancel",
-    status: "canceled",
+    providerDecision,
+    status: approvalDecisionStatus(providerDecision),
   };
 };
 
@@ -2060,6 +2227,46 @@ export const shouldProjectManagedSessionDiscordSurface = (
   session: Pick<SessionRecord, "lifecycleState">,
 ) => {
   return session.lifecycleState === "active";
+};
+
+export const restoreManagedSessionSubscriptions = async ({
+  sessions,
+  resumeThread,
+  onThreadMissing,
+  onWarning,
+}: {
+  sessions: Array<Pick<SessionRecord, "codexThreadId" | "lifecycleState">>;
+  resumeThread: (params: { threadId: string }) => Promise<unknown>;
+  onThreadMissing?: (
+    session: Pick<SessionRecord, "codexThreadId" | "lifecycleState">,
+  ) => Promise<void> | void;
+  onWarning?: (
+    session: Pick<SessionRecord, "codexThreadId" | "lifecycleState">,
+    error: unknown,
+  ) => Promise<void> | void;
+}) => {
+  for (const session of sessions) {
+    if (!shouldProjectManagedSessionDiscordSurface(session)) {
+      continue;
+    }
+
+    try {
+      await resumeThread({
+        threadId: session.codexThreadId,
+      });
+    } catch (error) {
+      const disposition = getSnapshotReconciliationFailureDisposition(error);
+
+      if (disposition === "degrade-thread-missing") {
+        await onThreadMissing?.(session);
+        continue;
+      }
+
+      if (disposition === "warn") {
+        await onWarning?.(session, error);
+      }
+    }
+  }
 };
 
 export const handleManagedThreadDeletion = ({
@@ -2357,7 +2564,6 @@ export const reconcileResumedApprovalState = async ({
   latestApproval,
   upsertApprovalMessage,
   rememberPendingApproval,
-  ensureOwnerControls,
 }: {
   runtimeState: SessionRuntimeState;
   pendingApprovals: Array<Pick<
@@ -2366,10 +2572,14 @@ export const reconcileResumedApprovalState = async ({
     | "requestId"
     | "status"
     | "displayTitle"
-    | "commandPreview"
-    | "justification"
-    | "cwd"
-    | "requestKind"
+      | "commandPreview"
+      | "justification"
+      | "cwd"
+      | "requestKind"
+      | "decisionCatalog"
+      | "resolvedProviderDecision"
+      | "resolvedBySurface"
+      | "resolvedElsewhere"
   >>;
   latestApproval?: Pick<
     ApprovalRecord,
@@ -2381,6 +2591,10 @@ export const reconcileResumedApprovalState = async ({
     | "justification"
     | "cwd"
     | "requestKind"
+    | "decisionCatalog"
+    | "resolvedProviderDecision"
+    | "resolvedBySurface"
+    | "resolvedElsewhere"
   > | null;
   upsertApprovalMessage: (
     approval: Pick<
@@ -2393,6 +2607,10 @@ export const reconcileResumedApprovalState = async ({
       | "justification"
       | "cwd"
       | "requestKind"
+      | "decisionCatalog"
+      | "resolvedProviderDecision"
+      | "resolvedBySurface"
+      | "resolvedElsewhere"
     >,
   ) => Promise<void> | void;
   rememberPendingApproval?: (
@@ -2406,19 +2624,10 @@ export const reconcileResumedApprovalState = async ({
       | "justification"
       | "cwd"
       | "requestKind"
-    >,
-  ) => Promise<void> | void;
-  ensureOwnerControls?: (
-    approval: Pick<
-      ApprovalRecord,
-      | "approvalKey"
-      | "requestId"
-      | "status"
-      | "displayTitle"
-      | "commandPreview"
-      | "justification"
-      | "cwd"
-      | "requestKind"
+      | "decisionCatalog"
+      | "resolvedProviderDecision"
+      | "resolvedBySurface"
+      | "resolvedElsewhere"
     >,
   ) => Promise<void> | void;
 }) => {
@@ -2444,7 +2653,6 @@ export const reconcileResumedApprovalState = async ({
 
   await rememberPendingApproval?.(pendingApproval);
   await upsertApprovalMessage(pendingApproval);
-  await ensureOwnerControls?.(pendingApproval);
   return pendingApproval.approvalKey;
 };
 
@@ -2455,7 +2663,6 @@ export const reconcileApprovalResolutionSurface = async ({
   currentThreadMessagePromise,
   recoverThreadMessage,
   sendThreadMessage,
-  dmMessage,
 }: {
   approval: Pick<
     ApprovalRecord,
@@ -2467,25 +2674,17 @@ export const reconcileApprovalResolutionSurface = async ({
     | "justification"
     | "cwd"
     | "requestKind"
+    | "decisionCatalog"
+    | "resolvedProviderDecision"
+    | "resolvedBySurface"
+    | "resolvedElsewhere"
   >;
   session?: Pick<SessionRecord, "lifecycleState"> | null;
   currentThreadMessage?: ApprovalLifecycleMessage;
   currentThreadMessagePromise?: Promise<ApprovalLifecycleMessage | undefined>;
   recoverThreadMessage: () => Promise<ApprovalLifecycleMessage | undefined>;
   sendThreadMessage: (payload: DiscordChannelMessagePayload) => Promise<ApprovalLifecycleMessage | undefined>;
-  dmMessage?: ApprovalButtonMessage;
 }) => {
-  if (dmMessage) {
-    const dmPayload = renderApprovalOwnerDmPayload({
-      approvalKey: approval.approvalKey,
-      approval,
-    });
-    await dmMessage.edit({
-      ...dmPayload,
-      components: dmPayload.components ?? [],
-    });
-  }
-
   return upsertApprovalLifecycleMessage({
     currentMessage: currentThreadMessage,
     currentMessagePromise: currentThreadMessagePromise,
@@ -4186,37 +4385,6 @@ const shouldAllowLegacyApprovalRequestIdFallback = ({
     === approval.approvalKey;
 };
 
-const maybeSendApprovalDm = async ({
-  client,
-  approval,
-  ownerId,
-}: {
-  client: Client;
-  approval: Pick<
-    ApprovalRecord,
-    | "approvalKey"
-    | "requestId"
-    | "status"
-    | "displayTitle"
-    | "commandPreview"
-    | "justification"
-    | "cwd"
-    | "requestKind"
-  >;
-  ownerId: string;
-}) => {
-  if (approval.status !== "pending") {
-    return undefined;
-  }
-
-  const owner = await client.users.fetch(ownerId);
-
-  return owner.send(renderApprovalOwnerDmPayload({
-    approvalKey: approval.approvalKey,
-    approval,
-  }));
-};
-
 const renderStaleApprovalInteractionText = ({
   approval,
 }: {
@@ -4229,34 +4397,26 @@ const renderStaleApprovalInteractionText = ({
     | "justification"
     | "cwd"
     | "requestKind"
+    | "resolvedBySurface"
+    | "resolvedElsewhere"
   >;
 }) => {
-  const commandPreview = approval.commandPreview?.trim() || null;
-  const displayTitle = approval.displayTitle?.trim() || null;
-  const context = commandPreview ?? displayTitle;
-  let message: string;
-
-  if (approval.status === "resolved") {
-    message = context
-      ? `That approval already finished or was resolved elsewhere: ${context}`
-      : "That approval already finished or was resolved elsewhere.";
-  } else if (context) {
-    message = `That approval was already ${approval.status}: ${context}`;
-  } else {
-    message = renderApprovalStaleStatusText({
+  return truncateApprovalText(
+    renderApprovalStaleStatusText({
       approval: {
         requestId: approval.requestId,
         status: approval.status,
-        displayTitle: "That approval",
-        commandPreview: null,
+        displayTitle: approval.displayTitle ?? "That approval",
+        commandPreview: approval.commandPreview,
         justification: approval.justification,
         cwd: approval.cwd,
         requestKind: approval.requestKind,
+        resolvedBySurface: approval.resolvedBySurface,
+        resolvedElsewhere: approval.resolvedElsewhere,
       },
-    }).replace(" is already ", " was already ");
-  }
-
-  return truncateApprovalText(message, 2000);
+    }),
+    2000,
+  );
 };
 
 export const handleApprovalInteraction = async ({
@@ -4315,7 +4475,20 @@ export const handleApprovalInteraction = async ({
     return true;
   }
 
-  const nextDecision = approvalDecision(parsed.action);
+  const nextDecision = resolveApprovalInteractionDecision({
+    approval: approvalRecord,
+    decisionKey: parsed.decisionKey,
+  });
+
+  if (!nextDecision) {
+    await interaction.reply({
+      content: "That approval no longer offers that decision.",
+      ephemeral: true,
+      allowedMentions: approvalAllowedMentions,
+    });
+    return true;
+  }
+
   const approvalKey = parsed.approvalKey;
 
   if (inFlightApprovalKeys?.has(approvalKey)) {
@@ -4330,9 +4503,18 @@ export const handleApprovalInteraction = async ({
   inFlightApprovalKeys?.add(approvalKey);
 
   try {
+    const providerRequestId = approvalRecord.requestId;
+
     await interaction.deferUpdate();
+    logger.debug("Resolving approval interaction", {
+      approvalKey: approvalRecord.approvalKey,
+      storedRequestId: approvalRecord.requestId,
+      providerRequestId,
+      providerDecision: nextDecision.providerDecision,
+      discordUserId: interaction.user.id,
+    });
     await client.replyToServerRequest({
-      requestId: approvalRecord.requestId,
+      requestId: providerRequestId,
       decision: nextDecision.providerDecision,
     });
     approvalRepo.insert({
@@ -4341,6 +4523,9 @@ export const handleApprovalInteraction = async ({
       codexThreadId: approvalRecord.codexThreadId,
       discordThreadId: approvalRecord.discordThreadId,
       status: nextDecision.status,
+      resolvedProviderDecision: nextDecision.providerDecision,
+      resolvedBySurface: "discord_thread",
+      resolvedElsewhere: false,
       resolvedByDiscordUserId: interaction.user.id,
       resolution: nextDecision.status,
     });
@@ -4409,7 +4594,6 @@ const startCodeHelmRuntime = async (
   const approvalRepo = createApprovalRepo(db);
   const currentWorkdirRepo = createCurrentWorkdirRepo(db);
   const codexClient = new JsonRpcClient(config.codex.appServerUrl);
-  const approvalDmMessages = new Map<string, ApprovalButtonMessage>();
   const approvalThreadMessages = new Map<string, ApprovalLifecycleState>();
   const runtimeApprovalKeysByRequestId = new Map<string, Set<string>>();
   const approvalResolutionsInFlight = new Set<string>();
@@ -4812,29 +4996,6 @@ const startCodeHelmRuntime = async (
               } catch {}
 
               throw error;
-            }
-          },
-          ensureOwnerControls: async (approval) => {
-            const approvalKey = approval.approvalKey;
-            if (approvalDmMessages.has(approvalKey)) {
-              return;
-            }
-
-            try {
-              const dmMessage = await maybeSendApprovalDm({
-                client: bot.client,
-                approval,
-                ownerId: session.ownerDiscordUserId,
-              });
-
-              if (dmMessage) {
-                approvalDmMessages.set(approvalKey, dmMessage);
-              }
-            } catch (error) {
-              logger.warn(
-                `Could not DM approval controls to ${session.ownerDiscordUserId}; local codex resume --remote remains the fallback path.`,
-                error,
-              );
             }
           },
         });
@@ -5403,7 +5564,6 @@ const startCodeHelmRuntime = async (
       inFlightApprovalKeys: approvalResolutionsInFlight,
       afterPersistTerminalDecision: async (storedApproval) => {
         const session = sessionRepo.getByDiscordThreadId(storedApproval.discordThreadId);
-        const dmMessage = approvalDmMessages.get(storedApproval.approvalKey);
         const lifecycleState = approvalThreadMessages.get(storedApproval.approvalKey) ?? {};
         const allowRequestIdFallback = shouldAllowLegacyApprovalRequestIdFallback({
           approvalRepo,
@@ -5419,19 +5579,18 @@ const startCodeHelmRuntime = async (
               bot.client,
               storedApproval.discordThreadId,
               {
-                approvalKey: storedApproval.approvalKey,
-                requestId: storedApproval.requestId,
-                threadMessageId: storedApproval.threadMessageId,
-                allowRequestIdFallback,
-              },
-            ),
-          sendThreadMessage: async (payload) =>
-            sendTextToChannel(
-              bot.client,
-              storedApproval.discordThreadId,
-              payload,
-            ),
-          dmMessage,
+              approvalKey: storedApproval.approvalKey,
+              requestId: storedApproval.requestId,
+              threadMessageId: storedApproval.threadMessageId,
+              allowRequestIdFallback,
+            },
+          ),
+        sendThreadMessage: async (payload) =>
+          sendTextToChannel(
+            bot.client,
+            storedApproval.discordThreadId,
+            payload,
+          ),
         });
         approvalThreadMessages.set(storedApproval.approvalKey, lifecycleState);
         const threadMessage = await finalizeApprovalLifecycleMessageState({
@@ -5446,10 +5605,6 @@ const startCodeHelmRuntime = async (
             approvalKey: storedApproval.approvalKey,
             message: threadMessage,
           });
-        }
-
-        if (dmMessage) {
-          approvalDmMessages.delete(storedApproval.approvalKey);
         }
       },
     }).catch((error) => {
@@ -5777,9 +5932,18 @@ const startCodeHelmRuntime = async (
     event: ApprovalRequestEvent,
   ) => {
     void (async () => {
+      const approvalId = readApprovalEventString(event, "approvalId");
       const session = sessionRepo.getByCodexThreadId(event.threadId);
 
       if (!session) {
+        logger.debug("Ignoring approval request for unknown session", {
+          method,
+          requestId: String(event.requestId),
+          threadId: event.threadId,
+          turnId: event.turnId,
+          itemId: event.itemId,
+          approvalId,
+        });
         return;
       }
 
@@ -5788,6 +5952,22 @@ const startCodeHelmRuntime = async (
         session,
         method,
         event,
+      });
+
+      logger.debug("Received approval request event", {
+        method,
+        requestId: approval.requestId,
+        approvalKey: approval.approvalKey,
+        threadId: event.threadId,
+        turnId: event.turnId,
+        itemId: event.itemId,
+        approvalId,
+        sessionState: session.state,
+        displayTitle: approval.displayTitle,
+        commandPreview: approval.commandPreview,
+        justification: approval.justification,
+        cwd: approval.cwd,
+        requestKind: approval.requestKind,
       });
 
       if (!shouldHandlePersistedApprovalRequestAtRuntime(approval)) {
@@ -5803,6 +5983,14 @@ const startCodeHelmRuntime = async (
         updateSessionStateIfWritable(session, "waiting-approval");
       }
       if (!shouldProjectManagedSessionDiscordSurface(session)) {
+        logger.debug("Skipping approval Discord projection for non-projectable session", {
+          method,
+          requestId: approval.requestId,
+          approvalKey,
+          discordThreadId: session.discordThreadId,
+          sessionState: session.state,
+          lifecycleState: session.lifecycleState,
+        });
         return;
       }
 
@@ -5872,23 +6060,6 @@ const startCodeHelmRuntime = async (
 
         throw error;
       }
-
-      try {
-        const dmMessage = await maybeSendApprovalDm({
-          client: bot.client,
-          approval,
-          ownerId: session.ownerDiscordUserId,
-        });
-
-        if (dmMessage) {
-          approvalDmMessages.set(approvalKey, dmMessage);
-        }
-      } catch (error) {
-        logger.warn(
-          `Could not DM approval controls to ${session.ownerDiscordUserId}; local codex resume --remote remains the fallback path.`,
-          error,
-        );
-      }
     })().catch((error) => {
       logger.error("Failed to process approval request event", error);
     });
@@ -5922,6 +6093,9 @@ const startCodeHelmRuntime = async (
           justification: approvalRecord.justification,
           cwd: approvalRecord.cwd,
           requestKind: approvalRecord.requestKind,
+          resolvedProviderDecision: approvalRecord.resolvedProviderDecision,
+          resolvedBySurface: approvalRecord.resolvedBySurface,
+          resolvedElsewhere: approvalRecord.resolvedElsewhere,
         },
         {
           type: "serverRequest/resolved",
@@ -5940,6 +6114,16 @@ const startCodeHelmRuntime = async (
         justification: approvalRecord.justification,
         cwd: approvalRecord.cwd,
         requestKind: approvalRecord.requestKind,
+        decisionCatalog: approvalRecord.decisionCatalog,
+        resolvedProviderDecision: approvalRecord.resolvedProviderDecision,
+        resolvedBySurface:
+          outcome.approval.status === "resolved"
+            ? "codex_remote"
+            : approvalRecord.resolvedBySurface,
+        resolvedElsewhere:
+          outcome.approval.status === "resolved"
+            ? true
+            : approvalRecord.resolvedElsewhere,
       });
       forgetRuntimeApprovalRequest(runtimeApprovalKeysByRequestId, approvalRecord);
       const storedApproval = approvalRepo.getByApprovalKey(approvalRecord.approvalKey);
@@ -5949,10 +6133,6 @@ const startCodeHelmRuntime = async (
       }
 
       const session = sessionRepo.getByDiscordThreadId(storedApproval.discordThreadId);
-
-      const dmMessage = outcome.closeActiveUi
-        ? approvalDmMessages.get(storedApproval.approvalKey)
-        : undefined;
 
       const lifecycleState = approvalThreadMessages.get(storedApproval.approvalKey) ?? {};
       const allowRequestIdFallback = shouldAllowLegacyApprovalRequestIdFallback({
@@ -5981,7 +6161,6 @@ const startCodeHelmRuntime = async (
             storedApproval.discordThreadId,
             payload,
           ),
-        dmMessage,
       });
       approvalThreadMessages.set(storedApproval.approvalKey, lifecycleState);
       const threadMessage = await finalizeApprovalLifecycleMessageState({
@@ -5997,10 +6176,6 @@ const startCodeHelmRuntime = async (
           message: threadMessage,
         });
       }
-
-      if (dmMessage) {
-        approvalDmMessages.delete(storedApproval.approvalKey);
-      }
     })().catch((error) => {
       logger.error("Failed to process serverRequest/resolved event", error);
     });
@@ -6012,6 +6187,33 @@ const startCodeHelmRuntime = async (
     buildControlChannelCommands(),
   );
   await bot.start();
+
+  await restoreManagedSessionSubscriptions({
+    sessions: sessionRepo.listAll(),
+    resumeThread: async ({ threadId }) =>
+      codexClient.resumeThread({
+        threadId,
+      }),
+    onThreadMissing: async (session) => {
+      const refreshedSession = sessionRepo.getByCodexThreadId(session.codexThreadId);
+
+      if (!refreshedSession) {
+        return;
+      }
+
+      await degradeSessionToReadOnly({
+        discord: bot.client,
+        session: refreshedSession,
+        reason: "thread_missing",
+      });
+    },
+    onWarning: async (session, error) => {
+      logger.warn(
+        `Failed to restore thread event subscription for managed session ${session.codexThreadId}`,
+        error,
+      );
+    },
+  });
 
   for (const session of sessionRepo.listAll()) {
     if (!shouldProjectManagedSessionDiscordSurface(session)) {

@@ -54,7 +54,6 @@ import {
   persistApprovalRequestSnapshot,
   renderApprovalLifecycleMessage,
   renderApprovalLifecyclePayload,
-  renderApprovalOwnerDmPayload,
   detectThreadLanguageFromTexts,
   renderApprovalDeliveryFailureText,
   resumeManagedSession,
@@ -2843,23 +2842,13 @@ test("approval reconciliation rebuilds waiting-approval surfaces from stored app
       calls.push(`remember:${approval.approvalKey}:${approval.requestId}`);
     },
     ensureOwnerControls: async (approval: ApprovalRecord) => {
-      calls.push(`dm:${approval.approvalKey}:${renderApprovalOwnerDmPayload({
-        approvalKey: approval.approvalKey,
-        approval,
-      }).content}`);
+      calls.push(`unexpected-owner-controls:${approval.approvalKey}`);
     },
   } as never);
 
   expect(calls).toEqual([
     "remember:turn-2:item-1:req-2",
     `message:turn-2:item-1:${renderApprovalLifecycleMessage({
-      approval: createApprovalRecord({
-        approvalKey: "turn-2:item-1",
-        requestId: "req-2",
-        commandPreview: "touch z.txt",
-      }),
-    })}`,
-    `dm:turn-2:item-1:${renderApprovalLifecycleMessage({
       approval: createApprovalRecord({
         approvalKey: "turn-2:item-1",
         requestId: "req-2",
@@ -2922,9 +2911,6 @@ test("approval reconciliation tolerates a locally answered approval that is stil
     },
     rememberPendingApproval: async (approval) => {
       calls.push(`remember:${approval.approvalKey}:${approval.requestId}:${approval.status}`);
-    },
-    ensureOwnerControls: async (approval) => {
-      calls.push(`dm:${approval.approvalKey}:${approval.requestId}:${approval.status}`);
     },
   });
 
@@ -3510,7 +3496,7 @@ test("bootstrap thread title uses the first thread message from snapshot, not a 
   expect(renames).toEqual(["first thread title"]);
 });
 
-test("approval resolution updates DM and existing lifecycle message even while the thread is archived", async () => {
+test("approval resolution updates the existing lifecycle message in place even while the thread is archived", async () => {
   const calls: string[] = [];
   const pendingApproval = createApprovalRecord();
   const resolvedApproval = createApprovalRecord({
@@ -3529,12 +3515,6 @@ test("approval resolution updates DM and existing lifecycle message even while t
       return lifecycleMessage;
     },
   };
-  const dmMessage = {
-    async edit(payload: { content: string; components: [] }) {
-      calls.push(`dm:${payload.content}:${payload.components.length}`);
-      return dmMessage;
-    },
-  };
 
   await reconcileApprovalResolutionSurface({
     approval: resolvedApproval,
@@ -3548,15 +3528,13 @@ test("approval resolution updates DM and existing lifecycle message even while t
       calls.push(`send:${payload.content}:${payload.components?.length ?? 0}`);
       return lifecycleMessage;
     },
-    dmMessage,
   });
 
   expect(calls).toEqual([
-    `dm:${resolvedContent}:0`,
     `thread:${resolvedContent}:0`,
   ]);
-  expect(resolvedContent).toContain("```sh\ntouch c.txt\n```");
-  expect(resolvedContent).toContain("要允许我在项目根目录创建 c.txt 吗？");
+  expect(resolvedContent.startsWith("Resolved: touch c.txt")).toBe(true);
+  expect(resolvedContent).toContain("Request ID: `req-7`");
 });
 
 test("managed thread deletion detaches the Discord container without touching unknown threads", () => {
@@ -3596,10 +3574,11 @@ test("approval interaction replies to Codex before persisting a terminal local d
   const calls: string[] = [];
   const approvalKey = "turn-1:item-1";
   let status: ApprovalRecord["status"] = "pending";
+  let insertedApproval: Record<string, unknown> | undefined;
 
   const handled = await handleApprovalInteraction({
     interaction: {
-      customId: "approval|turn-1%3Aitem-1|approve",
+      customId: "approval|turn-1%3Aitem-1|acceptForSession",
       user: { id: "owner-1" },
       deferUpdate: async () => {
         calls.push("defer");
@@ -3609,8 +3588,8 @@ test("approval interaction replies to Codex before persisting a terminal local d
       },
     } as never,
     client: {
-      replyToServerRequest: async () => {
-        calls.push("rpc");
+      replyToServerRequest: async (payload: { decision: string }) => {
+        calls.push(`rpc:${payload.decision}`);
       },
     } as never,
     sessionRepo: {
@@ -3627,8 +3606,16 @@ test("approval interaction replies to Codex before persisting a terminal local d
         codexThreadId: "codex-thread-1",
         discordThreadId: "discord-thread-1",
         status,
+        decisionCatalog: JSON.stringify([
+          {
+            key: "acceptForSession",
+            providerDecision: "acceptForSession",
+            label: "Yes, and don't ask again for this command in this session",
+          },
+        ]),
       }),
-      insert: () => {
+      insert: (approval: Record<string, unknown>) => {
+        insertedApproval = approval;
         status = "approved";
         calls.push("insert");
       },
@@ -3641,9 +3628,134 @@ test("approval interaction replies to Codex before persisting a terminal local d
   expect(handled).toBe(true);
   expect(calls).toEqual([
     "defer",
-    "rpc",
+    "rpc:acceptForSession",
     "insert",
     "surface:turn-1:item-1:approved",
+  ]);
+  expect(insertedApproval).toMatchObject({
+    status: "approved",
+    resolvedProviderDecision: "acceptForSession",
+    resolvedBySurface: "discord_thread",
+    resolvedElsewhere: false,
+    resolution: "approved",
+  });
+});
+
+test("approval interaction preserves numeric-looking string request ids", async () => {
+  const rpcPayloads: Array<{ requestId: string | number; decision: string }> = [];
+
+  const handled = await handleApprovalInteraction({
+    interaction: {
+      customId: "approval|turn-1%3Aitem-1|accept",
+      user: { id: "owner-1" },
+      deferUpdate: async () => {},
+      reply: async () => {},
+    } as never,
+    client: {
+      replyToServerRequest: async (payload: { requestId: string | number; decision: string }) => {
+        rpcPayloads.push(payload);
+      },
+    } as never,
+    sessionRepo: {
+      getByDiscordThreadId: () =>
+        createSessionRecord({
+          discordThreadId: "discord-thread-1",
+          ownerDiscordUserId: "owner-1",
+        }),
+    } as never,
+    approvalRepo: {
+      getByApprovalKey: () => ({
+        approvalKey: "turn-1:item-1",
+        requestId: "01",
+        codexThreadId: "codex-thread-1",
+        discordThreadId: "discord-thread-1",
+        status: "pending",
+        decisionCatalog: JSON.stringify([
+          {
+            key: "accept",
+            providerDecision: "accept",
+            label: "Yes, proceed",
+          },
+        ]),
+      }),
+      insert: () => {},
+    } as never,
+  } as never);
+
+  expect(handled).toBe(true);
+  expect(rpcPayloads).toEqual([
+    {
+      requestId: "01",
+      decision: "accept",
+    },
+  ]);
+});
+
+test("approval interaction rejects unknown persisted provider decisions", async () => {
+  const calls: string[] = [];
+  const replies: Array<{
+    allowedMentions?: { parse: string[] };
+    content: string;
+    ephemeral: boolean;
+  }> = [];
+
+  const handled = await handleApprovalInteraction({
+    interaction: {
+      customId: "approval|turn-1%3Aitem-1|futureDecision",
+      user: { id: "owner-1" },
+      deferUpdate: async () => {
+        calls.push("defer");
+      },
+      reply: async (payload: {
+        allowedMentions?: { parse: string[] };
+        content: string;
+        ephemeral: boolean;
+      }) => {
+        calls.push("reply");
+        replies.push(payload);
+      },
+    } as never,
+    client: {
+      replyToServerRequest: async () => {
+        calls.push("rpc");
+      },
+    } as never,
+    sessionRepo: {
+      getByDiscordThreadId: () =>
+        createSessionRecord({
+          discordThreadId: "discord-thread-1",
+          ownerDiscordUserId: "owner-1",
+        }),
+    } as never,
+    approvalRepo: {
+      getByApprovalKey: () => ({
+        approvalKey: "turn-1:item-1",
+        requestId: "req-1",
+        codexThreadId: "codex-thread-1",
+        discordThreadId: "discord-thread-1",
+        status: "pending",
+        decisionCatalog: JSON.stringify([
+          {
+            key: "futureDecision",
+            providerDecision: "futureDecision",
+            label: "Let the future happen",
+          },
+        ]),
+      }),
+      insert: () => {
+        calls.push("insert");
+      },
+    } as never,
+  } as never);
+
+  expect(handled).toBe(true);
+  expect(calls).toEqual(["reply"]);
+  expect(replies).toEqual([
+    {
+      allowedMentions: { parse: [] },
+      content: "That approval no longer offers that decision.",
+      ephemeral: true,
+    },
   ]);
 });
 
@@ -3653,7 +3765,7 @@ test("approval interaction still resolves pending approvals for degraded session
 
   const handled = await handleApprovalInteraction({
     interaction: {
-      customId: "approval|turn-1%3Aitem-1|approve",
+      customId: "approval|turn-1%3Aitem-1|accept",
       user: { id: "owner-1" },
       deferUpdate: async () => {
         calls.push("defer");
@@ -3682,6 +3794,13 @@ test("approval interaction still resolves pending approvals for degraded session
         codexThreadId: "codex-thread-1",
         discordThreadId: "discord-thread-1",
         status: "pending",
+        decisionCatalog: JSON.stringify([
+          {
+            key: "accept",
+            providerDecision: "accept",
+            label: "Yes, proceed",
+          },
+        ]),
       }),
       insert: () => {
         calls.push("insert");
@@ -3705,7 +3824,7 @@ test("approval interaction does not persist a terminal local decision when the C
   await expect(
     handleApprovalInteraction({
       interaction: {
-        customId: "approval|turn-1%3Aitem-1|approve",
+        customId: "approval|turn-1%3Aitem-1|accept",
         user: { id: "owner-1" },
         deferUpdate: async () => {
           calls.push("defer");
@@ -3734,6 +3853,13 @@ test("approval interaction does not persist a terminal local decision when the C
           codexThreadId: "codex-thread-1",
           discordThreadId: "discord-thread-1",
           status: "pending",
+          decisionCatalog: JSON.stringify([
+            {
+              key: "accept",
+              providerDecision: "accept",
+              label: "Yes, proceed",
+            },
+          ]),
         }),
         insert: () => {
           calls.push("insert");
@@ -3764,7 +3890,7 @@ const expectStaleApprovalInteractionReply = async ({
 
   const handled = await handleApprovalInteraction({
     interaction: {
-      customId: `approval|${encodeURIComponent(approval.approvalKey ?? "turn-1:item-1")}|approve`,
+      customId: `approval|${encodeURIComponent(approval.approvalKey ?? "turn-1:item-1")}|accept`,
       user: { id: "owner-1" },
       deferUpdate: async () => {
         calls.push("defer");
@@ -3816,7 +3942,7 @@ test("approval interaction reports approved stale approvals with the saved comma
       status: "approved",
       commandPreview: "touch c.txt",
     },
-    expectedContent: "That approval was already approved: touch c.txt",
+    expectedContent: "This approval was already approved: touch c.txt",
   });
 });
 
@@ -3827,7 +3953,8 @@ test("approval interaction reports declined stale approvals with the saved comma
       status: "declined",
       commandPreview: "touch c.txt",
     },
-    expectedContent: "That approval was already declined: touch c.txt",
+    expectedContent:
+      "This approval was already declined and Codex continued without it: touch c.txt",
   });
 });
 
@@ -3839,7 +3966,8 @@ test("approval interaction falls back softly when a canceled approval has no pre
       commandPreview: null,
       displayTitle: null,
     },
-    expectedContent: "That approval was already canceled.",
+    expectedContent:
+      "This approval was already canceled. The turn was interrupted: That approval",
   });
 });
 
@@ -3849,9 +3977,10 @@ test("approval interaction explains when an approval was already resolved elsewh
       approvalKey: "turn-1:item-resolved",
       status: "resolved",
       commandPreview: "touch c.txt",
+      resolvedElsewhere: true,
+      resolvedBySurface: "codex_remote",
     },
-    expectedContent:
-      "That approval already finished or was resolved elsewhere: touch c.txt",
+    expectedContent: "This approval was already resolved in codex-remote: touch c.txt",
   });
 });
 
@@ -3861,7 +3990,7 @@ test("approval interaction bounds stale replies to Discord-safe lengths", async 
 
   const handled = await handleApprovalInteraction({
     interaction: {
-      customId: "approval|turn-1%3Aitem-approved|approve",
+      customId: "approval|turn-1%3Aitem-approved|accept",
       user: { id: "owner-1" },
       deferUpdate: async () => {
         throw new Error("stale approval should reply immediately");
@@ -3897,7 +4026,7 @@ test("approval interaction bounds stale replies to Discord-safe lengths", async 
   expect(replies[0]?.ephemeral).toBe(true);
   expect(replies[0]?.content.length).toBeLessThanOrEqual(2000);
   expect(replies[0]?.content).toStartWith(
-    "That approval was already approved: bun run deploy",
+    "This approval was already approved: bun run deploy",
   );
   expect(replies[0]?.content).toContain("…");
 });
@@ -3912,7 +4041,7 @@ test("approval interaction rejects concurrent resolution attempts for the same r
   const approvalKey = "turn-1:item-1";
 
   const firstInteraction = {
-    customId: "approval|turn-1%3Aitem-1|approve",
+    customId: "approval|turn-1%3Aitem-1|accept",
     user: { id: "owner-1" },
     deferUpdate: async () => {
       calls.push("defer:first");
@@ -3954,6 +4083,18 @@ test("approval interaction rejects concurrent resolution attempts for the same r
         codexThreadId: "codex-thread-1",
         discordThreadId: "discord-thread-1",
         status: "pending",
+        decisionCatalog: JSON.stringify([
+          {
+            key: "accept",
+            providerDecision: "accept",
+            label: "Yes, proceed",
+          },
+          {
+            key: "decline",
+            providerDecision: "decline",
+            label: "No, continue without running it",
+          },
+        ]),
       }),
       insert: () => {
         calls.push("insert:first");
@@ -3985,6 +4126,18 @@ test("approval interaction rejects concurrent resolution attempts for the same r
         codexThreadId: "codex-thread-1",
         discordThreadId: "discord-thread-1",
         status: "pending",
+        decisionCatalog: JSON.stringify([
+          {
+            key: "accept",
+            providerDecision: "accept",
+            label: "Yes, proceed",
+          },
+          {
+            key: "decline",
+            providerDecision: "decline",
+            label: "No, continue without running it",
+          },
+        ]),
       }),
       insert: () => {
         calls.push("insert:second");
@@ -4702,6 +4855,7 @@ test("live command approvals persist snapshot data before lifecycle rendering", 
       cmd: "touch c.txt",
       justification: "要允许我在项目根目录创建 c.txt 吗？",
       cwd: "/tmp/ws1/app",
+      availableDecisions: ["accept", "acceptForSession", "cancel"],
     },
   });
 
@@ -4714,12 +4868,12 @@ test("live command approvals persist snapshot data before lifecycle rendering", 
     justification: "要允许我在项目根目录创建 c.txt 吗？",
     cwd: "/tmp/ws1/app",
     requestKind: "command_execution",
+    decisionCatalog: expect.stringContaining("\"acceptForSession\""),
   });
   expect(renderApprovalLifecycleMessage({
     approval,
   })).toBe(
-    "**Command approval**\n"
-      + "Status: `Pending`\n\n"
+    "**Would you like to run the following command?**\n\n"
       + "```sh\n"
       + "touch c.txt\n"
       + "```\n\n"
@@ -4760,6 +4914,7 @@ test("live file-change approvals persist fallback title and request kind before 
       itemId: "call-2",
       justification: "Allow updating tracked files?",
       cwd: "/tmp/ws1/app",
+      availableDecisions: ["accept", "cancel"],
     },
   });
 
@@ -4772,12 +4927,12 @@ test("live file-change approvals persist fallback title and request kind before 
     justification: "Allow updating tracked files?",
     cwd: "/tmp/ws1/app",
     requestKind: "file_change",
+    decisionCatalog: expect.stringContaining("\"cancel\""),
   });
   expect(renderApprovalLifecycleMessage({
     approval,
   })).toBe(
-    "**File change approval**\n"
-      + "Status: `Pending`\n\n"
+    "**Would you like to apply these file changes?**\n\n"
       + "Allow updating tracked files?\n\n"
       + "CWD: `/tmp/ws1/app`\n"
       + "Kind: `file_change`\n"
@@ -4831,8 +4986,7 @@ test("live permissions approvals persist fallback title and request kind before 
   expect(renderApprovalLifecycleMessage({
     approval,
   })).toBe(
-    "**Permissions approval**\n"
-      + "Status: `Pending`\n\n"
+    "**Would you like to grant these permissions?**\n\n"
       + "Allow elevated permissions for this step?\n\n"
       + "CWD: `/tmp/ws1/app`\n"
       + "Kind: `permissions`\n"
@@ -5040,22 +5194,75 @@ test("stale replayed pending approvals do not reopen runtime handling after reso
   db.close();
 });
 
-test("owner approval DMs reuse the same stored approval body as the thread card", () => {
-  const approval = createApprovalRecord();
+test("approval lifecycle payload renders provider-driven thread components safely", () => {
+  const longLabel = `Allow this very carefully named approval path ${"x".repeat(80)}`;
+  const approval = createApprovalRecord({
+    decisionCatalog: JSON.stringify([
+      {
+        key: "accept",
+        providerDecision: "accept",
+        label: "Yes, proceed",
+      },
+      {
+        key: "cancel",
+        providerDecision: "cancel",
+        label: "No, and tell Codex what to do differently",
+      },
+      {
+        key: "acceptForSession",
+        providerDecision: "acceptForSession",
+        label: longLabel,
+      },
+      {
+        key: "decline",
+        providerDecision: "decline",
+        label: "No, continue without running it",
+      },
+      {
+        key: "acceptWithExecpolicyAmendment",
+        providerDecision: "acceptWithExecpolicyAmendment",
+        label: "Yes, and save this matching command rule",
+      },
+      {
+        key: "applyNetworkPolicyAmendment",
+        providerDecision: "applyNetworkPolicyAmendment",
+        label: "Yes, and allow this host in the future",
+      },
+    ]),
+  });
   const threadPayload = renderApprovalLifecyclePayload({
     approvalKey: approval.approvalKey,
     approval,
   });
-  const dmPayload = renderApprovalOwnerDmPayload({
-    approvalKey: approval.approvalKey,
-    approval,
-  });
+  const rows = threadPayload.components ?? [];
+  const components = rows.flatMap((row) => row.components);
+  const labels = components.map((component) =>
+    (component as { data?: { label?: string } }).data?.label ?? "",
+  );
+  const customIds = components.map((component) =>
+    (component as { data?: { custom_id?: string } }).data?.custom_id,
+  );
 
-  expect(dmPayload.content).toBe(threadPayload.content);
-  expect((dmPayload.components ?? []).length).toBe(1);
-  expect(dmPayload.content).not.toContain("Request: `req-7`");
-  expect(dmPayload.allowedMentions).toEqual({ parse: [] });
   expect(threadPayload.allowedMentions).toEqual({ parse: [] });
+  expect(rows).toHaveLength(2);
+  expect(rows[0]?.components).toHaveLength(5);
+  expect(rows[1]?.components).toHaveLength(1);
+  expect(labels).toEqual([
+    "Yes, proceed",
+    "No, and tell Codex what to do differently",
+    `${longLabel.slice(0, 79)}…`,
+    "No, continue without running it",
+    "Yes, and save this matching command rule",
+    "Yes, and allow this host in the future",
+  ]);
+  expect(customIds).toEqual([
+    "approval|turn-1%3Acall-1|accept",
+    "approval|turn-1%3Acall-1|cancel",
+    "approval|turn-1%3Acall-1|acceptForSession",
+    "approval|turn-1%3Acall-1|decline",
+    "approval|turn-1%3Acall-1|acceptWithExecpolicyAmendment",
+    "approval|turn-1%3Acall-1|applyNetworkPolicyAmendment",
+  ]);
 });
 
 test("approval lifecycle payload keeps the stored approval body and only drops controls after resolution", () => {
@@ -5077,7 +5284,8 @@ test("approval lifecycle payload keeps the stored approval body and only drops c
     }),
   );
   expect((pending.components ?? []).length).toBe(1);
-  expect(approved.content).toContain("Status: `Approved`");
+  expect(approved.content.startsWith("Approved: touch c.txt")).toBe(true);
+  expect(approved.content).toContain("Request ID: `req-7`");
   expect(approved.components).toEqual([]);
 });
 
@@ -5224,7 +5432,7 @@ test("approval lifecycle recovery prefers the approval-key-scoped thread message
         components: [
           {
             components: [
-              { customId: "approval|turn-1%3Aitem-1|approve" },
+              { customId: "approval|turn-1%3Aitem-1|accept" },
             ],
           },
         ],
@@ -5237,7 +5445,7 @@ test("approval lifecycle recovery prefers the approval-key-scoped thread message
         components: [
           {
             components: [
-              { customId: "approval|turn-1%3Aitem-2|approve" },
+              { customId: "approval|turn-1%3Aitem-2|accept" },
             ],
           },
         ],
