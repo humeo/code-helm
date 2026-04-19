@@ -16,6 +16,10 @@ export type ApprovalRecord = {
   cwd: string | null;
   requestKind: string | null;
   threadMessageId: string | null;
+  decisionCatalog: string | null;
+  resolvedProviderDecision: string | null;
+  resolvedBySurface: string | null;
+  resolvedElsewhere: boolean;
   resolvedByDiscordUserId: string | null;
   resolution: string | null;
   createdAt: string;
@@ -33,6 +37,10 @@ export type InsertApprovalInput = {
   justification?: string | null;
   cwd?: string | null;
   requestKind?: string | null;
+  decisionCatalog?: string | null;
+  resolvedProviderDecision?: string | null;
+  resolvedBySurface?: string | null;
+  resolvedElsewhere?: boolean;
   resolvedByDiscordUserId?: string | null;
   resolution?: string | null;
 };
@@ -49,6 +57,10 @@ type ApprovalRow = {
   cwd: string | null;
   request_kind: string | null;
   thread_message_id: string | null;
+  decision_catalog: string | null;
+  resolved_provider_decision: string | null;
+  resolved_by_surface: string | null;
+  resolved_elsewhere: number;
   resolved_by_discord_user_id: string | null;
   resolution: string | null;
   created_at: string;
@@ -72,6 +84,10 @@ const mapApproval = (row: ApprovalRow | null): ApprovalRecord | null => {
     cwd: row.cwd,
     requestKind: row.request_kind,
     threadMessageId: row.thread_message_id,
+    decisionCatalog: row.decision_catalog,
+    resolvedProviderDecision: row.resolved_provider_decision,
+    resolvedBySurface: row.resolved_by_surface,
+    resolvedElsewhere: row.resolved_elsewhere === 1,
     resolvedByDiscordUserId: row.resolved_by_discord_user_id,
     resolution: row.resolution,
     createdAt: row.created_at,
@@ -118,11 +134,15 @@ export const createApprovalRepo = (db: Database) => {
       cwd,
       request_kind,
       thread_message_id,
+      decision_catalog,
+      resolved_provider_decision,
+      resolved_by_surface,
+      resolved_elsewhere,
       resolved_by_discord_user_id,
       resolution,
       created_at,
       updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(approval_key) DO UPDATE SET
       discord_thread_id = excluded.discord_thread_id,
       codex_thread_id = excluded.codex_thread_id,
@@ -134,6 +154,10 @@ export const createApprovalRepo = (db: Database) => {
       cwd = excluded.cwd,
       request_kind = excluded.request_kind,
       thread_message_id = COALESCE(excluded.thread_message_id, approvals.thread_message_id),
+      decision_catalog = excluded.decision_catalog,
+      resolved_provider_decision = excluded.resolved_provider_decision,
+      resolved_by_surface = excluded.resolved_by_surface,
+      resolved_elsewhere = excluded.resolved_elsewhere,
       resolved_by_discord_user_id = excluded.resolved_by_discord_user_id,
       resolution = excluded.resolution,
       updated_at = excluded.updated_at`,
@@ -226,6 +250,22 @@ export const createApprovalRepo = (db: Database) => {
         existing?.requestKind,
         input.requestKind,
       );
+      const decisionCatalog = mergeSnapshotField(
+        existing?.decisionCatalog,
+        input.decisionCatalog,
+      );
+      const resolvedProviderDecision =
+        input.resolvedProviderDecision !== undefined
+          ? input.resolvedProviderDecision
+          : existing?.resolvedProviderDecision ?? null;
+      const resolvedBySurface =
+        input.resolvedBySurface !== undefined
+          ? input.resolvedBySurface
+          : existing?.resolvedBySurface ?? null;
+      const resolvedElsewhere =
+        input.resolvedElsewhere !== undefined
+          ? input.resolvedElsewhere
+          : existing?.resolvedElsewhere ?? false;
 
       if (existing && isTerminalApprovalStatus(existing.status)) {
         return;
@@ -251,6 +291,10 @@ export const createApprovalRepo = (db: Database) => {
         cwd,
         requestKind,
         existing?.threadMessageId ?? null,
+        decisionCatalog,
+        resolvedProviderDecision,
+        resolvedBySurface,
+        resolvedElsewhere ? 1 : 0,
         resolvedByDiscordUserId,
         resolution,
         timestamp,

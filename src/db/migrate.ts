@@ -64,6 +64,13 @@ const approvalsTableHasSnapshotColumns = (db: Database) => {
     && hasColumn(db, "approvals", "thread_message_id");
 };
 
+const approvalsTableHasDecisionResolutionColumns = (db: Database) => {
+  return hasColumn(db, "approvals", "decision_catalog")
+    && hasColumn(db, "approvals", "resolved_provider_decision")
+    && hasColumn(db, "approvals", "resolved_by_surface")
+    && hasColumn(db, "approvals", "resolved_elsewhere");
+};
+
 const assertLegacySessionsCanBackfillCwd = (
   db: Database,
   hasCwdColumn: boolean,
@@ -215,6 +222,14 @@ const rebuildApprovalsTableWithStableIdentity = (db: Database) => {
   const hasCwdColumn = hasColumn(db, "approvals", "cwd");
   const hasRequestKindColumn = hasColumn(db, "approvals", "request_kind");
   const hasThreadMessageIdColumn = hasColumn(db, "approvals", "thread_message_id");
+  const hasDecisionCatalogColumn = hasColumn(db, "approvals", "decision_catalog");
+  const hasResolvedProviderDecisionColumn = hasColumn(
+    db,
+    "approvals",
+    "resolved_provider_decision",
+  );
+  const hasResolvedBySurfaceColumn = hasColumn(db, "approvals", "resolved_by_surface");
+  const hasResolvedElsewhereColumn = hasColumn(db, "approvals", "resolved_elsewhere");
   const approvalKeySelect = hasApprovalKeyColumn
     ? "approval_key"
     : "printf('legacy:%s', approvals.request_id)";
@@ -237,6 +252,18 @@ const rebuildApprovalsTableWithStableIdentity = (db: Database) => {
   const threadMessageIdSelect = hasThreadMessageIdColumn
     ? "approvals.thread_message_id"
     : "NULL";
+  const decisionCatalogSelect = hasDecisionCatalogColumn
+    ? "approvals.decision_catalog"
+    : "NULL";
+  const resolvedProviderDecisionSelect = hasResolvedProviderDecisionColumn
+    ? "approvals.resolved_provider_decision"
+    : "NULL";
+  const resolvedBySurfaceSelect = hasResolvedBySurfaceColumn
+    ? "approvals.resolved_by_surface"
+    : "NULL";
+  const resolvedElsewhereSelect = hasResolvedElsewhereColumn
+    ? "COALESCE(approvals.resolved_elsewhere, 0)"
+    : "0";
   const approvalsSource = hasCodexThreadIdColumn
     ? "FROM approvals"
     : `FROM approvals
@@ -263,6 +290,10 @@ const rebuildApprovalsTableWithStableIdentity = (db: Database) => {
         cwd TEXT,
         request_kind TEXT,
         thread_message_id TEXT,
+        decision_catalog TEXT,
+        resolved_provider_decision TEXT,
+        resolved_by_surface TEXT,
+        resolved_elsewhere INTEGER NOT NULL DEFAULT 0,
         resolved_by_discord_user_id TEXT,
         resolution TEXT,
         created_at TEXT NOT NULL,
@@ -285,6 +316,10 @@ const rebuildApprovalsTableWithStableIdentity = (db: Database) => {
         cwd,
         request_kind,
         thread_message_id,
+        decision_catalog,
+        resolved_provider_decision,
+        resolved_by_surface,
+        resolved_elsewhere,
         resolved_by_discord_user_id,
         resolution,
         created_at,
@@ -302,6 +337,10 @@ const rebuildApprovalsTableWithStableIdentity = (db: Database) => {
         ${cwdSelect},
         ${requestKindSelect},
         ${threadMessageIdSelect},
+        ${decisionCatalogSelect},
+        ${resolvedProviderDecisionSelect},
+        ${resolvedBySurfaceSelect},
+        ${resolvedElsewhereSelect},
         approvals.resolved_by_discord_user_id,
         approvals.resolution,
         approvals.created_at,
@@ -329,7 +368,10 @@ const upgradeApprovalsSchema = (db: Database) => {
     return;
   }
 
-  if (!approvalsTableHasSnapshotColumns(db)) {
+  if (
+    !approvalsTableHasSnapshotColumns(db)
+    || !approvalsTableHasDecisionResolutionColumns(db)
+  ) {
     const missingColumns = [
       ["display_title", "TEXT"],
       ["command_preview", "TEXT"],
@@ -337,6 +379,10 @@ const upgradeApprovalsSchema = (db: Database) => {
       ["cwd", "TEXT"],
       ["request_kind", "TEXT"],
       ["thread_message_id", "TEXT"],
+      ["decision_catalog", "TEXT"],
+      ["resolved_provider_decision", "TEXT"],
+      ["resolved_by_surface", "TEXT"],
+      ["resolved_elsewhere", "INTEGER NOT NULL DEFAULT 0"],
     ].filter(([columnName]) => !hasColumn(db, "approvals", columnName));
 
     for (const [columnName, columnType] of missingColumns) {

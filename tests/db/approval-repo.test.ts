@@ -69,6 +69,10 @@ test("repo upsert preserves terminal status and resolution metadata on resolved 
     cwd: null,
     requestKind: null,
     threadMessageId: null,
+    decisionCatalog: null,
+    resolvedProviderDecision: null,
+    resolvedBySurface: null,
+    resolvedElsewhere: false,
     resolvedByDiscordUserId: "u1",
     resolution: "approved",
     createdAt: expect.any(String),
@@ -241,6 +245,60 @@ test("approval snapshot fields survive a status-only update", () => {
   db.close();
 });
 
+test("repo persists decision catalog and terminal resolution metadata without erasing snapshots", () => {
+  const db = createMigratedDb();
+  seedWorkspaceGraph(db);
+  const repo = createApprovalRepo(db);
+
+  repo.insert({
+    approvalKey: "turn-1:call-1",
+    requestId: "req-1",
+    codexThreadId: "codex-1",
+    discordThreadId: "123",
+    status: "pending",
+    displayTitle: "Command approval",
+    commandPreview: "touch i.txt",
+    decisionCatalog: JSON.stringify([
+      { key: "accept", label: "Yes, proceed" },
+      { key: "cancel", label: "No, and tell Codex what to do differently" },
+    ]),
+  });
+
+  expect(repo.getByApprovalKey("turn-1:call-1")).toMatchObject({
+    decisionCatalog: expect.stringContaining("\"accept\""),
+    resolvedProviderDecision: null,
+    resolvedBySurface: null,
+    resolvedElsewhere: false,
+  });
+
+  repo.insert({
+    approvalKey: "turn-1:call-1",
+    requestId: "req-1",
+    codexThreadId: "codex-1",
+    discordThreadId: "123",
+    status: "approved",
+    resolvedByDiscordUserId: "u1",
+    resolution: "approved",
+    resolvedProviderDecision: "accept",
+    resolvedBySurface: "discord_thread",
+    resolvedElsewhere: true,
+  });
+
+  expect(repo.getByApprovalKey("turn-1:call-1")).toMatchObject({
+    status: "approved",
+    displayTitle: "Command approval",
+    commandPreview: "touch i.txt",
+    decisionCatalog: expect.stringContaining("\"accept\""),
+    resolvedProviderDecision: "accept",
+    resolvedBySurface: "discord_thread",
+    resolvedElsewhere: true,
+    resolvedByDiscordUserId: "u1",
+    resolution: "approved",
+  });
+
+  db.close();
+});
+
 test("repo can backfill a Discord thread message id after terminal resolution", () => {
   const db = createMigratedDb();
   seedWorkspaceGraph(db);
@@ -361,6 +419,10 @@ test("repo can list pending approvals for a Discord thread newest first", () => 
       cwd: null,
       requestKind: null,
       threadMessageId: null,
+      decisionCatalog: null,
+      resolvedProviderDecision: null,
+      resolvedBySurface: null,
+      resolvedElsewhere: false,
       resolvedByDiscordUserId: null,
       resolution: null,
       createdAt: expect.any(String),
@@ -378,6 +440,10 @@ test("repo can list pending approvals for a Discord thread newest first", () => 
       cwd: null,
       requestKind: null,
       threadMessageId: null,
+      decisionCatalog: null,
+      resolvedProviderDecision: null,
+      resolvedBySurface: null,
+      resolvedElsewhere: false,
       resolvedByDiscordUserId: null,
       resolution: null,
       createdAt: expect.any(String),
@@ -430,6 +496,10 @@ test("approval rows follow a rebound Discord thread for the managed session", ()
       cwd: null,
       requestKind: null,
       threadMessageId: null,
+      decisionCatalog: null,
+      resolvedProviderDecision: null,
+      resolvedBySurface: null,
+      resolvedElsewhere: false,
       resolvedByDiscordUserId: null,
       resolution: null,
       createdAt: expect.any(String),
@@ -549,6 +619,10 @@ test("migrations backfill nullable approval snapshot fields for legacy approvals
     cwd: null,
     requestKind: null,
     threadMessageId: null,
+    decisionCatalog: null,
+    resolvedProviderDecision: null,
+    resolvedBySurface: null,
+    resolvedElsewhere: false,
     resolvedByDiscordUserId: null,
     resolution: null,
     createdAt: expect.any(String),
@@ -825,6 +899,10 @@ test("approval rows survive a rebuilt sessions schema and still follow rebound D
       cwd: null,
       requestKind: null,
       threadMessageId: null,
+      decisionCatalog: null,
+      resolvedProviderDecision: null,
+      resolvedBySurface: null,
+      resolvedElsewhere: false,
       resolvedByDiscordUserId: null,
       resolution: null,
       createdAt: expect.any(String),
@@ -959,6 +1037,10 @@ test("migrations rebuild legacy approvals so rebinds cascade to the replacement 
       cwd: null,
       requestKind: null,
       threadMessageId: null,
+      decisionCatalog: null,
+      resolvedProviderDecision: null,
+      resolvedBySurface: null,
+      resolvedElsewhere: false,
       resolvedByDiscordUserId: null,
       resolution: null,
       createdAt: expect.any(String),
