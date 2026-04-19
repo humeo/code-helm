@@ -10,6 +10,7 @@ import {
 } from "./autostart";
 import { loadConfigStore, type LoadedConfigStore } from "./config-store";
 import { readRuntimeSummary, type RuntimeSummary } from "./runtime-state";
+import { CodexSupervisorError } from "../codex/supervisor";
 import { loadAppConfig, type AppConfig } from "../config";
 import { resolveLegacyWorkspaceBootstrap, startCodeHelm } from "../index";
 import {
@@ -193,7 +194,46 @@ const isConfigured = (store: LoadedConfigStore) => {
   return Boolean(store.config && store.secrets);
 };
 
-const formatRuntimeSummary = (runtime?: RuntimeSummary) => {
+const formatRuntimeStartedAt = (value: string, timeZone?: string) => {
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  const formatValue = (resolvedTimeZone?: string) => {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: resolvedTimeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+      timeZoneName: "longOffset",
+    }).formatToParts(date);
+
+    const readPart = (type: Intl.DateTimeFormatPartTypes) => {
+      return parts.find((part) => part.type === type)?.value ?? "";
+    };
+
+    return `${readPart("year")}-${readPart("month")}-${readPart("day")} ${readPart("hour")}:${readPart("minute")}:${readPart("second")} ${readPart("timeZoneName")}`;
+  };
+
+  if (timeZone) {
+    try {
+      return formatValue(timeZone);
+    } catch {}
+  }
+
+  return formatValue();
+};
+
+const formatRuntimeSummary = (
+  runtime?: RuntimeSummary,
+  options: { timeZone?: string } = {},
+) => {
   if (!runtime) {
     return "CodeHelm stopped";
   }
@@ -208,10 +248,51 @@ const formatRuntimeSummary = (runtime?: RuntimeSummary) => {
   ];
 
   if (runtime.startedAt) {
-    lines.splice(3, 0, `Started: ${runtime.startedAt}`);
+    lines.splice(3, 0, `Started: ${formatRuntimeStartedAt(runtime.startedAt, options.timeZone)}`);
   }
 
   return lines.join("\n");
+};
+
+const appendDiagnosticsBlock = (lines: string[], diagnostics?: string) => {
+  const trimmed = diagnostics?.trim();
+
+  if (!trimmed) {
+    return;
+  }
+
+  lines.push("", "Diagnostics:", trimmed);
+};
+
+const formatStartupFailure = (error: unknown) => {
+  if (
+    !(error instanceof CodexSupervisorError)
+    || error.code !== "CODEX_APP_SERVER_FAILED_TO_START"
+  ) {
+    return null;
+  }
+
+  if (error.startupDisposition === "delayed") {
+    const lines = [
+      "Managed Codex App Server startup is taking longer than expected.",
+      "Codex requests are not ready yet.",
+      "You can keep waiting, inspect logs, or restart CodeHelm if the state does not recover.",
+    ];
+    appendDiagnosticsBlock(lines, error.diagnostics);
+    return lines.join("\n");
+  }
+
+  if (error.startupDisposition === "failed") {
+    const lines = [
+      "Managed Codex App Server failed to start.",
+      "CodeHelm could not finish startup.",
+      "Inspect the diagnostics below and retry after fixing the startup issue.",
+    ];
+    appendDiagnosticsBlock(lines, error.diagnostics ?? error.message);
+    return lines.join("\n");
+  }
+
+  return null;
 };
 
 const formatAutostartResult = (
@@ -331,7 +412,9 @@ const stopBackgroundRuntime = async (
 ) => {
   if (runtime.mode !== "background") {
     return {
-      output: formatRuntimeSummary(runtime),
+      output: formatRuntimeSummary(runtime, {
+        timeZone: services.env.TZ,
+      }),
       runtime,
     };
   }
@@ -385,7 +468,9 @@ export const runCliCommand = async (
     case "start": {
       if (runtime) {
         return {
-          output: formatRuntimeSummary(runtime),
+          output: formatRuntimeSummary(runtime, {
+            timeZone: services.env.TZ,
+          }),
           runtime,
         };
       }
@@ -395,7 +480,9 @@ export const runCliCommand = async (
       if (command.daemon) {
         const backgroundRuntime = await startInBackground(configuredStore, services);
         return {
-          output: formatRuntimeSummary(backgroundRuntime),
+          output: formatRuntimeSummary(backgroundRuntime, {
+            timeZone: services.env.TZ,
+          }),
           runtime: backgroundRuntime,
         };
       }
@@ -405,11 +492,24 @@ export const runCliCommand = async (
         CODE_HELM_CONFIG: configuredStore.paths.configPath,
         CODE_HELM_SECRETS: configuredStore.paths.secretsPath,
       });
-      const handle = await services.startForeground({
-        config,
-        legacyWorkspaceBootstrap: resolveLegacyWorkspaceBootstrap(services.env),
-        stateDir: configuredStore.paths.stateDir,
-      });
+      let handle: StartHandle;
+
+      try {
+        handle = await services.startForeground({
+          config,
+          legacyWorkspaceBootstrap: resolveLegacyWorkspaceBootstrap(services.env),
+          stateDir: configuredStore.paths.stateDir,
+        });
+      } catch (error) {
+        const formattedStartupFailure = formatStartupFailure(error);
+
+        if (formattedStartupFailure) {
+          throw new Error(formattedStartupFailure);
+        }
+
+        throw error;
+      }
+
       const foregroundRuntime = {
         pid: process.pid,
         mode: "foreground" as const,
@@ -421,18 +521,23 @@ export const runCliCommand = async (
         codex: {
           appServerAddress: handle.config.codex.appServerUrl,
           running: true,
+          startupState: "ready" as const,
         },
         startedAt: new Date().toISOString(),
       };
 
       return {
-        output: formatRuntimeSummary(foregroundRuntime),
+        output: formatRuntimeSummary(foregroundRuntime, {
+          timeZone: services.env.TZ,
+        }),
         runtime: foregroundRuntime,
       };
     }
     case "status":
       return {
-        output: formatRuntimeSummary(runtime),
+        output: formatRuntimeSummary(runtime, {
+          timeZone: services.env.TZ,
+        }),
         runtime,
       };
     case "stop":
@@ -500,7 +605,9 @@ export const runCliCommand = async (
           isPidAlive: services.isPidAlive,
         });
         const lines = [
-          formatRuntimeSummary(currentRuntime),
+          formatRuntimeSummary(currentRuntime, {
+            timeZone: services.env.TZ,
+          }),
           "Stop the running instance with `code-helm stop`, then run `code-helm onboard` again.",
         ];
 

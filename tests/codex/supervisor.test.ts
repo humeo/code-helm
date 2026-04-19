@@ -5,6 +5,7 @@ import {
   detectCodexBinary,
   startManagedCodexAppServer,
   stopManagedCodexAppServer,
+  waitForManagedCodexAppServerReady,
   type ChildProcessLike,
 } from "../../src/codex/supervisor";
 
@@ -95,6 +96,78 @@ test("startManagedCodexAppServer fails clearly when readiness never arrives", as
     code: "CODEX_APP_SERVER_FAILED_TO_START",
   } satisfies Partial<CodexSupervisorError>);
   expect(child.killedSignals).toEqual(["SIGTERM"]);
+});
+
+test("waitForManagedCodexAppServerReady waits until readyz reports healthy", async () => {
+  const child = new ChildProcessStub(4242);
+  const originalFetch = globalThis.fetch;
+  let attempts = 0;
+
+  globalThis.fetch = (async (input: Parameters<typeof fetch>[0]) => {
+    attempts += 1;
+    expect(String(input)).toBe("http://127.0.0.1:4511/readyz");
+
+    return new Response(null, {
+      status: attempts >= 3 ? 200 : 503,
+    });
+  }) as unknown as typeof fetch;
+
+  try {
+    await expect(
+      waitForManagedCodexAppServerReady({
+        address: "ws://127.0.0.1:4511",
+        child,
+        timeoutMs: 1_000,
+        getDiagnostics: () => undefined,
+      }),
+    ).resolves.toBeUndefined();
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  expect(attempts).toBeGreaterThanOrEqual(3);
+});
+
+test("waitForManagedCodexAppServerReady classifies timeouts as delayed startup", async () => {
+  const child = new ChildProcessStub(4242);
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = (async () => {
+    return new Response("not ready", { status: 503 });
+  }) as unknown as typeof fetch;
+
+  try {
+    await expect(
+      waitForManagedCodexAppServerReady({
+        address: "ws://127.0.0.1:4511",
+        child,
+        timeoutMs: 25,
+        getDiagnostics: () => "stderr tail",
+      }),
+    ).rejects.toMatchObject({
+      code: "CODEX_APP_SERVER_FAILED_TO_START",
+      startupDisposition: "delayed",
+      startupTimeoutMs: 25,
+      diagnostics: "stderr tail",
+    } satisfies Partial<CodexSupervisorError>);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("startManagedCodexAppServer classifies spawn failures as failed startup", async () => {
+  await expect(
+    startManagedCodexAppServer({
+      resolveBinary: async () => "/usr/local/bin/codex",
+      allocatePort: async () => 4511,
+      spawnProcess: () => {
+        throw new Error("spawn boom");
+      },
+    }),
+  ).rejects.toMatchObject({
+    code: "CODEX_APP_SERVER_FAILED_TO_START",
+    startupDisposition: "failed",
+  } satisfies Partial<CodexSupervisorError>);
 });
 
 test("stopManagedCodexAppServer sends SIGTERM and waits for a clean exit", async () => {

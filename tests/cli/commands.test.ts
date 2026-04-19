@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CliCommand } from "../../src/cli/args";
 import { runCliCommand, type CommandServices } from "../../src/cli/commands";
+import { CodexSupervisorError } from "../../src/codex/supervisor";
 import type { AppConfig } from "../../src/config";
 
 const tempDirs: string[] = [];
@@ -114,6 +115,32 @@ const createBaseServices = (): CommandServices => {
   };
 };
 
+const formatStartedAtForDisplay = (value: string, timeZone?: string) => {
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+    timeZoneName: "longOffset",
+  }).formatToParts(date);
+
+  const readPart = (type: Intl.DateTimeFormatPartTypes) => {
+    return parts.find((part) => part.type === type)?.value ?? "";
+  };
+
+  return `${readPart("year")}-${readPart("month")}-${readPart("day")} ${readPart("hour")}:${readPart("minute")}:${readPart("second")} ${readPart("timeZoneName")}`;
+};
+
 afterEach(() => {
   for (const directory of tempDirs.splice(0)) {
     Bun.spawnSync(["rm", "-rf", directory]);
@@ -180,6 +207,98 @@ describe("runCliCommand", () => {
     expect(started).toBe(false);
     expect(result.output).toContain("CodeHelm running");
     expect(result.output).toContain("codex --remote ws://127.0.0.1:4200");
+  });
+
+  test("start renders runtime start time in local display format instead of raw UTC iso", async () => {
+    const services = createBaseServices();
+    const startedAt = "2026-04-17T08:22:19.208Z";
+    services.env = {
+      ...services.env,
+      TZ: "Asia/Shanghai",
+    };
+
+    services.readRuntimeSummary = () => ({
+      pid: 2222,
+      mode: "background",
+      discord: {
+        guildId: "guild-1",
+        controlChannelId: "channel-1",
+        connected: true,
+      },
+      codex: {
+        appServerAddress: "ws://127.0.0.1:4200",
+        pid: 999,
+        running: true,
+      },
+      startedAt,
+    });
+
+    const result = await runCliCommand({ kind: "start", daemon: false }, services);
+
+    expect(result.output).toContain(
+      `Started: ${formatStartedAtForDisplay(startedAt, "Asia/Shanghai")}`,
+    );
+    expect(result.output).not.toContain(`Started: ${startedAt}`);
+  });
+
+  test("start renders delayed managed startup as warning-style copy", async () => {
+    const services = createBaseServices();
+    let startedRuntime = false;
+
+    services.startForeground = async () => {
+      startedRuntime = true;
+      throw new CodexSupervisorError(
+        "CODEX_APP_SERVER_FAILED_TO_START",
+        "Managed Codex App Server did not become ready before the startup timeout expired.",
+        {
+          startupDisposition: "delayed",
+          diagnostics: "last stderr line",
+          startupTimeoutMs: 5_000,
+        },
+      );
+    };
+
+    await expect(
+      runCliCommand({ kind: "start", daemon: false }, services),
+    ).rejects.toThrow(
+      [
+        "Managed Codex App Server startup is taking longer than expected.",
+        "Codex requests are not ready yet.",
+        "You can keep waiting, inspect logs, or restart CodeHelm if the state does not recover.",
+        "",
+        "Diagnostics:",
+        "last stderr line",
+      ].join("\n"),
+    );
+    expect(startedRuntime).toBe(true);
+  });
+
+  test("start renders failed managed startup explicitly", async () => {
+    const services = createBaseServices();
+
+    services.startForeground = async () => {
+      throw new CodexSupervisorError(
+        "CODEX_APP_SERVER_FAILED_TO_START",
+        "Managed Codex App Server failed before becoming ready: spawn boom",
+        {
+          startupDisposition: "failed",
+          diagnostics: "spawn boom",
+        },
+      );
+    };
+
+    await expect(
+      runCliCommand({ kind: "start", daemon: false }, services),
+    ).rejects.toThrow(
+      [
+        "Managed Codex App Server failed to start.",
+        "CodeHelm could not finish startup.",
+        "Inspect the diagnostics below and retry after fixing the startup issue.",
+        "",
+        "Diagnostics:",
+        "spawn boom",
+      ].join("\n"),
+    );
   });
 
   test("start --daemon records background runtime state", async () => {

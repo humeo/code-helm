@@ -26,6 +26,7 @@ const runtimeSummarySchema = z.object({
     appServerAddress: wsUrlSchema,
     pid: z.number().int().positive().optional(),
     running: z.boolean().optional(),
+    startupState: z.enum(["starting", "ready", "delayed", "failed"]).optional(),
   }),
   startedAt: z.string().datetime().optional(),
 });

@@ -1,9 +1,11 @@
 import { execFile, spawn, type SpawnOptions } from "node:child_process";
 import { once } from "node:events";
-import { createConnection, createServer } from "node:net";
+import { createServer } from "node:net";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
+
+export type StartupDisposition = "delayed" | "failed";
 
 export class CodexSupervisorError extends Error {
   constructor(
@@ -13,10 +15,22 @@ export class CodexSupervisorError extends Error {
       | "CODEX_APP_SERVER_FAILED_TO_STOP"
       | "CODEX_APP_SERVER_STOP_TIMEOUT",
     message: string,
+    details: {
+      startupDisposition?: StartupDisposition;
+      diagnostics?: string;
+      startupTimeoutMs?: number;
+    } = {},
   ) {
     super(message);
     this.name = "CodexSupervisorError";
+    this.startupDisposition = details.startupDisposition;
+    this.diagnostics = details.diagnostics;
+    this.startupTimeoutMs = details.startupTimeoutMs;
   }
+
+  readonly startupDisposition?: StartupDisposition;
+  readonly diagnostics?: string;
+  readonly startupTimeoutMs?: number;
 }
 
 export interface ChildProcessLike {
@@ -141,6 +155,28 @@ const withDiagnostics = (message: string, diagnostics?: string) => {
   return trimmed ? `${message}\nDiagnostics:\n${trimmed}` : message;
 };
 
+const createStartupFailureError = ({
+  message,
+  startupDisposition,
+  diagnostics,
+  startupTimeoutMs,
+}: {
+  message: string;
+  startupDisposition: StartupDisposition;
+  diagnostics?: string;
+  startupTimeoutMs?: number;
+}) => {
+  return new CodexSupervisorError(
+    "CODEX_APP_SERVER_FAILED_TO_START",
+    withDiagnostics(message, diagnostics),
+    {
+      startupDisposition,
+      diagnostics,
+      startupTimeoutMs,
+    },
+  );
+};
+
 const waitForChildExit = async (child: ChildProcessLike, timeoutMs: number) => {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
@@ -181,15 +217,17 @@ const waitForChildExit = async (child: ChildProcessLike, timeoutMs: number) => {
   }
 };
 
-const defaultWaitForReady: WaitForReady = ({
+export const waitForManagedCodexAppServerReady: WaitForReady = ({
   address,
   child,
   timeoutMs,
   getDiagnostics,
 }) => {
-  const target = new URL(address);
-  const host = target.hostname;
-  const port = Number.parseInt(target.port, 10);
+  const readinessUrl = new URL(address);
+  readinessUrl.protocol = readinessUrl.protocol === "wss:" ? "https:" : "http:";
+  readinessUrl.pathname = "/readyz";
+  readinessUrl.search = "";
+  readinessUrl.hash = "";
 
   return new Promise<void>((resolve, reject) => {
     let settled = false;
@@ -214,63 +252,67 @@ const defaultWaitForReady: WaitForReady = ({
     };
 
     const handleExit = (code: number | null, signal: NodeJS.Signals | null) => {
-      finishError(new CodexSupervisorError(
-        "CODEX_APP_SERVER_FAILED_TO_START",
-        withDiagnostics(
+      finishError(createStartupFailureError({
+        message:
           `Managed Codex App Server exited before becoming ready (code: ${String(code)}, signal: ${String(signal)}).`,
-          getDiagnostics(),
-        ),
-      ));
+        startupDisposition: "failed",
+        diagnostics: getDiagnostics(),
+      }));
     };
 
     const handleError = (error: Error) => {
-      finishError(new CodexSupervisorError(
-        "CODEX_APP_SERVER_FAILED_TO_START",
-        withDiagnostics(
+      finishError(createStartupFailureError({
+        message:
           `Managed Codex App Server failed before becoming ready: ${error.message}`,
-          getDiagnostics(),
-        ),
-      ));
+        startupDisposition: "failed",
+        diagnostics: getDiagnostics(),
+      }));
     };
 
-    const tryConnect = () => {
+    const tryConnect = async () => {
       if (settled) {
         return;
       }
 
-      const socket = createConnection({
-        host,
-        port,
-      });
+      try {
+        const response = await fetch(readinessUrl);
 
-      socket.once("connect", () => {
-        socket.end();
-        cleanup();
-        resolve();
-      });
-      socket.once("error", () => {
-        socket.destroy();
-        if (!settled) {
-          retryTimer = setTimeout(tryConnect, 50);
+        if (settled) {
+          return;
         }
-      });
+
+        if (response.ok) {
+          cleanup();
+          resolve();
+          return;
+        }
+      } catch {
+        // Retry on transient startup failures until timeout or child exit.
+      }
+
+      if (!settled) {
+        retryTimer = setTimeout(() => {
+          void tryConnect();
+        }, 50);
+      }
     };
 
     child.once("exit", handleExit);
     child.once("error", handleError);
     timeoutId = setTimeout(() => {
-      finishError(new CodexSupervisorError(
-        "CODEX_APP_SERVER_FAILED_TO_START",
-        withDiagnostics(
-          "Managed Codex App Server did not become ready before the startup timeout expired.",
-          getDiagnostics(),
-        ),
-      ));
+      finishError(createStartupFailureError({
+        message: "Managed Codex App Server did not become ready before the startup timeout expired.",
+        startupDisposition: "delayed",
+        diagnostics: getDiagnostics(),
+        startupTimeoutMs: timeoutMs,
+      }));
     }, timeoutMs);
 
-    tryConnect();
+    void tryConnect();
   });
 };
+
+const defaultWaitForReady = waitForManagedCodexAppServerReady;
 
 export const detectCodexBinary = async (
   options: DetectCodexBinaryOptions = {},
@@ -299,13 +341,26 @@ export const startManagedCodexAppServer = async (
   const waitForReady = options.waitForReady ?? defaultWaitForReady;
   const port = await allocatePort();
   const address = `ws://127.0.0.1:${port}`;
-  const child = spawnProcess(
-    binaryPath,
-    ["app-server", "--listen", address],
-    {
-      stdio: ["ignore", "pipe", "pipe"],
-    },
-  );
+  let child: ChildProcessLike;
+
+  try {
+    child = spawnProcess(
+      binaryPath,
+      ["app-server", "--listen", address],
+      {
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+
+    throw createStartupFailureError({
+      message: `Managed Codex App Server failed before becoming ready: ${detail}`,
+      startupDisposition: "failed",
+      diagnostics: detail,
+    });
+  }
+
   const stderrBuffer: string[] = [];
 
   child.stderr?.on("data", (chunk) => {
@@ -313,21 +368,23 @@ export const startManagedCodexAppServer = async (
   });
 
   if (!child.pid) {
-    throw new CodexSupervisorError(
-      "CODEX_APP_SERVER_FAILED_TO_START",
-      "Managed Codex App Server did not expose a child pid.",
-    );
+    throw createStartupFailureError({
+      message: "Managed Codex App Server did not expose a child pid.",
+      startupDisposition: "failed",
+    });
   }
+
+  const getDiagnostics = () => {
+    const combined = stderrBuffer.join("").trim();
+    return combined.length > 0 ? combined : undefined;
+  };
 
   try {
     await waitForReady({
       address,
       child,
       timeoutMs: 5_000,
-      getDiagnostics: () => {
-        const combined = stderrBuffer.join("").trim();
-        return combined.length > 0 ? combined : undefined;
-      },
+      getDiagnostics,
     });
   } catch (error) {
     await stopManagedCodexAppServer(
@@ -340,7 +397,18 @@ export const startManagedCodexAppServer = async (
         timeoutMs: 1_000,
       },
     ).catch(() => undefined);
-    throw error;
+
+    if (error instanceof CodexSupervisorError) {
+      throw error;
+    }
+
+    const detail = error instanceof Error ? error.message : String(error);
+
+    throw createStartupFailureError({
+      message: `Managed Codex App Server failed before becoming ready: ${detail}`,
+      startupDisposition: "failed",
+      diagnostics: getDiagnostics() ?? detail,
+    });
   }
 
   return {

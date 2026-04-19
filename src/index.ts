@@ -6409,6 +6409,7 @@ export const startCodeHelm = async (
             appServerAddress: runtimeConfig.codex.appServerUrl,
             pid: managedCodexAppServer?.pid,
             running: true,
+            startupState: "ready",
           },
           startedAt: new Date().toISOString(),
         },

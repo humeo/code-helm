@@ -153,6 +153,33 @@ describe("runtime-state", () => {
     });
   });
 
+  test("writes and reads runtime.json with codex startup state", () => {
+    const stateDir = createStateDir();
+
+    writeRuntimeSummary({
+      stateDir,
+      summary: {
+        ...createRuntimeSummary(),
+        codex: {
+          ...createRuntimeSummary().codex,
+          startupState: "ready",
+        },
+      } as RuntimeSummary,
+    });
+
+    expect(
+      readRuntimeSummary({
+        stateDir,
+        isPidAlive: (pid) => pid === 1234,
+      }),
+    ).toMatchObject({
+      codex: {
+        appServerAddress: "ws://127.0.0.1:4500",
+        startupState: "ready",
+      },
+    });
+  });
+
   test("cleans corrupt runtime.json without masking a real active conflict", () => {
     const stateDir = createStateDir();
     const runtimePath = join(stateDir, "runtime.json");

@@ -7,7 +7,8 @@ import type {
   CodexThreadStatus,
   ThreadListParams,
 } from "../src/codex/protocol-types";
-import type { AppConfig } from "../src/config";
+import { CodexSupervisorError } from "../src/codex/supervisor";
+import { DEFAULT_CODEX_APP_SERVER_URL, type AppConfig } from "../src/config";
 import type { SessionResumeState } from "../src/domain/types";
 import { createDatabaseClient } from "../src/db/client";
 import { applyMigrations } from "../src/db/migrate";
@@ -284,6 +285,54 @@ test("startCodeHelm stops the started runtime when runtime-state publication fai
   ).rejects.toThrow(/runtime-state write failed/i);
 
   expect(stopCalls).toEqual(["stopped"]);
+  expect(clearedStateDirs).toEqual(["/tmp/codehelm-state"]);
+});
+
+test("startCodeHelm does not enter a running runtime when managed Codex startup stays delayed", async () => {
+  const clearedStateDirs: string[] = [];
+  let startedRuntime = false;
+
+  await expect(
+    startCodeHelm({
+      ...createAppConfig(),
+      codex: {
+        appServerUrl: DEFAULT_CODEX_APP_SERVER_URL,
+      },
+    }, {
+      installSignalHandlers: false,
+      stateDir: "/tmp/codehelm-state",
+      acquireInstanceLock: () => ({
+        pid: process.pid,
+        cleanedStaleState: false,
+      }),
+      clearRuntimeState: ({ stateDir }) => {
+        clearedStateDirs.push(stateDir);
+      },
+      startManagedCodexAppServer: async () => {
+        throw new CodexSupervisorError(
+          "CODEX_APP_SERVER_FAILED_TO_START",
+          "Managed Codex App Server did not become ready before the startup timeout expired.",
+          {
+            startupDisposition: "delayed",
+            diagnostics: "stderr tail",
+            startupTimeoutMs: 5_000,
+          },
+        );
+      },
+      startRuntime: async (config) => {
+        startedRuntime = true;
+        return {
+          config,
+          stop: async () => {},
+        };
+      },
+    }),
+  ).rejects.toMatchObject({
+    code: "CODEX_APP_SERVER_FAILED_TO_START",
+    startupDisposition: "delayed",
+  } satisfies Partial<CodexSupervisorError>);
+
+  expect(startedRuntime).toBe(false);
   expect(clearedStateDirs).toEqual(["/tmp/codehelm-state"]);
 });
 
