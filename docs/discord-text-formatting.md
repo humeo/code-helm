@@ -18,6 +18,7 @@ Primary implementation sources:
 
 - [src/discord/transcript.ts](/Users/koltenluca/code-github/code-helm/src/discord/transcript.ts)
 - [src/discord/renderers.ts](/Users/koltenluca/code-github/code-helm/src/discord/renderers.ts)
+- [src/discord/approval-ui.ts](/Users/koltenluca/code-github/code-helm/src/discord/approval-ui.ts)
 - [src/index.ts](/Users/koltenluca/code-github/code-helm/src/index.ts)
 
 ## Global Layout Rules
@@ -227,14 +228,117 @@ Current rules:
 
 ## Approval Lifecycle Formatting
 
-Approval lifecycle messages remain compact plain text messages with optional buttons while pending.
+Approval lifecycle messages remain compact plain text messages that are rendered only in the managed thread.
 
-Current text:
+Current rules:
 
-- pending: `Approval \`<requestId>\`: pending.`
-- resolved: `Approval \`<requestId>\`: <status>.`
+- pending approvals are delivered only in the bound managed thread
+- owner DMs do not carry approval controls
+- pending approvals use a question-led body plus Discord buttons
+- button labels come from the provider-offered decision catalog, not from a fixed local trio
+- terminal approvals edit the same thread message in place into a short result line
+- terminal approvals always keep `Request ID` as secondary metadata
 
-Pending approval thread messages may include buttons. Resolved messages remove buttons and keep only the text.
+### Pending approval thread messages
+
+Pending approval thread messages are plain text bodies with Discord buttons attached to the same message.
+
+Current command-approval example:
+
+```text
+**Would you like to run the following command?**
+
+\`\`\`sh
+touch c.txt
+\`\`\`
+
+要允许我在项目根目录创建 c.txt 吗？
+
+CWD: `/tmp/ws1/app`
+Kind: `command_execution`
+Request ID: `req-7`
+```
+
+Current file-change example:
+
+```text
+**Would you like to apply these file changes?**
+
+Allow updating tracked files?
+
+CWD: `/tmp/ws1/app`
+Kind: `file_change`
+Request ID: `req-8`
+```
+
+Current permissions example:
+
+```text
+**Would you like to grant these permissions?**
+
+Allow elevated permissions for this step?
+
+CWD: `/tmp/ws1/app`
+Kind: `permissions`
+Request ID: `req-9`
+```
+
+### Terminal approval result lines
+
+When an approval resolves, CodeHelm edits the same thread message in place, removes the buttons, and collapses the content into one short result line plus `Request ID` metadata.
+
+Current examples:
+
+```text
+Approved: touch c.txt
+Request ID: `req-7`
+```
+
+```text
+Approved for this session: touch i.txt
+Request ID: `0`
+```
+
+```text
+Declined and continuing without it: touch i.txt
+Request ID: `0`
+```
+
+```text
+Canceled. The current turn was interrupted: touch i.txt
+Request ID: `0`
+```
+
+```text
+Handled in codex-remote: approved touch i.txt
+Request ID: `0`
+```
+
+### Stale approval interaction replies
+
+When someone clicks a stale approval button, CodeHelm replies ephemerally with status-aware text instead of reopening the approval.
+
+Current examples:
+
+```text
+This approval was already approved: touch c.txt
+```
+
+```text
+This approval was already approved in codex-remote: touch c.txt
+```
+
+```text
+This approval was already declined and Codex continued without it: touch c.txt
+```
+
+```text
+This approval was already canceled. The turn was interrupted: That approval
+```
+
+```text
+This approval was already resolved in codex-remote: touch c.txt
+```
 
 ## Slash Command Reply Formatting
 

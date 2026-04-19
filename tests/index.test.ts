@@ -3946,6 +3946,19 @@ test("approval interaction reports approved stale approvals with the saved comma
   });
 });
 
+test("approval interaction reports approvals already handled in codex-remote", async () => {
+  await expectStaleApprovalInteractionReply({
+    approval: {
+      approvalKey: "turn-1:item-approved-remote",
+      status: "approved",
+      commandPreview: "touch c.txt",
+      resolvedElsewhere: true,
+      resolvedBySurface: "codex_remote",
+    },
+    expectedContent: "This approval was already approved in codex-remote: touch c.txt",
+  });
+});
+
 test("approval interaction reports declined stale approvals with the saved command preview", async () => {
   await expectStaleApprovalInteractionReply({
     approval: {
