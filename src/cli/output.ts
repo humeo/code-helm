@@ -220,8 +220,8 @@ export const renderPanelFrame = (options: RenderPanelOptions) => {
 };
 
 export const renderKeyValueRows = (rows: Array<{ key: string; value: string }>) => {
-  const keyWidth = rows.reduce((max, row) => Math.max(max, row.key.length), 0);
-  return rows.map((row) => `${row.key.padEnd(keyWidth)} : ${row.value}`);
+  const keyWidth = rows.reduce((max, row) => Math.max(max, getDisplayWidth(row.key)), 0);
+  return rows.map((row) => `${padLine(row.key, keyWidth)} : ${row.value}`);
 };
 
 export const renderDiagnosticsSection = (details?: string): PanelSection | undefined => {

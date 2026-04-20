@@ -102,6 +102,23 @@ describe("cli output renderer", () => {
     expect(output).toContain("Started : 2026-04-20 10:00:00 +08:00");
   });
 
+  test("aligns key-value colons for mixed ascii and cjk keys", () => {
+    const rows = renderKeyValueRows([
+      { key: "模式", value: "后台" },
+      { key: "PID", value: "1234" },
+      { key: "状态", value: "运行中" },
+    ]);
+
+    const widthBeforeColon = (line: string) => {
+      const [prefix] = line.split(":");
+      return lineDisplayWidth(prefix);
+    };
+
+    expect(rows.length).toBe(3);
+    expect(widthBeforeColon(rows[0])).toBe(widthBeforeColon(rows[1]));
+    expect(widthBeforeColon(rows[1])).toBe(widthBeforeColon(rows[2]));
+  });
+
   test("renders diagnostics after the headline instead of before it", () => {
     const output = renderErrorPanel({
       title: "CodeHelm Start Failed",
