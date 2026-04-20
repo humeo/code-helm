@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Run Codex as a local daemon you control from Discord.",
   "bin": {
-    "code-helm": "./bin/code-helm"
+    "code-helm": "bin/code-helm"
   },
   "type": "module",
   "repository": {
