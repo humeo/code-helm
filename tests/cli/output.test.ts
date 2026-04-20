@@ -8,54 +8,91 @@ import {
 } from "../../src/cli/output";
 
 describe("cli output renderer", () => {
-  const expectPanelRowsToStayFramed = (output: string) => {
-    const lines = output.split("\n");
-
-    for (const line of lines.slice(1, -1)) {
-      if (line.startsWith("├") || line.startsWith("+")) {
-        continue;
-      }
-
-      expect(line.startsWith("│ ")).toBe(true);
-      expect(line.endsWith(" │")).toBe(true);
-    }
+  const expectNoFrameCharacters = (output: string) => {
+    expect(output).not.toContain("┌");
+    expect(output).not.toContain("┐");
+    expect(output).not.toContain("└");
+    expect(output).not.toContain("┘");
   };
 
-  test("uses unicode panel framing by default", () => {
+  test("uses frame-free output by default", () => {
     const output = renderSuccessPanel({
       title: "CodeHelm Stopped",
       sections: [{ title: "Result", lines: ["The runtime is no longer active."] }],
       env: {},
     });
 
-    expect(output).toContain("┌");
-    expect(output).toContain("┐");
     expect(output).toContain("CodeHelm Stopped");
+    expect(output).toContain("Result");
+    expect(output).toContain("The runtime is no longer active.");
+    expectNoFrameCharacters(output);
   });
 
-  test("uses ASCII framing when TERM is dumb", () => {
+  test("keeps frame-free structure when TERM is dumb", () => {
     const output = renderSuccessPanel({
-      title: "CodeHelm Stopped",
-      sections: [{ title: "Result", lines: ["Done"] }],
+      title: "CodeHelm",
+      sections: [
+        {
+          kind: "steps",
+          title: "Next steps",
+          items: ["code-helm start", "code-helm status"],
+        },
+      ],
       env: { TERM: "dumb" },
     });
 
-    expect(output).toContain("+");
-    expect(output).not.toContain("┌");
+    expect(output).toContain("CodeHelm");
+    expect(output).toContain("Next steps");
+    expect(output).toContain("  code-helm start");
+    expect(output).toContain("  code-helm status");
+    expectNoFrameCharacters(output);
   });
 
-  test("uses ASCII framing when CODE_HELM_CLI_ASCII is enabled", () => {
+  test("keeps frame-free structure when CODE_HELM_CLI_ASCII is enabled", () => {
     const output = renderSuccessPanel({
-      title: "CodeHelm Stopped",
-      sections: [{ title: "Result", lines: ["Done"] }],
+      title: "CodeHelm",
+      sections: [
+        {
+          kind: "steps",
+          title: "Next steps",
+          items: ["code-helm start"],
+        },
+      ],
       env: { CODE_HELM_CLI_ASCII: "1" },
     });
 
-    expect(output).toContain("+");
-    expect(output).not.toContain("┌");
+    expect(output).toContain("CodeHelm");
+    expect(output).toContain("Next steps");
+    expect(output).toContain("  code-helm start");
+    expectNoFrameCharacters(output);
   });
 
-  test("renders aligned key-value rows inside a titled panel", () => {
+  test("renders aligned command-list sections", () => {
+    const output = renderSuccessPanel({
+      title: "CodeHelm",
+      headline: "Control Codex from Discord",
+      sections: [
+        {
+          kind: "command-list",
+          title: "Runtime",
+          items: [
+            { command: "start", description: "Start CodeHelm in foreground" },
+            { command: "status", description: "Show runtime state" },
+          ],
+        },
+      ],
+      env: {},
+    });
+
+    expect(output).toContain("CodeHelm");
+    expect(output).toContain("Control Codex from Discord");
+    expect(output).toContain("Runtime");
+    expect(output).toContain("start   Start CodeHelm in foreground");
+    expect(output).toContain("status  Show runtime state");
+    expectNoFrameCharacters(output);
+  });
+
+  test("renders aligned key-value rows inside a titled screen", () => {
     const output = renderSuccessPanel({
       title: "CodeHelm running",
       sections: [
@@ -72,19 +109,38 @@ describe("cli output renderer", () => {
     });
 
     expect(output).toContain("Runtime");
-    expect(output).toContain("Mode    : background");
-    expect(output).toContain("PID     : 1234");
-    expect(output).toContain("Started : 2026-04-20 10:00:00 +08:00");
+    expect(output).toContain("Mode     background");
+    expect(output).toContain("PID      1234");
+    expect(output).toContain("Started  2026-04-20 10:00:00 +08:00");
   });
 
-  test("aligns key-value colons for mixed ascii and cjk keys", () => {
+  test("aligns key-value rows for mixed ascii and cjk keys", () => {
     const rows = renderKeyValueRows([
       { key: "模式", value: "后台" },
       { key: "PID", value: "1234" },
       { key: "状态", value: "运行中" },
     ]);
 
-    expect(rows).toEqual(["模式 : 后台", "PID  : 1234", "状态 : 运行中"]);
+    expect(rows).toEqual(["模式  后台", "PID   1234", "状态  运行中"]);
+  });
+
+  test("renders step-list sections for next steps", () => {
+    const output = renderSuccessPanel({
+      title: "Runtime stopped",
+      sections: [
+        {
+          kind: "steps",
+          title: "Next steps",
+          items: ["code-helm start", "code-helm status"],
+        },
+      ],
+      env: {},
+    });
+
+    expect(output).toContain("Runtime stopped");
+    expect(output).toContain("Next steps");
+    expect(output).toContain("  code-helm start");
+    expect(output).toContain("  code-helm status");
   });
 
   test("renders diagnostics after the headline instead of before it", () => {
@@ -111,6 +167,7 @@ describe("cli output renderer", () => {
     expect(output).toContain("Unhandled CLI error.");
     expect(output).toContain("Details");
     expect(output).toContain("boom");
+    expectNoFrameCharacters(output);
   });
 
   test("splits usage-shaped caught errors into Problem and Usage sections", () => {
@@ -127,16 +184,16 @@ describe("cli output renderer", () => {
     expect(output).not.toContain("Details");
   });
 
-  test("preserves already-rendered panel errors without wrapping them again", () => {
-    const panelError = renderErrorPanel({
+  test("preserves already-rendered screen errors without wrapping them again", () => {
+    const screenError = renderErrorPanel({
       title: "Uninstall Incomplete",
       sections: [{ title: "Problem", lines: ["Could not remove launch agent."] }],
       env: {},
     });
 
-    const output = renderCliCaughtError(new Error(panelError), {});
+    const output = renderCliCaughtError(new Error(screenError), {});
 
-    expect(output).toBe(panelError);
+    expect(output).toBe(screenError);
   });
 
   test("formats usage-only errors with generic Problem and grouped Usage lines", () => {
@@ -193,15 +250,12 @@ describe("cli output renderer", () => {
     });
 
     const lines = output.split("\n");
-    const innerLines = lines
-      .filter((line) => line.startsWith("│ ") && line.endsWith(" │"))
-      .map((line) => line.slice(2, -2));
-    const line1Index = innerLines.findIndex((line) => line.trim() === "line 1");
-    const line3Index = innerLines.findIndex((line) => line.trim() === "line 3");
+    const line1Index = lines.findIndex((line) => line.trim() === "line 1");
+    const line3Index = lines.findIndex((line) => line.trim() === "line 3");
 
     expect(line1Index).toBeGreaterThan(-1);
     expect(line3Index).toBeGreaterThan(line1Index);
-    expect(innerLines.slice(line1Index + 1, line3Index).some((line) => line.trim() === "")).toBe(true);
+    expect(lines.slice(line1Index + 1, line3Index).some((line) => line.trim() === "")).toBe(true);
   });
 
   test("renders command hints as a dedicated section", () => {
@@ -254,45 +308,21 @@ describe("cli output renderer", () => {
     expect(detectCliCharset({ LC_ALL: "en_US.utf8", LC_CTYPE: "POSIX" })).toBe("unicode");
   });
 
-  test("keeps frame display width aligned for cjk lines", () => {
-    const output = renderSuccessPanel({
-      title: "状态面板",
-      sections: [
-        {
-          title: "结果",
-          lines: ["运行正常", "Codex 已连接"],
-        },
-      ],
-      env: {},
-    });
-
-    expect(output).toBe([
-      "┌──────────────┐",
-      "│ 状态面板     │",
-      "├──────────────┤",
-      "│ 结果         │",
-      "│ 运行正常     │",
-      "│ Codex 已连接 │",
-      "└──────────────┘",
-    ].join("\n"));
-  });
-
-  test("strips ANSI sequences and normalizes tabs so borders stay aligned", () => {
+  test("strips ANSI sequences and normalizes tabs in rendered output", () => {
     const output = renderErrorPanel({
       title: "Error\tPanel",
       headline: "\u001B[31mManaged\u001B[0m startup failed",
       diagnostics: "line\tone\n\u001B[33mwarn\u001B[0m\titem",
       env: {},
     });
-    const lines = output.split("\n");
 
     expect(output).not.toContain("\u001B[31m");
     expect(output).not.toContain("\u001B[33m");
     expect(output).not.toContain("\t");
     expect(output).toContain("Error  Panel");
+    expect(output).toContain("Managed startup failed");
     expect(output).toContain("line  one");
     expect(output).toContain("warn  item");
-    expect(new Set(lines.map((line) => line.length)).size).toBe(1);
   });
 
   test("neutralizes carriage return and backspace control characters", () => {
@@ -302,32 +332,33 @@ describe("cli output renderer", () => {
       diagnostics: "value\bfix\nnext\rline",
       env: {},
     });
+    const lines = output.split("\n");
 
     expect(output).not.toContain("\r");
     expect(output).not.toContain("\b");
-    expect(output).toContain("│ Bad");
-    expect(output).toContain("│ Title");
-    expect(output).toContain("│ line");
-    expect(output).toContain("│ reset");
-    expect(output).toContain("│ value fix");
-    expect(output).toContain("│ next");
-    expect(output).toContain("│ line");
-    expectPanelRowsToStayFramed(output);
+    expect(lines).toContain("Bad");
+    expect(lines).toContain("Title ");
+    expect(lines).toContain("line");
+    expect(lines).toContain("reset");
+    expect(lines).toContain("value fix");
+    expect(lines).toContain("next");
+    expect(lines).toContain("line");
   });
 
-  test("splits embedded newlines in headline into safe framed lines", () => {
+  test("splits embedded newlines in headline into safe lines", () => {
     const output = renderErrorPanel({
       title: "CodeHelm Start Failed",
       headline: "first line\nsecond line",
       env: {},
     });
 
-    expect(output).toContain("│ first line            │");
-    expect(output).toContain("│ second line           │");
-    expectPanelRowsToStayFramed(output);
+    const lines = output.split("\n");
+
+    expect(lines).toContain("first line");
+    expect(lines).toContain("second line");
   });
 
-  test("splits embedded newlines in section content into safe framed lines", () => {
+  test("splits embedded newlines in section content into safe lines", () => {
     const output = renderSuccessPanel({
       title: "CodeHelm running",
       sections: [
@@ -340,17 +371,14 @@ describe("cli output renderer", () => {
       env: {},
     });
 
-    const innerLines = output
-      .split("\n")
-      .filter((line) => line.startsWith("│ ") && line.endsWith(" │"))
-      .map((line) => line.slice(2, -2).trimRight());
+    const lines = output.split("\n");
 
-    expect(innerLines).toContain("Result");
-    expect(innerLines).toContain("Details");
-    expect(innerLines).toContain("line one");
-    expect(innerLines).toContain("line two");
-    expect(innerLines).toContain("$ code-helm status");
-    expect(innerLines).toContain("code-helm stop");
-    expectPanelRowsToStayFramed(output);
+    expect(lines).toContain("Result");
+    expect(lines).toContain("Details");
+    expect(lines).toContain("line one");
+    expect(lines).toContain("line two");
+    expect(lines).toContain("$ code-helm status");
+    expect(lines).toContain("code-helm stop");
+    expectNoFrameCharacters(output);
   });
 });

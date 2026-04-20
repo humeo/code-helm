@@ -1,9 +1,41 @@
 export type CliCharset = "unicode" | "ascii";
 
-export type PanelSection = {
+type LinesSection = {
   title: string;
   lines: string[];
+  kind?: "lines";
 };
+
+type KeyValueSection = {
+  kind: "key-value";
+  title: string;
+  rows: Array<{ key: string; value: string }>;
+};
+
+type CommandListSection = {
+  kind: "command-list";
+  title: string;
+  items: Array<{ command: string; description: string }>;
+};
+
+type StepsSection = {
+  kind: "steps";
+  title: string;
+  items: string[];
+};
+
+type PathsSection = {
+  kind: "paths";
+  title: string;
+  items: string[];
+};
+
+export type PanelSection =
+  | LinesSection
+  | KeyValueSection
+  | CommandListSection
+  | StepsSection
+  | PathsSection;
 
 export type RenderPanelOptions = {
   title: string;
@@ -24,6 +56,22 @@ const localeVariables = ["LC_ALL", "LC_CTYPE", "LANG"] as const;
 const ansiEscapePattern = /\u001B(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007]*(?:\u0007|\u001B\\))/gu;
 const tabReplacement = "  ";
 const unsafeControlPattern = /[\u0000-\u0008\u000B\u000C\u000D\u000E-\u001F\u007F]/gu;
+const renderedSectionTitles = new Set([
+  "Problem",
+  "Details",
+  "Usage",
+  "Diagnostics",
+  "Command Hints",
+  "Status",
+  "Result",
+  "Changed",
+  "Removed",
+  "Failed",
+  "Next Step",
+  "Next steps",
+  "Try next",
+  "Configuration",
+]);
 
 const splitMultiline = (value: string) => {
   return value.split(/\r?\n/u);
@@ -176,37 +224,44 @@ const padLine = (value: string, width: number) => {
   return value + " ".repeat(width - displayWidth);
 };
 
-const createFrameChars = (charset: CliCharset) => {
-  if (charset === "ascii") {
-    return {
-      topLeft: "+",
-      topRight: "+",
-      bottomLeft: "+",
-      bottomRight: "+",
-      horizontal: "-",
-      vertical: "|",
-      sectionLeft: "+",
-      sectionRight: "+",
-    };
-  }
+const renderIndentedItems = (items: string[]) => {
+  return items.flatMap((item) => {
+    const [firstLine = "", ...extraLines] = toRenderableLines(item);
 
-  return {
-    topLeft: "┌",
-    topRight: "┐",
-    bottomLeft: "└",
-    bottomRight: "┘",
-    horizontal: "─",
-    vertical: "│",
-    sectionLeft: "├",
-    sectionRight: "┤",
-  };
+    return [
+      `  ${firstLine}`,
+      ...extraLines.map((line) => `  ${line}`),
+    ];
+  });
+};
+
+const renderSectionLines = (section: PanelSection) => {
+  switch (section.kind) {
+    case "key-value":
+      return renderKeyValueRows(section.rows);
+    case "command-list":
+      return renderCommandList(section.items);
+    case "steps":
+      return renderStepList(section.items);
+    case "paths":
+      return renderPathList(section.items);
+    case "lines":
+    case undefined:
+      return section.lines.flatMap((line) => toRenderableLines(line));
+  }
 };
 
 const appendSectionLines = (
   lines: string[],
   section: PanelSection | undefined,
 ) => {
-  if (!section || section.lines.length === 0) {
+  if (!section) {
+    return;
+  }
+
+  const sectionLines = renderSectionLines(section);
+
+  if (sectionLines.length === 0) {
     return;
   }
 
@@ -216,12 +271,12 @@ const appendSectionLines = (
 
   lines.push(
     ...toRenderableLines(section.title),
-    ...section.lines.flatMap((line) => toRenderableLines(line)),
+    ...sectionLines,
   );
 };
 
-const renderSemanticPanel = (options: RenderSemanticPanelOptions) => {
-  const lines: string[] = [];
+const renderCliScreen = (options: RenderSemanticPanelOptions) => {
+  const lines = toRenderableLines(options.title);
 
   if (options.headline) {
     lines.push(...toRenderableLines(options.headline));
@@ -240,11 +295,7 @@ const renderSemanticPanel = (options: RenderSemanticPanelOptions) => {
     });
   }
 
-  return renderPanelFrame({
-    title: options.title,
-    lines,
-    env: options.env,
-  });
+  return lines.join("\n");
 };
 
 export const detectCliCharset = (env: Record<string, string | undefined>): CliCharset => {
@@ -276,24 +327,14 @@ export const detectCliCharset = (env: Record<string, string | undefined>): CliCh
 };
 
 export const renderPanelFrame = (options: RenderPanelOptions) => {
-  const charset = detectCliCharset(options.env);
-  const chars = createFrameChars(charset);
-  const titleLines = toRenderableLines(options.title);
-  const sanitizedTitle = titleLines[0] ?? "";
-  const sanitizedLines = [...titleLines.slice(1), ...options.lines.flatMap((line) => toRenderableLines(line))];
-  const contentLines = [sanitizedTitle, ...sanitizedLines];
-  const width = contentLines.reduce((max, line) => Math.max(max, getDisplayWidth(line)), 0);
-  const horizontal = chars.horizontal.repeat(width + 2);
+  const lines = [...toRenderableLines(options.title)];
+  const contentLines = options.lines.flatMap((line) => toRenderableLines(line));
 
-  const framedLines = [
-    `${chars.topLeft}${horizontal}${chars.topRight}`,
-    `${chars.vertical} ${padLine(sanitizedTitle, width)} ${chars.vertical}`,
-    `${chars.sectionLeft}${horizontal}${chars.sectionRight}`,
-    ...sanitizedLines.map((line) => `${chars.vertical} ${padLine(line, width)} ${chars.vertical}`),
-    `${chars.bottomLeft}${horizontal}${chars.bottomRight}`,
-  ];
+  if (contentLines.length > 0) {
+    lines.push(...contentLines);
+  }
 
-  return framedLines.join("\n");
+  return lines.join("\n");
 };
 
 export const renderKeyValueRows = (rows: Array<{ key: string; value: string }>) => {
@@ -302,7 +343,31 @@ export const renderKeyValueRows = (rows: Array<{ key: string; value: string }>) 
     value: sanitizeRenderableText(row.value),
   }));
   const keyWidth = normalizedRows.reduce((max, row) => Math.max(max, getDisplayWidth(row.key)), 0);
-  return normalizedRows.map((row) => `${padLine(row.key, keyWidth)} : ${row.value}`);
+  return normalizedRows.map((row) => `${padLine(row.key, keyWidth)}  ${row.value}`);
+};
+
+export const renderCommandList = (
+  items: Array<{ command: string; description: string }>,
+) => {
+  const normalizedItems = items.map((item) => ({
+    command: sanitizeRenderableText(item.command),
+    description: sanitizeRenderableText(item.description),
+  }));
+  const commandWidth = normalizedItems.reduce((max, item) => {
+    return Math.max(max, getDisplayWidth(item.command));
+  }, 0);
+
+  return normalizedItems.map((item) => {
+    return `${padLine(item.command, commandWidth)}  ${item.description}`;
+  });
+};
+
+export const renderStepList = (items: string[]) => {
+  return renderIndentedItems(items);
+};
+
+export const renderPathList = (items: string[]) => {
+  return renderIndentedItems(items);
 };
 
 export const renderDiagnosticsSection = (details?: string): PanelSection | undefined => {
@@ -328,45 +393,34 @@ export const renderCommandHint = (command: string) => {
 };
 
 export const renderRuntimePanel = (options: RenderSemanticPanelOptions) => {
-  return renderSemanticPanel(options);
+  return renderCliScreen(options);
 };
 
 export const renderSuccessPanel = (options: RenderSemanticPanelOptions) => {
-  return renderSemanticPanel(options);
+  return renderCliScreen(options);
 };
 
 export const renderWarningPanel = (options: RenderSemanticPanelOptions) => {
-  return renderSemanticPanel(options);
+  return renderCliScreen(options);
 };
 
 export const renderErrorPanel = (options: RenderSemanticPanelOptions) => {
-  return renderSemanticPanel(options);
+  return renderCliScreen(options);
 };
 
-const looksLikeRenderedPanel = (message: string) => {
+const looksLikeRenderedScreen = (message: string) => {
   const lines = message.split(/\r\n|\n|\r/u);
 
   if (lines.length < 3) {
     return false;
   }
 
-  const firstLine = lines[0] ?? "";
-  const secondLine = lines[1] ?? "";
-  const lastLine = lines.at(-1) ?? "";
-  const isUnicodePanel = firstLine.startsWith("┌")
-    && firstLine.endsWith("┐")
-    && secondLine.startsWith("│ ")
-    && secondLine.endsWith(" │")
-    && lastLine.startsWith("└")
-    && lastLine.endsWith("┘");
-  const isAsciiPanel = firstLine.startsWith("+")
-    && firstLine.endsWith("+")
-    && secondLine.startsWith("| ")
-    && secondLine.endsWith(" |")
-    && lastLine.startsWith("+")
-    && lastLine.endsWith("+");
+  const hasBlankSeparator = lines.some((line, index) => {
+    return line.trim().length === 0 && index > 0 && index < lines.length - 1;
+  });
+  const hasSectionTitle = lines.some((line) => renderedSectionTitles.has(line.trim()));
 
-  return isUnicodePanel || isAsciiPanel;
+  return hasBlankSeparator && hasSectionTitle;
 };
 
 const isCodeHelmUsageLine = (line: string) => {
@@ -380,13 +434,13 @@ export const renderCliCaughtError = (
 ) => {
   const message = error instanceof Error ? error.message : String(error);
 
-  if (looksLikeRenderedPanel(message)) {
+  if (looksLikeRenderedScreen(message)) {
     return message;
   }
 
   const trimmedMessage = message.trim();
 
-  if (looksLikeRenderedPanel(trimmedMessage)) {
+  if (looksLikeRenderedScreen(trimmedMessage)) {
     return trimmedMessage;
   }
 
