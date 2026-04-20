@@ -6,45 +6,6 @@ import {
   renderSuccessPanel,
 } from "../../src/cli/output";
 
-const lineDisplayWidth = (value: string) => {
-  let width = 0;
-
-  for (const character of value) {
-    const codePoint = character.codePointAt(0) ?? 0;
-
-    if (character === "\u200D") {
-      continue;
-    }
-
-    if (/\p{Mark}/u.test(character)) {
-      continue;
-    }
-
-    if (
-      (codePoint >= 0x1100 && codePoint <= 0x115f)
-      || codePoint === 0x2329
-      || codePoint === 0x232a
-      || (codePoint >= 0x2e80 && codePoint <= 0x303e)
-      || (codePoint >= 0x3040 && codePoint <= 0xa4cf)
-      || (codePoint >= 0xac00 && codePoint <= 0xd7a3)
-      || (codePoint >= 0xf900 && codePoint <= 0xfaff)
-      || (codePoint >= 0xfe10 && codePoint <= 0xfe19)
-      || (codePoint >= 0xfe30 && codePoint <= 0xfe6f)
-      || (codePoint >= 0xff00 && codePoint <= 0xff60)
-      || (codePoint >= 0xffe0 && codePoint <= 0xffe6)
-      || (codePoint >= 0x1f300 && codePoint <= 0x1faff)
-      || (codePoint >= 0x20000 && codePoint <= 0x3fffd)
-    ) {
-      width += 2;
-      continue;
-    }
-
-    width += 1;
-  }
-
-  return width;
-};
-
 describe("cli output renderer", () => {
   test("uses unicode panel framing by default", () => {
     const output = renderSuccessPanel({
@@ -109,14 +70,7 @@ describe("cli output renderer", () => {
       { key: "状态", value: "运行中" },
     ]);
 
-    const widthBeforeColon = (line: string) => {
-      const [prefix] = line.split(":");
-      return lineDisplayWidth(prefix);
-    };
-
-    expect(rows.length).toBe(3);
-    expect(widthBeforeColon(rows[0])).toBe(widthBeforeColon(rows[1]));
-    expect(widthBeforeColon(rows[1])).toBe(widthBeforeColon(rows[2]));
+    expect(rows).toEqual(["模式 : 后台", "PID  : 1234", "状态 : 运行中"]);
   });
 
   test("renders diagnostics after the headline instead of before it", () => {
@@ -204,9 +158,33 @@ describe("cli output renderer", () => {
       ],
       env: {},
     });
-    const lines = output.split("\n");
-    const widths = lines.map((line) => lineDisplayWidth(line));
 
-    expect(new Set(widths).size).toBe(1);
+    expect(output).toBe([
+      "┌──────────────┐",
+      "│ 状态面板     │",
+      "├──────────────┤",
+      "│ 结果         │",
+      "│ 运行正常     │",
+      "│ Codex 已连接 │",
+      "└──────────────┘",
+    ].join("\n"));
+  });
+
+  test("strips ANSI sequences and normalizes tabs so borders stay aligned", () => {
+    const output = renderErrorPanel({
+      title: "Error\tPanel",
+      headline: "\u001B[31mManaged\u001B[0m startup failed",
+      diagnostics: "line\tone\n\u001B[33mwarn\u001B[0m\titem",
+      env: {},
+    });
+    const lines = output.split("\n");
+
+    expect(output).not.toContain("\u001B[31m");
+    expect(output).not.toContain("\u001B[33m");
+    expect(output).not.toContain("\t");
+    expect(output).toContain("Error  Panel");
+    expect(output).toContain("line  one");
+    expect(output).toContain("warn  item");
+    expect(new Set(lines.map((line) => line.length)).size).toBe(1);
   });
 });

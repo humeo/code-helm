@@ -21,9 +21,17 @@ export type RenderSemanticPanelOptions = {
 };
 
 const localeVariables = ["LC_ALL", "LC_CTYPE", "LANG"] as const;
+const ansiEscapePattern = /\u001B(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007]*(?:\u0007|\u001B\\))/gu;
+const tabReplacement = "  ";
 
 const splitMultiline = (value: string) => {
   return value.split(/\r?\n/u);
+};
+
+const sanitizeRenderableText = (value: string) => {
+  return value
+    .replace(ansiEscapePattern, "")
+    .replace(/\t/gu, tabReplacement);
 };
 
 const isUtf8Locale = (value: string) => {
@@ -231,15 +239,17 @@ export const detectCliCharset = (env: Record<string, string | undefined>): CliCh
 export const renderPanelFrame = (options: RenderPanelOptions) => {
   const charset = detectCliCharset(options.env);
   const chars = createFrameChars(charset);
-  const contentLines = [options.title, ...options.lines];
+  const sanitizedTitle = sanitizeRenderableText(options.title);
+  const sanitizedLines = options.lines.map((line) => sanitizeRenderableText(line));
+  const contentLines = [sanitizedTitle, ...sanitizedLines];
   const width = contentLines.reduce((max, line) => Math.max(max, getDisplayWidth(line)), 0);
   const horizontal = chars.horizontal.repeat(width + 2);
 
   const framedLines = [
     `${chars.topLeft}${horizontal}${chars.topRight}`,
-    `${chars.vertical} ${padLine(options.title, width)} ${chars.vertical}`,
+    `${chars.vertical} ${padLine(sanitizedTitle, width)} ${chars.vertical}`,
     `${chars.sectionLeft}${horizontal}${chars.sectionRight}`,
-    ...options.lines.map((line) => `${chars.vertical} ${padLine(line, width)} ${chars.vertical}`),
+    ...sanitizedLines.map((line) => `${chars.vertical} ${padLine(line, width)} ${chars.vertical}`),
     `${chars.bottomLeft}${horizontal}${chars.bottomRight}`,
   ];
 
@@ -247,8 +257,12 @@ export const renderPanelFrame = (options: RenderPanelOptions) => {
 };
 
 export const renderKeyValueRows = (rows: Array<{ key: string; value: string }>) => {
-  const keyWidth = rows.reduce((max, row) => Math.max(max, getDisplayWidth(row.key)), 0);
-  return rows.map((row) => `${padLine(row.key, keyWidth)} : ${row.value}`);
+  const normalizedRows = rows.map((row) => ({
+    key: sanitizeRenderableText(row.key),
+    value: sanitizeRenderableText(row.value),
+  }));
+  const keyWidth = normalizedRows.reduce((max, row) => Math.max(max, getDisplayWidth(row.key)), 0);
+  return normalizedRows.map((row) => `${padLine(row.key, keyWidth)} : ${row.value}`);
 };
 
 export const renderDiagnosticsSection = (details?: string): PanelSection | undefined => {
@@ -258,7 +272,7 @@ export const renderDiagnosticsSection = (details?: string): PanelSection | undef
 
   return {
     title: "Diagnostics",
-    lines: splitMultiline(details),
+    lines: splitMultiline(details).map((line) => sanitizeRenderableText(line)),
   };
 };
 
