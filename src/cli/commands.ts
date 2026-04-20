@@ -371,7 +371,11 @@ const trimDiagnostics = (diagnostics?: string) => {
 };
 
 const classifyStartupFailure = (message: string) => {
-  if (/certificate|verification|tls|ssl/i.test(message)) {
+  if (
+    /certificate|x509|cert chain|self[-\s]?signed|unknown ca|local issuer|hostname mismatch|unable to verify/i.test(
+      message,
+    )
+  ) {
     return "certificate";
   }
 
@@ -398,12 +402,13 @@ const formatStartupFailure = (
           title: "Status",
           lines: [
             "Codex requests are not ready yet.",
-            "Wait briefly, then try running the command again.",
+            "This startup attempt did not complete.",
+            "If this appears transient, try running the command again.",
           ],
         },
       ],
       diagnostics: trimDiagnostics(error.diagnostics),
-      commandHints: ["code-helm start", "code-helm status"],
+      commandHints: ["code-helm start"],
       env: options.env,
     });
   }

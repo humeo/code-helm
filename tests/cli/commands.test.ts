@@ -352,6 +352,35 @@ describe("runCliCommand", () => {
     ).rejects.toThrow(/tls: failed to verify certificate chain/i);
   });
 
+  test("start keeps non-certificate tls failures on generic startup-failed guidance", async () => {
+    const services = createBaseServices();
+
+    services.startForeground = async () => {
+      throw new CodexSupervisorError(
+        "CODEX_APP_SERVER_FAILED_TO_START",
+        "Managed Codex App Server failed before becoming ready: tls handshake timeout",
+        {
+          startupDisposition: "failed",
+          diagnostics: "tls handshake timeout while connecting to upstream",
+        },
+      );
+    };
+
+    let thrown: unknown;
+
+    try {
+      await runCliCommand({ kind: "start", daemon: false }, services);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    const message = (thrown as Error).message;
+    expect(message).toMatch(/Startup Failed/i);
+    expect(message).toMatch(/failed to start/i);
+    expect(message).not.toMatch(/certificate trust setup/i);
+  });
+
   test("start --daemon records background runtime state", async () => {
     const services = createBaseServices();
     let spawnedEnv: Record<string, string | undefined> | undefined;
@@ -551,6 +580,36 @@ describe("runCliCommand", () => {
 
     expect(called).toBe(true);
     expect(result.output).toContain("Autostart disabled");
+  });
+
+  test("onboard already-running keeps the non-panel style output path", async () => {
+    const services = createBaseServices();
+
+    services.runOnboarding = async () => ({ kind: "already-running" });
+    services.readRuntimeSummary = () => ({
+      pid: 2222,
+      mode: "background",
+      discord: {
+        guildId: "guild-1",
+        controlChannelId: "channel-1",
+        connected: true,
+      },
+      codex: {
+        appServerAddress: "ws://127.0.0.1:4200",
+        pid: 999,
+        running: true,
+      },
+      startedAt: "2026-04-16T08:00:00.000Z",
+    });
+
+    const result = await runCliCommand({ kind: "onboard" }, services);
+
+    expect(result.output).toContain("CodeHelm running");
+    expect(result.output).toContain("Mode: background");
+    expect(result.output).toContain(
+      "Stop the running instance with `code-helm stop`, then run `code-helm onboard` again.",
+    );
+    expect(result.output).not.toContain("CodeHelm Runtime");
   });
 
   test("stop shuts down the background daemon and its managed app server", async () => {
