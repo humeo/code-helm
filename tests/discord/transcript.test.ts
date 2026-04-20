@@ -38,7 +38,7 @@ test("does not duplicate Discord-originated user messages and drops commentary f
   expect(entries).toEqual([]);
 });
 
-test("renders non-Discord input as a remote input card with explicit reply instructions", () => {
+test("renders non-Discord input as plain text instead of a remote input card", () => {
   const turn: CodexTurn = {
     id: "turn-1",
     status: "completed",
@@ -67,17 +67,9 @@ test("renders non-Discord input as a remote input card with explicit reply instr
     },
   ]);
   const livePayload = renderTranscriptEntry(liveEntries[0]);
-  expect(livePayload).not.toHaveProperty("content");
-  expect(livePayload).toEqual(
-    expect.objectContaining({
-      embeds: [
-        expect.objectContaining({
-          title: "Remote Input",
-          description: "```text\nresume --remote\n```",
-        }),
-      ],
-    }),
-  );
+  expect(livePayload).toEqual({
+    content: "resume --remote",
+  });
   expect(snapshotEntries).toEqual([
     {
       itemId: getUserTranscriptEntryId("turn-1"),
@@ -87,17 +79,9 @@ test("renders non-Discord input as a remote input card with explicit reply instr
     },
   ]);
   const snapshotPayload = renderTranscriptEntry(snapshotEntries[0]);
-  expect(snapshotPayload).not.toHaveProperty("content");
-  expect(snapshotPayload).toEqual(
-    expect.objectContaining({
-      embeds: [
-        expect.objectContaining({
-          title: "Remote Input",
-          description: "```text\nresume --remote\n```",
-        }),
-      ],
-    }),
-  );
+  expect(snapshotPayload).toEqual({
+    content: "resume --remote",
+  });
 });
 
 test("remote input user entries use a stable turn-level id across live and snapshot views", () => {
@@ -137,7 +121,7 @@ test("remote input user entries use a stable turn-level id across live and snaps
   expect(snapshotEntries[0]?.itemId).toBe(getUserTranscriptEntryId("turn-1"));
 });
 
-test("renders synced remote input as a panel followed by a separate final assistant message", () => {
+test("renders synced remote input as plain text followed by a separate final assistant message", () => {
   const entries = collectTranscriptEntries(
     [
       {
@@ -165,18 +149,18 @@ test("renders synced remote input as a panel followed by a separate final assist
 
   expect(renderTranscriptMessages(entries)).toEqual([
     {
+      entryItemId: getUserTranscriptEntryId("turn-1"),
+      entryKind: "user",
+      isFirstChunk: true,
       itemIds: [getUserTranscriptEntryId("turn-1")],
       payload: {
-        embeds: [
-          {
-            title: "Remote Input",
-            description: "```text\nreplay only \"ok9\"\n```",
-            color: 0x2563eb,
-          },
-        ],
+        content: "replay only \"ok9\"",
       },
     },
     {
+      entryItemId: getAssistantTranscriptEntryId("turn-1"),
+      entryKind: "assistant",
+      isFirstChunk: true,
       itemIds: [getAssistantTranscriptEntryId("turn-1")],
       payload: {
         content: "ok9",
@@ -209,12 +193,18 @@ test("splits long final assistant replies across multiple Discord messages inste
 
   expect(renderTranscriptMessages(entries)).toEqual([
     {
+      entryItemId: getAssistantTranscriptEntryId("turn-1"),
+      entryKind: "assistant",
+      isFirstChunk: true,
       itemIds: [],
       payload: {
         content: longReply.slice(0, 1_900),
       },
     },
     {
+      entryItemId: getAssistantTranscriptEntryId("turn-1"),
+      entryKind: "assistant",
+      isFirstChunk: false,
       itemIds: [getAssistantTranscriptEntryId("turn-1")],
       payload: {
         content: longReply.slice(1_900),

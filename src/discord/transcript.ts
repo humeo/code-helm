@@ -22,6 +22,9 @@ export type DiscordMessagePayload = {
 };
 
 export type RenderedTranscriptMessage = {
+  entryItemId: string;
+  entryKind: TranscriptEntry["kind"];
+  isFirstChunk: boolean;
   itemIds: string[];
   payload: DiscordMessagePayload;
 };
@@ -79,7 +82,6 @@ const maxDiscordEmbedTitleLength = 256;
 const maxDiscordEmbedDescriptionLength = 4_000;
 const maxDiscordEmbedFooterTextLength = 256;
 const codexProcessEmbedColor = 0x64748b;
-const remoteInputEmbedColor = 0x2563eb;
 
 const truncate = (value: string, maxLength: number) => {
   return value.length > maxLength
@@ -139,14 +141,6 @@ const buildEmbedPayload = ({
   return {
     embeds: [embed],
   };
-};
-
-const escapeCodeFenceContent = (text: string) => {
-  return text.replaceAll("```", "``\u200b`");
-};
-
-const renderRemoteInputDescription = (text: string) => {
-  return `\`\`\`text\n${escapeCodeFenceContent(text)}\n\`\`\``;
 };
 
 export const isDiscordMessagePayloadEmpty = (
@@ -401,16 +395,6 @@ export const collectComparableTranscriptItemIds = (
 
 const renderTranscriptEntryPayloads = (entry: TranscriptEntry): DiscordMessagePayload[] => {
   if (entry.kind === "user") {
-    if (entry.source === "codex-cli") {
-      const payload = buildEmbedPayload({
-        title: "Remote Input",
-        description: renderRemoteInputDescription(entry.text),
-        color: remoteInputEmbedColor,
-      });
-
-      return [payload];
-    }
-
     return buildTextPayloads(entry.text);
   }
 
@@ -440,6 +424,9 @@ export const renderTranscriptMessages = (entries: TranscriptEntry[]) => {
     const payloads = renderTranscriptEntryPayloads(entry);
 
     return payloads.map((payload, index) => ({
+      entryItemId: entry.itemId,
+      entryKind: entry.kind,
+      isFirstChunk: index === 0,
       itemIds: index === payloads.length - 1 ? [entry.itemId] : [],
       payload,
     }));

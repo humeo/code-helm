@@ -29,6 +29,7 @@ export type ApprovalRecord = {
 export type InsertApprovalInput = {
   approvalKey?: string;
   requestId: string | number;
+  providerRequestId?: string | number;
   codexThreadId?: string;
   discordThreadId: string;
   status: ApprovalStatus;
@@ -48,6 +49,7 @@ export type InsertApprovalInput = {
 type ApprovalRow = {
   approval_key: string;
   request_id: string;
+  request_id_json: string | null;
   codex_thread_id: string;
   discord_thread_id: string;
   status: string;
@@ -101,6 +103,29 @@ const normalizeRequestId = (requestId: string | number) => {
   return String(requestId);
 };
 
+const serializeProviderRequestId = (requestId: string | number) => {
+  return JSON.stringify(requestId);
+};
+
+const parseProviderRequestId = (
+  requestId: string,
+  requestIdJson: string | null,
+): string | number => {
+  if (!requestIdJson) {
+    return requestId;
+  }
+
+  try {
+    const parsed = JSON.parse(requestIdJson);
+
+    if (typeof parsed === "string" || typeof parsed === "number") {
+      return parsed;
+    }
+  } catch {}
+
+  return requestId;
+};
+
 const normalizeApprovalKey = (approvalKey: string | undefined, requestId: string) => {
   return approvalKey ?? requestId;
 };
@@ -131,6 +156,7 @@ export const createApprovalRepo = (db: Database) => {
     `INSERT INTO approvals (
       approval_key,
       request_id,
+      request_id_json,
       codex_thread_id,
       discord_thread_id,
       status,
@@ -148,11 +174,12 @@ export const createApprovalRepo = (db: Database) => {
       resolution,
       created_at,
       updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(approval_key) DO UPDATE SET
       discord_thread_id = excluded.discord_thread_id,
       codex_thread_id = excluded.codex_thread_id,
       request_id = excluded.request_id,
+      request_id_json = excluded.request_id_json,
       status = excluded.status,
       display_title = excluded.display_title,
       command_preview = excluded.command_preview,
@@ -216,7 +243,8 @@ export const createApprovalRepo = (db: Database) => {
   );
   const updateResolutionOriginMetadataStatement = db.prepare(
     `UPDATE approvals
-      SET resolved_provider_decision = ?,
+      SET request_id_json = ?,
+          resolved_provider_decision = ?,
           resolved_by_surface = ?,
           resolved_elsewhere = ?,
           updated_at = ?
@@ -228,9 +256,12 @@ export const createApprovalRepo = (db: Database) => {
       const timestamp = now();
       const requestId = normalizeRequestId(input.requestId);
       const approvalKey = normalizeApprovalKey(input.approvalKey, requestId);
-      const existing = mapApproval(
-        getByApprovalKeyStatement.get(approvalKey) as ApprovalRow | null,
-      );
+      const existingRow = getByApprovalKeyStatement.get(approvalKey) as ApprovalRow | null;
+      const existing = mapApproval(existingRow);
+      const requestIdJson =
+        input.providerRequestId !== undefined
+          ? serializeProviderRequestId(input.providerRequestId)
+          : existingRow?.request_id_json ?? serializeProviderRequestId(input.requestId);
       const inferredCodexThreadId = getCodexThreadIdByDiscordThreadIdStatement.get(
         input.discordThreadId,
       ) as { codex_thread_id?: string } | null;
@@ -284,6 +315,7 @@ export const createApprovalRepo = (db: Database) => {
       if (existing && isTerminalApprovalStatus(existing.status)) {
         if (input.status === "resolved" && hasResolutionOriginMetadata(input)) {
           updateResolutionOriginMetadataStatement.run(
+            requestIdJson,
             resolvedProviderDecision,
             resolvedBySurface,
             resolvedElsewhere ? 1 : 0,
@@ -305,6 +337,7 @@ export const createApprovalRepo = (db: Database) => {
       insertStatement.run(
         approvalKey,
         requestId,
+        requestIdJson,
         codexThreadId,
         input.discordThreadId,
         input.status,
@@ -328,6 +361,15 @@ export const createApprovalRepo = (db: Database) => {
       return mapApproval(
         getByApprovalKeyStatement.get(approvalKey) as ApprovalRow | null,
       );
+    },
+    getProviderRequestId(approvalKey: string) {
+      const row = getByApprovalKeyStatement.get(approvalKey) as ApprovalRow | null;
+
+      if (!row) {
+        return null;
+      }
+
+      return parseProviderRequestId(row.request_id, row.request_id_json);
     },
     getByRequestId(requestId: string | number) {
       return mapApproval(

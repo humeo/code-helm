@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS current_workdirs (
 CREATE TABLE IF NOT EXISTS approvals (
   approval_key TEXT PRIMARY KEY,
   request_id TEXT NOT NULL,
+  request_id_json TEXT,
   codex_thread_id TEXT NOT NULL,
   discord_thread_id TEXT NOT NULL,
   status TEXT NOT NULL,

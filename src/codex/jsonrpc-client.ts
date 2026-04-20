@@ -1,4 +1,5 @@
 import { EventRouter } from "./event-router";
+import { logger } from "../logger";
 import {
   isApprovalRequestMethod,
   isRoutedEventMethod,
@@ -268,6 +269,11 @@ export class JsonRpcClient {
     decision,
   }: ReplyToServerRequestParams) {
     await this.initialize();
+    logger.debug("Sending server request reply", {
+      requestId,
+      requestIdType: typeof requestId,
+      decision,
+    });
     this.sendMessage({
       jsonrpc: "2.0",
       id: requestId,

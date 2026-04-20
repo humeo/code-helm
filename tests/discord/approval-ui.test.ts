@@ -127,7 +127,7 @@ test("pending panels lead with the human question and render only offered provid
   );
   expect(rendered.content).not.toContain("**Approval request**");
   expect(rendered.content).toContain("touch c.txt");
-  expect(rendered.content).toContain("Request ID: `0`");
+  expect(rendered.content).not.toContain("Request ID:");
   expect(rendered.decisions.map((button) => button.label)).toEqual([
     "Yes, proceed",
     "No, and tell Codex what to do differently",
@@ -182,7 +182,7 @@ test("terminal approvals collapse into result lines and include codex-remote ori
   expect(rendered.content.startsWith("Handled in codex-remote: approved touch i.txt")).toBe(
     true,
   );
-  expect(rendered.content).toContain("Request ID: `0`");
+  expect(rendered.content).not.toContain("Request ID:");
   expect(rendered.buttons).toEqual([]);
 });
 
@@ -211,23 +211,17 @@ test("bounds rich pending approval content to Discord's message limit", () => {
 
   expect(rendered.content.length).toBeLessThanOrEqual(2000);
   expect(rendered.content).toContain("Would you like to run this command?");
-  expect(rendered.content).toContain("Request ID: `req-");
+  expect(rendered.content).not.toContain("Request ID:");
   expect(rendered.content).toContain("…");
 });
 
-test("renders request id metadata with the truncated lifecycle form", () => {
+test("request id truncation stays available for legacy fallback matching", () => {
   const requestId = `req-${"1234567890".repeat(30)}`;
   const requestIdText = renderApprovalRequestIdText(requestId);
-  const rendered = renderApprovalLifecyclePayload({
-    approval: createApproval({
-      requestId,
-    }),
-  });
 
   expect(requestIdText).toContain("Request ID: `req-");
   expect(requestIdText).toContain("…");
   expect(requestIdText).toContain("7890`");
-  expect(rendered.content).toContain(requestIdText);
 });
 
 test("renders long request ids with both prefix and suffix to reduce collisions", () => {

@@ -818,6 +818,7 @@ test("keeps non-session repository surfaces narrow", () => {
     "getByRequestId",
     "getLatestByCodexThreadIdAndRequestId",
     "getLatestByDiscordThreadId",
+    "getProviderRequestId",
     "getUniqueByRequestId",
     "insert",
     "listPendingByDiscordThreadId",

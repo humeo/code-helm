@@ -30,6 +30,7 @@ import {
   createControlChannelServices,
   resolveCloseSessionCommand,
   resolveSyncSessionCommand,
+  applyDiscordReplyReference,
   describeSessionAccessMode,
   formatManagedSessionList,
   getSessionRecoveryProbeOutcome,
@@ -334,6 +335,31 @@ test("startCodeHelm does not enter a running runtime when managed Codex startup 
 
   expect(startedRuntime).toBe(false);
   expect(clearedStateDirs).toEqual(["/tmp/codehelm-state"]);
+});
+
+test("applyDiscordReplyReference leaves non-reply payloads unchanged", () => {
+  expect(applyDiscordReplyReference({
+    payload: {
+      content: "plain message",
+    },
+  })).toEqual({
+    content: "plain message",
+  });
+});
+
+test("applyDiscordReplyReference encodes Discord native reply references when asked", () => {
+  expect(applyDiscordReplyReference({
+    payload: {
+      content: "reply message",
+    },
+    replyToMessageId: "discord-message-1",
+  })).toEqual({
+    content: "reply message",
+    reply: {
+      messageReference: "discord-message-1",
+      failIfNotExists: false,
+    },
+  });
 });
 
 const createResumeOutcome = (
@@ -2703,8 +2729,15 @@ test("resume session applies the waiting-approval lifecycle message before reope
 
   const recoveredMessage: ApprovalLifecycleTestMessage = {
     content: "Approval `req-7`: pending.",
-    async edit(payload: { content?: string; components?: unknown[] }) {
-      recoveredMessage.content = payload.content ?? recoveredMessage.content;
+    async edit(payload: {
+      content?: string;
+      components?: unknown[];
+      embeds?: Array<{ description?: string }>;
+    }) {
+      recoveredMessage.content =
+        payload.content
+        ?? payload.embeds?.[0]?.description
+        ?? recoveredMessage.content;
       return recoveredMessage;
     },
   };
@@ -3558,9 +3591,14 @@ test("approval resolution updates the existing lifecycle message in place even w
     content: renderApprovalLifecycleMessage({
       approval: pendingApproval,
     }),
-    async edit(payload: { content?: string; components?: unknown[] }) {
-      calls.push(`thread:${payload.content}:${payload.components?.length ?? 0}`);
-      lifecycleMessage.content = payload.content ?? lifecycleMessage.content;
+    async edit(payload: {
+      content?: string;
+      components?: unknown[];
+      embeds?: Array<{ description?: string }>;
+    }) {
+      const description = payload.embeds?.[0]?.description;
+      calls.push(`thread:${description}:${payload.components?.length ?? 0}`);
+      lifecycleMessage.content = payload.content ?? description ?? lifecycleMessage.content;
       return lifecycleMessage;
     },
   };
@@ -3574,7 +3612,9 @@ test("approval resolution updates the existing lifecycle message in place even w
     currentThreadMessagePromise: undefined,
     recoverThreadMessage: async () => undefined,
     sendThreadMessage: async (payload) => {
-      calls.push(`send:${payload.content}:${payload.components?.length ?? 0}`);
+      calls.push(
+        `send:${payload.embeds?.[0]?.description}:${payload.components?.length ?? 0}`,
+      );
       return lifecycleMessage;
     },
   });
@@ -3583,7 +3623,7 @@ test("approval resolution updates the existing lifecycle message in place even w
     `thread:${resolvedContent}:0`,
   ]);
   expect(resolvedContent.startsWith("Resolved: touch c.txt")).toBe(true);
-  expect(resolvedContent).toContain("Request ID: `req-7`");
+  expect(resolvedContent).not.toContain("Request ID:");
 });
 
 test("managed thread deletion detaches the Discord container without touching unknown threads", () => {
@@ -3735,6 +3775,110 @@ test("approval interaction preserves numeric-looking string request ids", async 
   expect(rpcPayloads).toEqual([
     {
       requestId: "01",
+      decision: "accept",
+    },
+  ]);
+});
+
+test("approval interaction prefers the live provider request id type over the stored string id", async () => {
+  const rpcPayloads: Array<{ requestId: string | number; decision: string }> = [];
+
+  const handled = await handleApprovalInteraction({
+    interaction: {
+      customId: "approval|turn-1%3Aitem-1|accept",
+      user: { id: "owner-1" },
+      deferUpdate: async () => {},
+      reply: async () => {},
+    } as never,
+    client: {
+      replyToServerRequest: async (payload: { requestId: string | number; decision: string }) => {
+        rpcPayloads.push(payload);
+      },
+    } as never,
+    sessionRepo: {
+      getByDiscordThreadId: () =>
+        createSessionRecord({
+          discordThreadId: "discord-thread-1",
+          ownerDiscordUserId: "owner-1",
+        }),
+    } as never,
+    approvalRepo: {
+      getByApprovalKey: () => ({
+        approvalKey: "turn-1:item-1",
+        requestId: "1",
+        codexThreadId: "codex-thread-1",
+        discordThreadId: "discord-thread-1",
+        status: "pending",
+        decisionCatalog: JSON.stringify([
+          {
+            key: "accept",
+            providerDecision: "accept",
+            label: "Yes, proceed",
+          },
+        ]),
+      }),
+      insert: () => {},
+    } as never,
+    runtimeProviderRequestIdsByApprovalKey: new Map([
+      ["turn-1:item-1", 1],
+    ]),
+  } as never);
+
+  expect(handled).toBe(true);
+  expect(rpcPayloads).toEqual([
+    {
+      requestId: 1,
+      decision: "accept",
+    },
+  ]);
+});
+
+test("approval interaction falls back to the persisted provider request id after restart", async () => {
+  const rpcPayloads: Array<{ requestId: string | number; decision: string }> = [];
+
+  const handled = await handleApprovalInteraction({
+    interaction: {
+      customId: "approval|turn-1%3Aitem-1|accept",
+      user: { id: "owner-1" },
+      deferUpdate: async () => {},
+      reply: async () => {},
+    } as never,
+    client: {
+      replyToServerRequest: async (payload: { requestId: string | number; decision: string }) => {
+        rpcPayloads.push(payload);
+      },
+    } as never,
+    sessionRepo: {
+      getByDiscordThreadId: () =>
+        createSessionRecord({
+          discordThreadId: "discord-thread-1",
+          ownerDiscordUserId: "owner-1",
+        }),
+    } as never,
+    approvalRepo: {
+      getByApprovalKey: () => ({
+        approvalKey: "turn-1:item-1",
+        requestId: "1",
+        codexThreadId: "codex-thread-1",
+        discordThreadId: "discord-thread-1",
+        status: "pending",
+        decisionCatalog: JSON.stringify([
+          {
+            key: "accept",
+            providerDecision: "accept",
+            label: "Yes, proceed",
+          },
+        ]),
+      }),
+      getProviderRequestId: () => 1,
+      insert: () => {},
+    } as never,
+  } as never);
+
+  expect(handled).toBe(true);
+  expect(rpcPayloads).toEqual([
+    {
+      requestId: 1,
       decision: "accept",
     },
   ]);
@@ -4941,9 +5085,57 @@ test("live command approvals persist snapshot data before lifecycle rendering", 
       + "```\n\n"
       + "要允许我在项目根目录创建 c.txt 吗？\n\n"
       + "CWD: `/tmp/ws1/app`\n"
-      + "Kind: `command_execution`\n"
-      + "Request ID: `req-7`",
+      + "Kind: `command_execution`",
   );
+
+  db.close();
+});
+
+test("live command approvals strip common shell wrappers from the displayed command preview", () => {
+  const db = createDatabaseClient(":memory:");
+  applyMigrations(db);
+  const sessionRepo = createSessionRepo(db);
+  const approvalRepo = createApprovalRepo(db);
+
+  sessionRepo.insert({
+    discordThreadId: "discord-thread-1",
+    codexThreadId: "codex-1",
+    ownerDiscordUserId: "owner-1",
+    cwd: "/tmp/ws1/app",
+    state: "waiting-approval",
+  });
+
+  const approval = persistApprovalRequestSnapshot({
+    approvalRepo,
+    session: createSessionRecord({
+      codexThreadId: "codex-1",
+      discordThreadId: "discord-thread-1",
+    }),
+    method: "item/commandExecution/requestApproval",
+    event: {
+      requestId: "req-7a",
+      threadId: "codex-1",
+      turnId: "turn-1",
+      itemId: "call-1",
+      cmd: "/bin/zsh -lc 'touch c.txt'",
+      justification: "要允许我在项目根目录创建 c.txt 吗？",
+      cwd: "/tmp/ws1/app",
+      availableDecisions: ["accept", "cancel"],
+    },
+  });
+
+  expect(approvalRepo.getByApprovalKey("turn-1:call-1")).toMatchObject({
+    approvalKey: "turn-1:call-1",
+    requestId: "req-7a",
+    status: "pending",
+    commandPreview: "touch c.txt",
+  });
+  expect(renderApprovalLifecycleMessage({
+    approval,
+  })).toContain("touch c.txt");
+  expect(renderApprovalLifecycleMessage({
+    approval,
+  })).not.toContain("/bin/zsh -lc");
 
   db.close();
 });
@@ -4997,8 +5189,7 @@ test("live file-change approvals persist fallback title and request kind before 
     "**Would you like to apply these file changes?**\n\n"
       + "Allow updating tracked files?\n\n"
       + "CWD: `/tmp/ws1/app`\n"
-      + "Kind: `file_change`\n"
-      + "Request ID: `req-8`",
+      + "Kind: `file_change`",
   );
 
   db.close();
@@ -5051,8 +5242,7 @@ test("live permissions approvals persist fallback title and request kind before 
     "**Would you like to grant these permissions?**\n\n"
       + "Allow elevated permissions for this step?\n\n"
       + "CWD: `/tmp/ws1/app`\n"
-      + "Kind: `permissions`\n"
-      + "Request ID: `req-9`",
+      + "Kind: `permissions`",
   );
 
   db.close();
@@ -5297,6 +5487,7 @@ test("approval lifecycle payload renders provider-driven thread components safel
     approval,
   });
   const rows = threadPayload.components ?? [];
+  const embeds = threadPayload.embeds ?? [];
   const components = rows.flatMap((row) => row.components);
   const labels = components.map((component) =>
     (component as { data?: { label?: string } }).data?.label ?? "",
@@ -5306,6 +5497,11 @@ test("approval lifecycle payload renders provider-driven thread components safel
   );
 
   expect(threadPayload.allowedMentions).toEqual({ parse: [] });
+  expect(threadPayload.content).toBeUndefined();
+  expect(embeds).toHaveLength(1);
+  expect(embeds[0]).toMatchObject({
+    title: "Command approval",
+  });
   expect(rows).toHaveLength(2);
   expect(rows[0]?.components).toHaveLength(5);
   expect(rows[1]?.components).toHaveLength(1);
@@ -5340,14 +5536,17 @@ test("approval lifecycle payload keeps the stored approval body and only drops c
     }),
   });
 
-  expect(pending.content).toBe(
+  expect(pending.content).toBeUndefined();
+  expect(pending.embeds?.[0]?.description).toBe(
     renderApprovalLifecycleMessage({
       approval: pendingApproval,
     }),
   );
   expect((pending.components ?? []).length).toBe(1);
-  expect(approved.content.startsWith("Approved: touch c.txt")).toBe(true);
-  expect(approved.content).toContain("Request ID: `req-7`");
+  expect(approved.content).toBeUndefined();
+  expect(approved.embeds?.[0]?.description?.startsWith("Approved: touch c.txt")).toBe(
+    true,
+  );
   expect(approved.components).toEqual([]);
 });
 
@@ -5518,7 +5717,7 @@ test("approval lifecycle recovery prefers the approval-key-scoped thread message
   expect(recovered?.id).toBe("m2");
 });
 
-test("approval lifecycle recovery matches resolved no-button messages with truncated request ids", async () => {
+test("current embed-only resolved approvals do not rely on visible request ids for history recovery", async () => {
   const requestId = `req-${"1234567890".repeat(12)}`;
   const lifecycle = renderApprovalLifecyclePayload({
     approval: createApprovalRecord({
@@ -5533,7 +5732,7 @@ test("approval lifecycle recovery matches resolved no-button messages with trunc
     fetchPage: async () => [
       {
         id: "m1",
-        content: lifecycle.content,
+        content: lifecycle.content ?? "",
         editable: true,
         author: { bot: true, id: "bot-1" },
         components: [],
@@ -5541,29 +5740,24 @@ test("approval lifecycle recovery matches resolved no-button messages with trunc
     ],
   });
 
-  expect(lifecycle.content).toContain("Request ID: `req-");
-  expect(lifecycle.content).toContain("…");
-  expect(recovered?.id).toBe("m1");
+  expect(lifecycle.content).toBeUndefined();
+  expect(recovered).toBeUndefined();
 });
 
-test("approval lifecycle recovery does not collide when long request ids share a prefix", async () => {
+test("approval lifecycle recovery still avoids collisions when legacy request-id fallback is used", async () => {
   const sharedPrefix = `req-${"1234567890".repeat(8)}`;
   const requestId = `${sharedPrefix}-alpha-tail`;
   const otherRequestId = `${sharedPrefix}-omega-tail`;
-  const otherLifecycle = renderApprovalLifecyclePayload({
-    approval: createApprovalRecord({
-      requestId: otherRequestId,
-      status: "resolved",
-    }),
-  });
+  const otherLifecycle = `Resolved: touch c.txt\nRequest ID: \`${otherRequestId}\``;
 
   const recovered = await recoverApprovalLifecycleMessageFromHistory({
     requestId,
     botUserId: "bot-1",
+    allowRequestIdFallback: true,
     fetchPage: async () => [
       {
         id: "m1",
-        content: otherLifecycle.content,
+        content: otherLifecycle,
         editable: true,
         author: { bot: true, id: "bot-1" },
         components: [],
@@ -5591,7 +5785,7 @@ test("approval lifecycle recovery does not reuse a no-button message for a diffe
     fetchPage: async () => [
       {
         id: "m1",
-        content: lifecycle.content,
+        content: lifecycle.content ?? "",
         editable: true,
         author: { bot: true, id: "bot-1" },
         components: [],
@@ -5603,14 +5797,7 @@ test("approval lifecycle recovery does not reuse a no-button message for a diffe
 });
 
 test("approval lifecycle recovery can reuse a legacy no-button message when the request id is uniquely owned", async () => {
-  const lifecycle = renderApprovalLifecyclePayload({
-    approvalKey: "legacy:item-1",
-    approval: createApprovalRecord({
-      approvalKey: "legacy:item-1",
-      requestId: "req-legacy",
-      status: "resolved",
-    }),
-  });
+  const lifecycle = "Approved: touch c.txt\nRequest ID: `req-legacy`";
 
   const recovered = await recoverApprovalLifecycleMessageFromHistory({
     approvalKey: "legacy:item-1",
@@ -5620,7 +5807,7 @@ test("approval lifecycle recovery can reuse a legacy no-button message when the 
     fetchPage: async () => [
       {
         id: "m1",
-        content: lifecycle.content,
+        content: lifecycle,
         editable: true,
         author: { bot: true, id: "bot-1" },
         components: [],

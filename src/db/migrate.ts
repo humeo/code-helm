@@ -71,6 +71,10 @@ const approvalsTableHasDecisionResolutionColumns = (db: Database) => {
     && hasColumn(db, "approvals", "resolved_elsewhere");
 };
 
+const approvalsTableHasRequestIdJsonColumn = (db: Database) => {
+  return hasColumn(db, "approvals", "request_id_json");
+};
+
 const assertLegacySessionsCanBackfillCwd = (
   db: Database,
   hasCwdColumn: boolean,
@@ -221,6 +225,7 @@ const rebuildApprovalsTableWithStableIdentity = (db: Database) => {
   const hasJustificationColumn = hasColumn(db, "approvals", "justification");
   const hasCwdColumn = hasColumn(db, "approvals", "cwd");
   const hasRequestKindColumn = hasColumn(db, "approvals", "request_kind");
+  const hasRequestIdJsonColumn = approvalsTableHasRequestIdJsonColumn(db);
   const hasThreadMessageIdColumn = hasColumn(db, "approvals", "thread_message_id");
   const hasDecisionCatalogColumn = hasColumn(db, "approvals", "decision_catalog");
   const hasResolvedProviderDecisionColumn = hasColumn(
@@ -249,6 +254,9 @@ const rebuildApprovalsTableWithStableIdentity = (db: Database) => {
   const requestKindSelect = hasRequestKindColumn
     ? "approvals.request_kind"
     : "NULL";
+  const requestIdJsonSelect = hasRequestIdJsonColumn
+    ? "COALESCE(approvals.request_id_json, json_quote(approvals.request_id))"
+    : "json_quote(approvals.request_id)";
   const threadMessageIdSelect = hasThreadMessageIdColumn
     ? "approvals.thread_message_id"
     : "NULL";
@@ -281,6 +289,7 @@ const rebuildApprovalsTableWithStableIdentity = (db: Database) => {
       CREATE TABLE approvals_next (
         approval_key TEXT PRIMARY KEY,
         request_id TEXT NOT NULL,
+        request_id_json TEXT,
         codex_thread_id TEXT NOT NULL,
         discord_thread_id TEXT NOT NULL,
         status TEXT NOT NULL,
@@ -307,6 +316,7 @@ const rebuildApprovalsTableWithStableIdentity = (db: Database) => {
       INSERT INTO approvals_next (
         approval_key,
         request_id,
+        request_id_json,
         codex_thread_id,
         discord_thread_id,
         status,
@@ -328,6 +338,7 @@ const rebuildApprovalsTableWithStableIdentity = (db: Database) => {
       SELECT
         ${approvalKeySelect},
         approvals.request_id,
+        ${requestIdJsonSelect},
         ${codexThreadIdSelect},
         approvals.discord_thread_id,
         approvals.status,
@@ -371,6 +382,7 @@ const upgradeApprovalsSchema = (db: Database) => {
   if (
     !approvalsTableHasSnapshotColumns(db)
     || !approvalsTableHasDecisionResolutionColumns(db)
+    || !approvalsTableHasRequestIdJsonColumn(db)
   ) {
     const missingColumns = [
       ["display_title", "TEXT"],
@@ -378,6 +390,7 @@ const upgradeApprovalsSchema = (db: Database) => {
       ["justification", "TEXT"],
       ["cwd", "TEXT"],
       ["request_kind", "TEXT"],
+      ["request_id_json", "TEXT"],
       ["thread_message_id", "TEXT"],
       ["decision_catalog", "TEXT"],
       ["resolved_provider_decision", "TEXT"],
@@ -389,6 +402,12 @@ const upgradeApprovalsSchema = (db: Database) => {
       db.exec(`ALTER TABLE approvals ADD COLUMN ${columnName} ${columnType}`);
     }
   }
+
+  db.exec(`
+    UPDATE approvals
+    SET request_id_json = json_quote(request_id)
+    WHERE request_id_json IS NULL
+  `);
 };
 
 export const applyMigrations = (db: Database) => {

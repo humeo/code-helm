@@ -286,6 +286,56 @@ test("numeric approval request ids round-trip through persistence", () => {
   db.close();
 });
 
+test("repo preserves the original provider request id type", () => {
+  const db = createMigratedDb();
+  seedWorkspaceGraph(db);
+  const repo = createApprovalRepo(db);
+
+  repo.insert({
+    approvalKey: "turn-1:item-number",
+    requestId: 9,
+    discordThreadId: "123",
+    status: "pending",
+  });
+  repo.insert({
+    approvalKey: "turn-1:item-string",
+    requestId: "01",
+    discordThreadId: "123",
+    status: "pending",
+  });
+
+  expect(repo.getProviderRequestId("turn-1:item-number")).toBe(9);
+  expect(repo.getProviderRequestId("turn-1:item-string")).toBe("01");
+
+  db.close();
+});
+
+test("repo keeps the original provider request id when later updates only have the normalized string", () => {
+  const db = createMigratedDb();
+  seedWorkspaceGraph(db);
+  const repo = createApprovalRepo(db);
+
+  repo.insert({
+    approvalKey: "turn-1:item-1",
+    requestId: 12,
+    discordThreadId: "123",
+    status: "pending",
+  });
+
+  repo.insert({
+    approvalKey: "turn-1:item-1",
+    requestId: "12",
+    discordThreadId: "123",
+    status: "approved",
+    resolvedByDiscordUserId: "u1",
+    resolution: "approved",
+  });
+
+  expect(repo.getProviderRequestId("turn-1:item-1")).toBe(12);
+
+  db.close();
+});
+
 test("approval snapshot fields survive a status-only update", () => {
   const db = createMigratedDb();
   seedWorkspaceGraph(db);

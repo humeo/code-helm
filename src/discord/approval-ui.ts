@@ -310,8 +310,6 @@ const renderPendingApprovalBody = (
     );
   }
 
-  metadata.push(renderApprovalRequestIdText(approval.requestId));
-
   if (metadata.length > 0) {
     lines.push("", ...metadata);
   }
@@ -417,17 +415,14 @@ export const renderApprovalLifecyclePayload = ({
 
   if (approval.status !== "pending") {
     return {
-      content: [
-        renderApprovalResultLine({
-          status: approval.status,
-          commandPreview: snapshot.commandPreview,
-          displayTitle: snapshot.displayTitle,
-          resolvedProviderDecision: snapshot.resolvedProviderDecision,
-          resolvedElsewhere: snapshot.resolvedElsewhere,
-          resolvedBySurface: snapshot.resolvedBySurface,
-        }),
-        renderApprovalRequestIdText(approval.requestId),
-      ].join("\n"),
+      content: renderApprovalResultLine({
+        status: approval.status,
+        commandPreview: snapshot.commandPreview,
+        displayTitle: snapshot.displayTitle,
+        resolvedProviderDecision: snapshot.resolvedProviderDecision,
+        resolvedElsewhere: snapshot.resolvedElsewhere,
+        resolvedBySurface: snapshot.resolvedBySurface,
+      }),
       buttons: [],
       decisions: [],
     };

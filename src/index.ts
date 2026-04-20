@@ -15,6 +15,7 @@ import {
   type AnyThreadChannel,
   type Client,
   type MessageMentionOptions,
+  type ReplyOptions,
   type RESTPostAPIChatInputApplicationCommandsJSONBody,
 } from "discord.js";
 import { z } from "zod";
@@ -43,6 +44,7 @@ import type {
   CodexTurn,
   CodexTurnItem,
   CodexUserMessageItem,
+  JsonRpcId,
   RoutedEventMap,
   ServerRequestResolvedEvent,
   StartTurnParams,
@@ -121,6 +123,7 @@ import {
   collectTranscriptEntries,
   collectTranscriptItemIds,
   getAssistantTranscriptEntryId,
+  type DiscordMessageEmbed,
   type DiscordMessagePayload,
   getProcessTranscriptEntryId,
   getUserTranscriptEntryId,
@@ -234,6 +237,13 @@ type DiscordChannelMessagePayload = DiscordMessagePayload & {
   components?: DiscordMessageComponents;
   allowedMentions?: MessageMentionOptions;
 };
+type DiscordCreateChannelMessagePayload = DiscordChannelMessagePayload & {
+  reply?: ReplyOptions;
+};
+type DiscordApprovalLifecyclePayload = DiscordChannelMessagePayload & {
+  components?: DiscordMessageComponents;
+  allowedMentions?: MessageMentionOptions;
+};
 type ApprovalLifecycleMessage = {
   id?: string;
   content: string;
@@ -265,7 +275,7 @@ type StatusCardCandidate = {
   };
 };
 type SendableChannel = {
-  send(payload: DiscordChannelMessagePayload): Promise<Message<boolean>>;
+  send(payload: DiscordCreateChannelMessagePayload): Promise<Message<boolean>>;
 };
 type StatusCardRecoverableChannel = {
   messages: {
@@ -290,6 +300,8 @@ type TranscriptRuntime = {
   seenItemIds: Set<string>;
   finalizingItemIds: Set<string>;
   pendingDiscordInputs: string[];
+  pendingDiscordInputReplyMessageIds: Array<string | undefined>;
+  turnReplyMessageIds: Map<string, string>;
   trustedExternalTurnIds: Set<string>;
   closedTurnIds: Set<string>;
   typingActive: boolean;
@@ -321,6 +333,10 @@ const discordTypingPulseIntervalMs = 8_000;
 const approvalAllowedMentions = {
   parse: [],
 } satisfies MessageMentionOptions;
+const approvalPendingEmbedColor = 0xf59e0b;
+const approvalApprovedEmbedColor = 0x16a34a;
+const approvalDeclinedEmbedColor = 0xdc2626;
+const approvalNeutralEmbedColor = 0x64748b;
 
 export const shouldRenderLiveAssistantTranscriptBubble = (
   phase: string | null | undefined,
@@ -1251,6 +1267,46 @@ const parseStoredApprovalDecisions = (
   }
 };
 
+const toApprovalLifecycleEmbedTitle = (
+  approval: Pick<ApprovalRecord, "displayTitle">,
+) => {
+  return approval.displayTitle ?? "Approval request";
+};
+
+const toApprovalLifecycleEmbedColor = (
+  approval: Pick<ApprovalRecord, "status">,
+) => {
+  if (approval.status === "pending") {
+    return approvalPendingEmbedColor;
+  }
+
+  if (approval.status === "approved") {
+    return approvalApprovedEmbedColor;
+  }
+
+  if (approval.status === "declined") {
+    return approvalDeclinedEmbedColor;
+  }
+
+  return approvalNeutralEmbedColor;
+};
+
+const renderApprovalLifecycleEmbeds = ({
+  approval,
+  description,
+}: {
+  approval: Pick<ApprovalRecord, "displayTitle" | "status">;
+  description: string;
+}) => {
+  const embed: DiscordMessageEmbed = {
+    title: truncateApprovalText(toApprovalLifecycleEmbedTitle(approval), 256),
+    description,
+    color: toApprovalLifecycleEmbedColor(approval),
+  };
+
+  return [embed];
+};
+
 const approvalButtonStyle = (providerDecision: string) => {
   if (providerDecision === "decline") {
     return ButtonStyle.Danger;
@@ -1325,7 +1381,7 @@ export const renderApprovalLifecyclePayload = ({
     | "resolvedBySurface"
     | "resolvedElsewhere"
   >;
-}) => {
+}): DiscordApprovalLifecyclePayload => {
   const lifecycle = renderStoredApprovalLifecyclePayload({
     approval: {
       requestId: approval.requestId,
@@ -1343,7 +1399,10 @@ export const renderApprovalLifecyclePayload = ({
   });
 
   return {
-    content: lifecycle.content,
+    embeds: renderApprovalLifecycleEmbeds({
+      approval,
+      description: lifecycle.content,
+    }),
     components: buildApprovalComponents(
       approvalKey ?? approval.approvalKey ?? approval.requestId,
       lifecycle.decisions,
@@ -1372,7 +1431,7 @@ export const renderApprovalOwnerDmPayload = ({
     | "resolvedBySurface"
     | "resolvedElsewhere"
   >;
-}) => {
+}): DiscordApprovalLifecyclePayload => {
   return renderApprovalLifecyclePayload({
     approvalKey,
     approval,
@@ -1724,6 +1783,8 @@ const buildTranscriptRuntime = (): TranscriptRuntime => {
     seenItemIds: new Set<string>(),
     finalizingItemIds: new Set<string>(),
     pendingDiscordInputs: [],
+    pendingDiscordInputReplyMessageIds: [],
+    turnReplyMessageIds: new Map(),
     trustedExternalTurnIds: new Set<string>(),
     closedTurnIds: new Set<string>(),
     typingActive: false,
@@ -1806,6 +1867,50 @@ export const seedTranscriptRuntimeSeenItemsFromSnapshot = ({
   });
 };
 
+const consumePendingDiscordReplyReferences = ({
+  runtime,
+  consumedCount,
+}: {
+  runtime: Pick<TranscriptRuntime, "pendingDiscordInputReplyMessageIds">;
+  consumedCount: number;
+}) => {
+  for (let index = 0; index < consumedCount; index += 1) {
+    runtime.pendingDiscordInputReplyMessageIds.shift();
+  }
+};
+
+const rememberPendingDiscordReplyReferenceForTurn = ({
+  runtime,
+  turnId,
+}: {
+  runtime: Pick<TranscriptRuntime, "pendingDiscordInputReplyMessageIds" | "turnReplyMessageIds">;
+  turnId?: string;
+}) => {
+  const replyToMessageId = runtime.pendingDiscordInputReplyMessageIds[0];
+
+  if (!turnId || !replyToMessageId) {
+    return;
+  }
+
+  runtime.turnReplyMessageIds.set(turnId, replyToMessageId);
+};
+
+const resolveTranscriptReplyToMessageId = ({
+  runtime,
+  renderedMessage,
+}: {
+  runtime: Pick<TranscriptRuntime, "turnReplyMessageIds">;
+  renderedMessage: ReturnType<typeof renderTranscriptMessages>[number];
+}) => {
+  if (!renderedMessage.isFirstChunk || renderedMessage.entryKind !== "assistant") {
+    return undefined;
+  }
+
+  const turnId = readTurnIdFromTranscriptEntryId(renderedMessage.entryItemId);
+
+  return turnId ? runtime.turnReplyMessageIds.get(turnId) : undefined;
+};
+
 const relayTranscriptEntries = async ({
   client,
   channelId,
@@ -1823,6 +1928,7 @@ const relayTranscriptEntries = async ({
   activeTurnId?: string;
   activeTurnFooter?: ProcessFooterText;
 }) => {
+  const pendingDiscordInputCount = runtime.pendingDiscordInputs.length;
   const entries = collectTranscriptEntries(turns, {
     source,
     pendingDiscordInputs: runtime.pendingDiscordInputs,
@@ -1835,15 +1941,37 @@ const relayTranscriptEntries = async ({
       source,
     })
   );
+  const consumedPendingDiscordInputs =
+    pendingDiscordInputCount - runtime.pendingDiscordInputs.length;
+
+  if (consumedPendingDiscordInputs > 0) {
+    consumePendingDiscordReplyReferences({
+      runtime,
+      consumedCount: consumedPendingDiscordInputs,
+    });
+  }
 
   for (const renderedMessage of renderTranscriptMessages(entries)) {
     const rendered = renderedMessage.payload;
     if (!isDiscordMessagePayloadEmpty(rendered)) {
-      await sendChannelMessage(client, channelId, rendered);
+      await sendChannelMessage(client, channelId, rendered, {
+        replyToMessageId: resolveTranscriptReplyToMessageId({
+          runtime,
+          renderedMessage,
+        }),
+      });
     }
 
     for (const itemId of renderedMessage.itemIds) {
       runtime.seenItemIds.add(itemId);
+
+      if (renderedMessage.entryKind === "assistant") {
+        const turnId = readTurnIdFromTranscriptEntryId(itemId);
+
+        if (turnId) {
+          runtime.turnReplyMessageIds.delete(turnId);
+        }
+      }
     }
   }
 
@@ -1951,6 +2079,66 @@ const readApprovalEventStringFromCandidates = (
   return null;
 };
 
+const shellWrapperBinaryPattern = /(?:^|\/)(?:bash|zsh|sh)$/;
+
+const unwrapQuotedShellCommand = (value: string) => {
+  const trimmed = value.trim();
+
+  if (trimmed.length < 2) {
+    return null;
+  }
+
+  const quote = trimmed[0];
+
+  if ((quote !== "'" && quote !== "\"") || trimmed.at(-1) !== quote) {
+    return null;
+  }
+
+  const inner = trimmed.slice(1, -1);
+
+  if (quote === "\"") {
+    return inner.replace(/\\(["\\$`])/g, "$1");
+  }
+
+  return inner.replaceAll("'\"'\"'", "'");
+};
+
+const normalizeApprovalCommandPreview = (value: string | null) => {
+  if (!value) {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  const shellMatch = trimmed.match(/^(?<shell>\S+)\s+(?<rest>[\s\S]+)$/);
+
+  if (!shellMatch?.groups?.shell || !shellWrapperBinaryPattern.test(shellMatch.groups.shell)) {
+    return value;
+  }
+
+  let remainder = shellMatch.groups.rest.trimStart();
+  let sawCommandFlag = false;
+
+  while (remainder.startsWith("-")) {
+    const optionMatch = remainder.match(/^(?<option>-[A-Za-z]+)\s*/);
+
+    if (!optionMatch?.groups?.option) {
+      return value;
+    }
+
+    if (optionMatch.groups.option.includes("c")) {
+      sawCommandFlag = true;
+    }
+
+    remainder = remainder.slice(optionMatch[0].length).trimStart();
+  }
+
+  if (!sawCommandFlag || remainder.length === 0) {
+    return value;
+  }
+
+  return unwrapQuotedShellCommand(remainder) ?? value;
+};
+
 const extractApprovalSnapshotFromRequest = ({
   method,
   event,
@@ -1964,7 +2152,9 @@ const extractApprovalSnapshotFromRequest = ({
     displayTitle: approvalDisplayTitleByRequestKind[requestKind] ?? "Approval request",
     commandPreview:
       method === "item/commandExecution/requestApproval"
-        ? readApprovalEventStringFromCandidates(event, "command", "cmd")
+        ? normalizeApprovalCommandPreview(
+          readApprovalEventStringFromCandidates(event, "command", "cmd"),
+        )
         : null,
     justification: readApprovalEventStringFromCandidates(event, "justification", "reason"),
     cwd: readApprovalEventString(event, "cwd"),
@@ -2009,11 +2199,19 @@ const getRuntimeApprovalRequestAssociations = (
 export const rememberRuntimeApprovalRequest = (
   runtimeApprovalKeysByRequestId: Map<string, Set<string>>,
   approval: Pick<ApprovalRecord, "approvalKey" | "requestId">,
+  options?: {
+    providerRequestId?: JsonRpcId;
+    runtimeProviderRequestIdsByApprovalKey?: Map<string, JsonRpcId>;
+  },
 ) => {
   getRuntimeApprovalRequestAssociations(
     runtimeApprovalKeysByRequestId,
     approval.requestId,
   ).add(approval.approvalKey);
+  options?.runtimeProviderRequestIdsByApprovalKey?.set(
+    approval.approvalKey,
+    options.providerRequestId ?? approval.requestId,
+  );
 };
 
 export const shouldHandlePersistedApprovalRequestAtRuntime = (
@@ -2034,18 +2232,40 @@ export const shouldHandlePersistedApprovalRequestAtRuntime = (
 const forgetRuntimeApprovalRequest = (
   runtimeApprovalKeysByRequestId: Map<string, Set<string>>,
   approval: Pick<ApprovalRecord, "approvalKey" | "requestId">,
+  runtimeProviderRequestIdsByApprovalKey?: Map<string, JsonRpcId>,
 ) => {
   const approvalKeys = runtimeApprovalKeysByRequestId.get(approval.requestId);
 
   if (!approvalKeys) {
+    runtimeProviderRequestIdsByApprovalKey?.delete(approval.approvalKey);
     return;
   }
 
   approvalKeys.delete(approval.approvalKey);
+  runtimeProviderRequestIdsByApprovalKey?.delete(approval.approvalKey);
 
   if (approvalKeys.size === 0) {
     runtimeApprovalKeysByRequestId.delete(approval.requestId);
   }
+};
+
+const resolveProviderRequestIdForApproval = ({
+  approval,
+  approvalRepo,
+  runtimeProviderRequestIdsByApprovalKey,
+}: {
+  approval: Pick<ApprovalRecord, "approvalKey" | "requestId">;
+  approvalRepo: ReturnType<typeof createApprovalRepo>;
+  runtimeProviderRequestIdsByApprovalKey?: Map<string, JsonRpcId>;
+}) => {
+  const persistedProviderRequestId =
+    typeof approvalRepo.getProviderRequestId === "function"
+      ? approvalRepo.getProviderRequestId(approval.approvalKey)
+      : null;
+
+  return runtimeProviderRequestIdsByApprovalKey?.get(approval.approvalKey)
+    ?? persistedProviderRequestId
+    ?? approval.requestId;
 };
 
 export const resolveStoredApprovalForResolvedEvent = ({
@@ -4073,15 +4293,39 @@ const createVisibleSessionThread = async ({
   });
 };
 
+export const applyDiscordReplyReference = ({
+  payload,
+  replyToMessageId,
+}: {
+  payload: DiscordChannelMessagePayload;
+  replyToMessageId?: string;
+}): DiscordCreateChannelMessagePayload => {
+  if (!replyToMessageId) {
+    return payload;
+  }
+
+  return {
+    ...payload,
+    reply: {
+      messageReference: replyToMessageId,
+      failIfNotExists: false,
+    },
+  };
+};
+
 const sendTextToChannel = async (
   client: Client,
   channelId: string,
   payload: string | DiscordChannelMessagePayload,
+  options: {
+    replyToMessageId?: string;
+  } = {},
 ) => {
   return sendChannelMessage(
     client,
     channelId,
     typeof payload === "string" ? { content: payload } : payload,
+    options,
   );
 };
 
@@ -4089,6 +4333,9 @@ const sendChannelMessage = async (
   client: Client,
   channelId: string,
   payload: DiscordChannelMessagePayload,
+  options: {
+    replyToMessageId?: string;
+  } = {},
 ) => {
   const channel = await client.channels.fetch(channelId);
 
@@ -4096,7 +4343,10 @@ const sendChannelMessage = async (
     return undefined;
   }
 
-  return channel.send(payload);
+  return channel.send(applyDiscordReplyReference({
+    payload,
+    replyToMessageId: options.replyToMessageId,
+  }));
 };
 
 const collectMessageTextSignals = (message: unknown) => {
@@ -4425,6 +4675,7 @@ export const handleApprovalInteraction = async ({
   sessionRepo,
   approvalRepo,
   inFlightApprovalKeys,
+  runtimeProviderRequestIdsByApprovalKey,
   afterPersistTerminalDecision,
 }: {
   interaction: ButtonInteraction;
@@ -4432,6 +4683,7 @@ export const handleApprovalInteraction = async ({
   sessionRepo: ReturnType<typeof createSessionRepo>;
   approvalRepo: ReturnType<typeof createApprovalRepo>;
   inFlightApprovalKeys?: Set<string>;
+  runtimeProviderRequestIdsByApprovalKey?: Map<string, JsonRpcId>;
   afterPersistTerminalDecision?: (
     approval: ApprovalRecord,
   ) => Promise<void> | void;
@@ -4503,13 +4755,19 @@ export const handleApprovalInteraction = async ({
   inFlightApprovalKeys?.add(approvalKey);
 
   try {
-    const providerRequestId = approvalRecord.requestId;
+    const providerRequestId = resolveProviderRequestIdForApproval({
+      approval: approvalRecord,
+      approvalRepo,
+      runtimeProviderRequestIdsByApprovalKey,
+    });
 
     await interaction.deferUpdate();
     logger.debug("Resolving approval interaction", {
       approvalKey: approvalRecord.approvalKey,
       storedRequestId: approvalRecord.requestId,
       providerRequestId,
+      storedRequestIdType: typeof approvalRecord.requestId,
+      providerRequestIdType: typeof providerRequestId,
       providerDecision: nextDecision.providerDecision,
       discordUserId: interaction.user.id,
     });
@@ -4520,6 +4778,7 @@ export const handleApprovalInteraction = async ({
     approvalRepo.insert({
       approvalKey: approvalRecord.approvalKey,
       requestId: approvalRecord.requestId,
+      providerRequestId,
       codexThreadId: approvalRecord.codexThreadId,
       discordThreadId: approvalRecord.discordThreadId,
       status: nextDecision.status,
@@ -4596,6 +4855,7 @@ const startCodeHelmRuntime = async (
   const codexClient = new JsonRpcClient(config.codex.appServerUrl);
   const approvalThreadMessages = new Map<string, ApprovalLifecycleState>();
   const runtimeApprovalKeysByRequestId = new Map<string, Set<string>>();
+  const runtimeProviderRequestIdsByApprovalKey = new Map<string, JsonRpcId>();
   const approvalResolutionsInFlight = new Set<string>();
   const transcriptRuntimes = new Map<string, TranscriptRuntime>();
   let discordClient: Client | undefined;
@@ -4856,16 +5116,19 @@ const startCodeHelmRuntime = async (
     session,
     content,
     request,
+    replyToMessageId,
   }: {
     session: Pick<SessionRecord, "codexThreadId" | "state" | "discordThreadId">;
     content: string;
     request: Omit<StartTurnParams, "input"> & {
       input: CodexTurnInput;
     };
+    replyToMessageId?: string;
   }) => {
     const runtime = ensureTranscriptRuntime(session.codexThreadId);
 
     runtime.pendingDiscordInputs.push(content);
+    runtime.pendingDiscordInputReplyMessageIds.push(replyToMessageId);
 
     try {
       await startTurnWithThreadResumeRetry({
@@ -4886,6 +5149,7 @@ const startCodeHelmRuntime = async (
     } catch (error) {
       if (runtime.pendingDiscordInputs.at(-1) === content) {
         runtime.pendingDiscordInputs.pop();
+        runtime.pendingDiscordInputReplyMessageIds.pop();
       }
       throw error;
     }
@@ -4931,6 +5195,12 @@ const startCodeHelmRuntime = async (
             rememberRuntimeApprovalRequest(
               runtimeApprovalKeysByRequestId,
               approval,
+              {
+                providerRequestId:
+                  approvalRepo.getProviderRequestId(approval.approvalKey)
+                  ?? approval.requestId,
+                runtimeProviderRequestIdsByApprovalKey,
+              },
             );
           },
           upsertApprovalMessage: async (approval) => {
@@ -5363,11 +5633,19 @@ const startCodeHelmRuntime = async (
     runtime.finalizingItemIds.add(assistantEntryId);
 
     try {
-      await sendChannelMessage(discord, session.discordThreadId, rendered);
+      await sendChannelMessage(discord, session.discordThreadId, rendered, {
+        replyToMessageId: resolvedTurnId
+          ? runtime.turnReplyMessageIds.get(resolvedTurnId)
+          : undefined,
+      });
       runtime.seenItemIds.add(assistantEntryId);
     } finally {
       runtime.finalizingItemIds.delete(assistantEntryId);
       runtime.itemTurnIds.delete(item.id);
+
+      if (resolvedTurnId) {
+        runtime.turnReplyMessageIds.delete(resolvedTurnId);
+      }
     }
   };
 
@@ -5395,6 +5673,7 @@ const startCodeHelmRuntime = async (
             startTurnFromDiscordInput({
               session,
               content: message.content,
+              replyToMessageId: message.id,
               request: {
                 threadId: session.codexThreadId,
                 input,
@@ -5518,6 +5797,7 @@ const startCodeHelmRuntime = async (
       await startTurnFromDiscordInput({
         session,
         content: message.content,
+        replyToMessageId: message.id,
         request: decision.request,
       });
     })().catch(async (error) => {
@@ -5562,6 +5842,7 @@ const startCodeHelmRuntime = async (
       sessionRepo,
       approvalRepo,
       inFlightApprovalKeys: approvalResolutionsInFlight,
+      runtimeProviderRequestIdsByApprovalKey,
       afterPersistTerminalDecision: async (storedApproval) => {
         const session = sessionRepo.getByDiscordThreadId(storedApproval.discordThreadId);
         const lifecycleState = approvalThreadMessages.get(storedApproval.approvalKey) ?? {};
@@ -5633,6 +5914,11 @@ const startCodeHelmRuntime = async (
       if (turnId) {
         runtime.closedTurnIds.delete(turnId);
       }
+
+      rememberPendingDiscordReplyReferenceForTurn({
+        runtime,
+        turnId,
+      });
 
       noteTrustedLiveExternalTurnStart({
         runtime,
@@ -5878,6 +6164,7 @@ const startCodeHelmRuntime = async (
 
       if (turnId) {
         runtime.closedTurnIds.add(turnId);
+        runtime.turnReplyMessageIds.delete(turnId);
 
         if (runtime.activeTurnId === turnId) {
           runtime.activeTurnId = undefined;
@@ -5974,7 +6261,14 @@ const startCodeHelmRuntime = async (
         return;
       }
 
-      rememberRuntimeApprovalRequest(runtimeApprovalKeysByRequestId, approval);
+      rememberRuntimeApprovalRequest(
+        runtimeApprovalKeysByRequestId,
+        approval,
+        {
+          providerRequestId: event.requestId,
+          runtimeProviderRequestIdsByApprovalKey,
+        },
+      );
       const approvalKey = approval.approvalKey;
 
       const isReadOnlySession = session.state === "degraded";
@@ -6106,6 +6400,7 @@ const startCodeHelmRuntime = async (
       approvalRepo.insert({
         approvalKey: approvalRecord.approvalKey,
         requestId,
+        providerRequestId: event.requestId,
         codexThreadId: approvalRecord.codexThreadId,
         discordThreadId: approvalRecord.discordThreadId,
         status: outcome.approval.status,
@@ -6125,7 +6420,11 @@ const startCodeHelmRuntime = async (
             ? true
             : approvalRecord.resolvedElsewhere,
       });
-      forgetRuntimeApprovalRequest(runtimeApprovalKeysByRequestId, approvalRecord);
+      forgetRuntimeApprovalRequest(
+        runtimeApprovalKeysByRequestId,
+        approvalRecord,
+        runtimeProviderRequestIdsByApprovalKey,
+      );
       const storedApproval = approvalRepo.getByApprovalKey(approvalRecord.approvalKey);
 
       if (!storedApproval) {
