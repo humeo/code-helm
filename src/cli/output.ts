@@ -42,53 +42,55 @@ const toRenderableLines = (value: string) => {
     .map((line) => sanitizeRenderableText(line));
 };
 
-const isUtf8Locale = (value: string) => {
-  const normalized = value.trim().toLowerCase();
+const normalizeCharsetToken = (value: string) => {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]/gu, "");
+};
 
-  return normalized.includes("utf-8") || normalized.includes("utf8");
+const isUtf8CharsetToken = (value: string) => {
+  return normalizeCharsetToken(value) === "utf8";
+};
+
+const looksLikeLocalePrefix = (value: string) => {
+  return value === "c" || value === "posix" || /^[a-z]{2,3}(?:_[a-z0-9]+)*$/u.test(value);
+};
+
+const isUtf8Locale = (value: string) => {
+  const explicitCharset = getExplicitCharsetToken(value);
+
+  return explicitCharset ? isUtf8CharsetToken(explicitCharset) : false;
 };
 
 const getExplicitCharsetToken = (value: string) => {
   const normalized = value.trim().toLowerCase();
-  const dotIndex = normalized.indexOf(".");
+  const modifierIndex = normalized.indexOf("@");
+  const base = modifierIndex === -1 ? normalized : normalized.slice(0, modifierIndex);
+
+  if (base.length === 0) {
+    return undefined;
+  }
+
+  const dotIndex = base.indexOf(".");
 
   if (dotIndex !== -1) {
-    if (dotIndex === normalized.length - 1) {
+    if (dotIndex === base.length - 1) {
       return undefined;
     }
 
-    const charsetWithModifier = normalized.slice(dotIndex + 1);
-    const modifierIndex = charsetWithModifier.indexOf("@");
-    const charset = modifierIndex === -1
-      ? charsetWithModifier
-      : charsetWithModifier.slice(0, modifierIndex);
+    const prefix = base.slice(0, dotIndex);
+    const charset = base.slice(dotIndex + 1);
 
-    return charset.length > 0 ? charset : undefined;
+    if (looksLikeLocalePrefix(prefix)) {
+      return charset.length > 0 ? charset : undefined;
+    }
+
+    return base;
   }
 
-  // Support direct charset declarations like ISO-8859-1, US-ASCII, or latin1.
-  if (!normalized.includes("_") && !normalized.includes("@")) {
-    return normalized;
+  if (looksLikeLocalePrefix(base)) {
+    return undefined;
   }
 
-  return undefined;
-};
-
-const isExplicitNonUtf8CharsetToken = (token: string) => {
-  if (token === "utf-8" || token === "utf8") {
-    return false;
-  }
-
-  if (
-    token === "ascii"
-    || token === "us-ascii"
-    || token === "latin1"
-    || token === "latin-1"
-  ) {
-    return true;
-  }
-
-  return /^iso[-_]?8859[-_]?\d+$/u.test(token) || /^latin\d+$/u.test(token);
+  return base;
 };
 
 const isClearlyNonUtf8Locale = (value: string) => {
@@ -108,7 +110,7 @@ const isClearlyNonUtf8Locale = (value: string) => {
     return false;
   }
 
-  return isExplicitNonUtf8CharsetToken(explicitCharset);
+  return !isUtf8CharsetToken(explicitCharset);
 };
 
 const isWideCodePoint = (codePoint: number) => {

@@ -151,10 +151,11 @@ describe("cli output renderer", () => {
     expect(detectCliCharset({ LC_CTYPE: "POSIX" })).toBe("ascii");
   });
 
-  test("falls back to ascii for explicit non-utf8 locales without dot suffix", () => {
+  test("falls back to ascii for direct explicit non-utf8 charset tokens", () => {
     expect(detectCliCharset({ LANG: "ISO-8859-1" })).toBe("ascii");
     expect(detectCliCharset({ LANG: "US-ASCII" })).toBe("ascii");
     expect(detectCliCharset({ LANG: "latin1" })).toBe("ascii");
+    expect(detectCliCharset({ LANG: "ANSI_X3.4-1968" })).toBe("ascii");
   });
 
   test("falls back to ascii for dotted explicit non-utf8 iso locales", () => {
