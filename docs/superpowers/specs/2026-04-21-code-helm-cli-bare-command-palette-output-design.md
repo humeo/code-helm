@@ -511,8 +511,9 @@ Success shape:
 `Next steps` should include:
 
 - `code-helm version`
-- optionally `code-helm restart` is not valid today, so do not invent it
 - if CodeHelm is already running, keep the current semantic note that the new package affects future invocations rather than the current process
+
+The implementation must not invent a restart command or imply that `update` restarts the active runtime.
 
 Failure shape:
 
@@ -726,6 +727,14 @@ Update `tests/cli/commands.test.ts` so it verifies:
 - onboarding blocked flows align with the new warning language
 
 The tests should stop overfitting to old section titles such as `Overview` when those titles are being intentionally replaced.
+
+#### Onboarding tests
+
+Update `tests/cli/onboard.test.ts` so it verifies the interactive onboarding surface also adopts the new product language where clack permits it:
+
+- intro and note copy stay concise and product-facing
+- the review summary keeps a stable aligned order
+- completion copy ends with one explicit next command
 
 #### Verification commands
 
