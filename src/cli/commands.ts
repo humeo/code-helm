@@ -6,7 +6,6 @@ import type { CliCommand } from "./args";
 import {
   renderErrorPanel,
   renderSuccessPanel,
-  renderKeyValueRows,
   renderRuntimePanel,
   renderWarningPanel,
 } from "./output";
@@ -532,13 +531,15 @@ const formatAutostartResult = (
 ) => {
   if (result.kind === "unsupported") {
     return renderWarningPanel({
-      title: "Autostart Unsupported",
+      title: "Autostart unsupported",
+      headline: "On this platform, automatic startup is unavailable.",
       sections: [
         {
-          title: "Status",
-          lines: renderKeyValueRows([
+          kind: "key-value",
+          title: "Changed",
+          rows: [
             { key: "Platform", value: result.platform },
-          ]),
+          ],
         },
       ],
       env,
@@ -548,14 +549,21 @@ const formatAutostartResult = (
   if (action === "enable") {
     if (result.kind !== "enabled") {
       return renderWarningPanel({
-        title: "Autostart State Mismatch",
+        title: "Autostart state mismatch",
+        headline: "CodeHelm could not confirm the requested automatic startup state.",
         sections: [
           {
-            title: "Status",
-            lines: renderKeyValueRows([
-              { key: "Requested Action", value: action },
-              { key: "Result Kind", value: result.kind },
-            ]),
+            kind: "key-value",
+            title: "Changed",
+            rows: [
+              { key: "Requested action", value: action },
+              { key: "Result kind", value: result.kind },
+            ],
+          },
+          {
+            kind: "steps",
+            title: "Try next",
+            items: ["code-helm autostart enable", "code-helm status"],
           },
         ],
         env,
@@ -563,15 +571,21 @@ const formatAutostartResult = (
     }
 
     return renderSuccessPanel({
-      title: "Autostart Enabled",
+      title: "Autostart enabled",
+      headline: "CodeHelm will launch automatically for this user session.",
       sections: [
         {
-          title: "Configuration",
-          lines: renderKeyValueRows([
-            { key: "Current State", value: "Enabled" },
+          kind: "key-value",
+          title: "Changed",
+          rows: [
             { key: "Label", value: result.label },
-            { key: "Launch Agent", value: result.launchAgentPath },
-          ]),
+            { key: "Launch agent", value: result.launchAgentPath },
+          ],
+        },
+        {
+          kind: "steps",
+          title: "Next steps",
+          items: ["code-helm status"],
         },
       ],
       env,
@@ -580,30 +594,48 @@ const formatAutostartResult = (
 
   if (result.kind !== "disabled") {
     return renderWarningPanel({
-      title: "Autostart State Mismatch",
+      title: "Autostart state mismatch",
+      headline: "CodeHelm could not confirm the requested automatic startup state.",
       sections: [
         {
-          title: "Status",
-          lines: renderKeyValueRows([
-            { key: "Requested Action", value: action },
-            { key: "Result Kind", value: result.kind },
-          ]),
+          kind: "key-value",
+          title: "Changed",
+          rows: [
+            { key: "Requested action", value: action },
+            { key: "Result kind", value: result.kind },
+          ],
+        },
+        {
+          kind: "steps",
+          title: "Try next",
+          items: ["code-helm autostart disable", "code-helm status"],
         },
       ],
       env,
     });
   }
 
-  return renderSuccessPanel({
-    title: "Autostart Disabled",
+  const renderPanel = result.removed ? renderSuccessPanel : renderWarningPanel;
+
+  return renderPanel({
+    title: "Autostart disabled",
+    headline: result.removed
+      ? "The launch agent is no longer active."
+      : "No launch agent was present for this user session.",
     sections: [
       {
-        title: "Status",
-        lines: renderKeyValueRows([
+        kind: "key-value",
+        title: "Changed",
+        rows: [
           { key: "Label", value: result.label },
-          { key: "Launch Agent", value: result.launchAgentPath },
+          { key: "Launch agent", value: result.launchAgentPath },
           { key: "Removal", value: result.removed ? "Removed" : "Not found" },
-        ]),
+        ],
+      },
+      {
+        kind: "steps",
+        title: "Next steps",
+        items: ["code-helm status"],
       },
     ],
     env,
@@ -1054,6 +1086,7 @@ export const runCliCommand = async (
     case "uninstall": {
       const uninstallErrors: string[] = [];
       const removedPaths: string[] = [];
+      let encounteredRuntimeStopFailure = false;
 
       try {
         const autostartResult = await services.disableAutostart();
@@ -1071,6 +1104,7 @@ export const runCliCommand = async (
           await stopBackgroundRuntime(runtime, store, services);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
+          encounteredRuntimeStopFailure = true;
           uninstallErrors.push(`background daemon: ${message}`);
         }
       }
@@ -1086,16 +1120,27 @@ export const runCliCommand = async (
       }
 
       if (uninstallErrors.length > 0) {
+        const tryNext = encounteredRuntimeStopFailure
+          ? ["code-helm stop", "code-helm uninstall", "Remove the listed paths manually."]
+          : ["code-helm uninstall", "Remove the listed paths manually."];
+
         throw new Error(renderErrorPanel({
-          title: "Uninstall Incomplete",
+          title: "Uninstall incomplete",
+          headline: "Some local CodeHelm data could not be removed.",
           sections: [
             {
+              kind: "paths",
               title: "Removed",
-              lines: removedPaths.length > 0 ? removedPaths : ["(none)"],
+              items: removedPaths.length > 0 ? removedPaths : ["(none)"],
             },
             {
               title: "Failed",
               lines: uninstallErrors,
+            },
+            {
+              kind: "steps",
+              title: "Try next",
+              items: tryNext,
             },
           ],
           env: services.env,
@@ -1104,15 +1149,18 @@ export const runCliCommand = async (
 
       return {
         output: renderSuccessPanel({
-          title: "Uninstall Complete",
+          title: "CodeHelm uninstalled",
+          headline: "Local CodeHelm data was removed.",
           sections: [
             {
+              kind: "paths",
               title: "Removed",
-              lines: removedPaths,
+              items: removedPaths,
             },
             {
-              title: "Next Step",
-              lines: ["npm uninstall -g code-helm"],
+              kind: "steps",
+              title: "Next steps",
+              items: ["npm uninstall -g code-helm"],
             },
           ],
           env: services.env,

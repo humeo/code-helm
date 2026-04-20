@@ -786,14 +786,13 @@ describe("runCliCommand", () => {
     const result = await runCliCommand({ kind: "autostart", action: "enable" }, services);
 
     expect(called).toBe(true);
-    expect(result.output).toContain("Autostart Enabled");
-    expect(result.output).toContain("Configuration");
-    expect(result.output).toContain("Current State");
-    expect(result.output).toContain("Enabled");
+    expect(result.output).toContain("Autostart enabled");
+    expect(result.output).toContain("Changed");
     expect(result.output).toContain("Label");
     expect(result.output).toContain("dev.codehelm.code-helm");
-    expect(result.output).toContain("Launch Agent");
+    expect(result.output).toContain("Launch agent");
     expect(result.output).toContain("/tmp/code-helm.plist");
+    expect(result.output).toContain("Next steps");
   });
 
   test("autostart disable delegates to the autostart service", async () => {
@@ -813,10 +812,11 @@ describe("runCliCommand", () => {
     const result = await runCliCommand({ kind: "autostart", action: "disable" }, services);
 
     expect(called).toBe(true);
-    expect(result.output).toContain("Autostart Disabled");
-    expect(result.output).toContain("Status");
+    expect(result.output).toContain("Autostart disabled");
+    expect(result.output).toContain("Changed");
     expect(result.output).toContain("Removal");
     expect(result.output).toContain("Removed");
+    expect(result.output).toContain("Next steps");
   });
 
   test("autostart enable renders a mismatch warning when service returns disabled", async () => {
@@ -831,10 +831,11 @@ describe("runCliCommand", () => {
 
     const result = await runCliCommand({ kind: "autostart", action: "enable" }, services);
 
-    expect(result.output).toContain("Autostart State Mismatch");
-    expect(result.output).toContain("Requested Action");
+    expect(result.output).toContain("Autostart state mismatch");
+    expect(result.output).toContain("Changed");
+    expect(result.output).toContain("Requested action");
     expect(result.output).toContain("enable");
-    expect(result.output).toContain("Result Kind");
+    expect(result.output).toContain("Result kind");
     expect(result.output).toContain("disabled");
   });
 
@@ -850,7 +851,8 @@ describe("runCliCommand", () => {
 
     const result = await runCliCommand({ kind: "autostart", action: "disable" }, services);
 
-    expect(result.output).toContain("Autostart Disabled");
+    expect(result.output).toContain("Autostart disabled");
+    expect(result.output).toContain("Changed");
     expect(result.output).toContain("Removal");
     expect(result.output).toContain("Not found");
   });
@@ -865,11 +867,11 @@ describe("runCliCommand", () => {
 
     const result = await runCliCommand({ kind: "autostart", action: "enable" }, services);
 
-    expect(result.output).toContain("Autostart Unsupported");
-    expect(result.output).toContain("Status");
+    expect(result.output).toContain("Autostart unsupported");
+    expect(result.output).toContain("Changed");
     expect(result.output).toContain("Platform");
     expect(result.output).toContain("linux");
-    expect(result.output).not.toContain("Autostart is unsupported on linux.");
+    expect(result.output).toContain("automatic startup is unavailable");
   });
 
   test("onboard already-running keeps the non-panel style output path", async () => {
@@ -1054,9 +1056,9 @@ describe("runCliCommand", () => {
     expect(existsSync(paths.secretsPath)).toBe(false);
     expect(existsSync(paths.databasePath)).toBe(false);
     expect(existsSync(paths.stateDir)).toBe(false);
-    expect(result.output).toContain("Uninstall Complete");
+    expect(result.output).toContain("CodeHelm uninstalled");
     expect(result.output).toContain("Removed");
-    expect(result.output).toContain("Next Step");
+    expect(result.output).toContain("Next steps");
     expect(result.output).toContain("npm uninstall -g code-helm");
   });
 
@@ -1077,7 +1079,7 @@ describe("runCliCommand", () => {
 
     const result = await runCliCommand({ kind: "uninstall" }, services);
 
-    expect(result.output).toContain("Uninstall Complete");
+    expect(result.output).toContain("CodeHelm uninstalled");
     expect(result.output).toContain("Removed");
     expect(result.output).not.toContain("/tmp/code-helm.plist");
     expect(result.output).toContain(paths.configPath);
@@ -1116,7 +1118,9 @@ describe("runCliCommand", () => {
     expect(message).toMatch(/Uninstall Incomplete/i);
     expect(message).toMatch(/Removed/i);
     expect(message).toMatch(/Failed/i);
+    expect(message).toMatch(/Try next/i);
     expect(message).toContain("/tmp/code-helm.plist");
+    expect(message).toContain(paths.configPath);
     expect(message).toContain(paths.secretsPath);
     expect(message).toContain(paths.databasePath);
     expect(message).toContain(paths.stateDir);
