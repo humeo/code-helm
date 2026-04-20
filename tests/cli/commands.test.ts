@@ -630,6 +630,23 @@ describe("runCliCommand", () => {
     expect(result.output).toContain("Removed");
   });
 
+  test("autostart disable renders not-found status when launch agent was absent", async () => {
+    const services = createBaseServices();
+
+    services.disableAutostart = async () => ({
+      kind: "disabled",
+      label: "dev.codehelm.code-helm",
+      launchAgentPath: "/tmp/code-helm.plist",
+      removed: false,
+    });
+
+    const result = await runCliCommand({ kind: "autostart", action: "disable" }, services);
+
+    expect(result.output).toContain("Autostart Disabled");
+    expect(result.output).toContain("Removal");
+    expect(result.output).toContain("Not found");
+  });
+
   test("autostart unsupported renders a warning-style panel", async () => {
     const services = createBaseServices();
 

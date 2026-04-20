@@ -518,6 +518,22 @@ const formatAutostartResult = (
     });
   }
 
+  if (result.kind !== "disabled") {
+    return renderWarningPanel({
+      title: "Autostart State Mismatch",
+      sections: [
+        {
+          title: "Status",
+          lines: renderKeyValueRows([
+            { key: "Requested Action", value: action },
+            { key: "Result Kind", value: result.kind },
+          ]),
+        },
+      ],
+      env,
+    });
+  }
+
   return renderSuccessPanel({
     title: "Autostart Disabled",
     sections: [
