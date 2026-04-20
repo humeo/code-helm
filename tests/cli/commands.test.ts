@@ -246,6 +246,18 @@ describe("runCliCommand", () => {
     expect(result.output).toContain("Asia/Shanghai");
   });
 
+  test("start foreground success renders runtime panel output", async () => {
+    const services = createBaseServices();
+
+    const result = await runCliCommand({ kind: "start", daemon: false }, services);
+
+    expect(result.output).toContain("CodeHelm Runtime");
+    expect(result.output).toContain("Status");
+    expect(result.output).toContain("Quick Actions");
+    expect(result.output).toContain("codex --remote ws://127.0.0.1:4100");
+    expect(result.output).not.toContain("CodeHelm running\nMode:");
+  });
+
   test("start renders delayed managed startup as warning-style copy", async () => {
     const services = createBaseServices();
     let startedRuntime = false;
