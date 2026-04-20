@@ -343,25 +343,66 @@ export const renderErrorPanel = (options: RenderSemanticPanelOptions) => {
   return renderSemanticPanel(options);
 };
 
+const looksLikeRenderedPanel = (message: string) => {
+  const lines = message.split(/\r\n|\n|\r/u);
+
+  if (lines.length < 3) {
+    return false;
+  }
+
+  const firstLine = lines[0] ?? "";
+  const secondLine = lines[1] ?? "";
+  const lastLine = lines.at(-1) ?? "";
+  const isUnicodePanel = firstLine.startsWith("┌")
+    && firstLine.endsWith("┐")
+    && secondLine.startsWith("│ ")
+    && secondLine.endsWith(" │")
+    && lastLine.startsWith("└")
+    && lastLine.endsWith("┘");
+  const isAsciiPanel = firstLine.startsWith("+")
+    && firstLine.endsWith("+")
+    && secondLine.startsWith("| ")
+    && secondLine.endsWith(" |")
+    && lastLine.startsWith("+")
+    && lastLine.endsWith("+");
+
+  return isUnicodePanel || isAsciiPanel;
+};
+
 export const renderCliCaughtError = (
   error: unknown,
   env: Record<string, string | undefined>,
   diagnostics?: string,
 ) => {
   const message = error instanceof Error ? error.message : String(error);
-  const finalMessage = message.trim().length > 0 ? message.trim() : "Unknown CLI error.";
-  const usageSplitToken = "\nUsage:";
-  const usageIndex = finalMessage.indexOf(usageSplitToken);
 
-  if (usageIndex >= 0) {
-    const problem = finalMessage.slice(0, usageIndex).trim() || "Invalid command arguments.";
-    const usage = finalMessage.slice(usageIndex + 1).trim();
+  if (looksLikeRenderedPanel(message)) {
+    return message;
+  }
+
+  const trimmedMessage = message.trim();
+
+  if (looksLikeRenderedPanel(trimmedMessage)) {
+    return trimmedMessage;
+  }
+
+  const finalMessage = trimmedMessage.length > 0 ? trimmedMessage : "Unknown CLI error.";
+  const messageLines = finalMessage
+    .split(/\r\n|\n|\r/u)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  const firstUsageLineIndex = messageLines.findIndex((line) => line.startsWith("Usage:"));
+
+  if (firstUsageLineIndex >= 0) {
+    const problemLines = messageLines.slice(0, firstUsageLineIndex);
+    const usageLines = messageLines.slice(firstUsageLineIndex);
+    const problem = problemLines.join("\n").trim() || "Invalid command arguments.";
 
     return renderErrorPanel({
       title: "Invalid Arguments",
       sections: [
         { title: "Problem", lines: [problem] },
-        { title: "Usage", lines: [usage] },
+        { title: "Usage", lines: usageLines },
       ],
       diagnostics,
       env,

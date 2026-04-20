@@ -127,6 +127,33 @@ describe("cli output renderer", () => {
     expect(output).not.toContain("Details");
   });
 
+  test("preserves already-rendered panel errors without wrapping them again", () => {
+    const panelError = renderErrorPanel({
+      title: "Uninstall Incomplete",
+      sections: [{ title: "Problem", lines: ["Could not remove launch agent."] }],
+      env: {},
+    });
+
+    const output = renderCliCaughtError(new Error(panelError), {});
+
+    expect(output).toBe(panelError);
+  });
+
+  test("formats usage-only errors with generic Problem and grouped Usage lines", () => {
+    const output = renderCliCaughtError(
+      new Error("Usage: code-helm autostart <enable|disable>\nUsage: code-helm <onboard|start|status|stop|autostart|uninstall>"),
+      {},
+    );
+
+    expect(output).toContain("Invalid Arguments");
+    expect(output).toContain("Problem");
+    expect(output).toContain("Invalid command arguments.");
+    expect(output).toContain("Usage");
+    expect(output).toContain("Usage: code-helm autostart <enable|disable>");
+    expect(output).toContain("Usage: code-helm <onboard|start|status|stop|autostart|uninstall>");
+    expect(output).not.toContain("Details");
+  });
+
   test("keeps diagnostics in a dedicated Diagnostics section for caught errors", () => {
     const output = renderCliCaughtError(
       new Error("boom"),
