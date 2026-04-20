@@ -2,6 +2,8 @@
 
 CodeHelm turns Codex into a local daemon you control from Discord.
 
+GitHub: `https://github.com/humeo/code-helm`
+
 It solves the awkward setup that usually comes with remote Codex sessions:
 
 - no manual `.env` as the normal user path
@@ -69,8 +71,17 @@ code-helm uninstall
 
 ## Install
 
+CodeHelm is published as an npm package, but it still runs on Bun at runtime. Install Bun first, then install CodeHelm globally:
+
 ```bash
 npm install -g code-helm
+```
+
+Confirm what you installed:
+
+```bash
+code-helm version
+code-helm help
 ```
 
 ## Quick Start
@@ -126,8 +137,11 @@ In the configured control channel, use:
 ## Day-To-Day Commands
 
 ```bash
+code-helm help
+code-helm version
 code-helm status
 code-helm stop
+code-helm update
 code-helm autostart enable
 code-helm autostart disable
 code-helm uninstall
@@ -138,6 +152,30 @@ code-helm uninstall
 ```bash
 codex --remote <ws-url>
 ```
+
+## Update
+
+To install the latest published npm release:
+
+```bash
+code-helm update
+```
+
+This command runs:
+
+```bash
+npm install -g code-helm@latest
+```
+
+What it updates:
+
+- the global `code-helm` npm package for future invocations and restarts
+
+What it does not update:
+
+- Bun
+- Codex
+- an already-running CodeHelm process in the current session
 
 ## See It Work
 
@@ -213,7 +251,7 @@ bun run migrate
 
 Normal users should prefer `code-helm onboard`.
 
-If you need to override paths or inject values in development, see [.env.example](/Users/koltenluca/code-github/code-helm/.env.example).
+If you need to override paths or inject values in development, see [.env.example](./.env.example).
 
 ## Legacy Workspace Import
 

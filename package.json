@@ -1,10 +1,24 @@
 {
   "name": "code-helm",
   "version": "0.1.0",
+  "description": "Run Codex as a local daemon you control from Discord.",
   "bin": {
     "code-helm": "./bin/code-helm"
   },
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/humeo/code-helm.git"
+  },
+  "homepage": "https://github.com/humeo/code-helm#readme",
+  "bugs": {
+    "url": "https://github.com/humeo/code-helm/issues"
+  },
+  "files": [
+    "bin",
+    "src",
+    "README.md"
+  ],
   "scripts": {
     "dev": "bun run src/index.ts",
     "dev:cli": "bun run src/cli.ts start",
