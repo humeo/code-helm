@@ -6,7 +6,7 @@ on:
       - "v*"
 
 permissions:
-  contents: read
+  contents: write
   id-token: write
 
 concurrency:
@@ -56,3 +56,23 @@ jobs:
 
       - name: Publish to npm with latest npm CLI
         run: bunx npm@latest publish
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          RELEASE_NOTES_JSON="$(mktemp)"
+          RELEASE_NOTES_BODY="$(mktemp)"
+
+          gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+            -f tag_name="$TAG" > "$RELEASE_NOTES_JSON"
+
+          TITLE="$(node -e "const fs=require('fs'); const data=JSON.parse(fs.readFileSync(process.argv[1], 'utf8')); process.stdout.write(data.name);" "$RELEASE_NOTES_JSON")"
+          node -e "const fs=require('fs'); const data=JSON.parse(fs.readFileSync(process.argv[1], 'utf8')); process.stdout.write(data.body);" "$RELEASE_NOTES_JSON" > "$RELEASE_NOTES_BODY"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "$TITLE" --notes-file "$RELEASE_NOTES_BODY"
+          else
+            gh release create "$TAG" --verify-tag --title "$TITLE" --notes-file "$RELEASE_NOTES_BODY"
+          fi

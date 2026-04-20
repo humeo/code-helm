@@ -35,7 +35,7 @@ Use this order:
 4. publish to npm
 5. commit the version bump
 6. create and push the matching Git tag
-7. optionally create a GitHub Release
+7. create the matching GitHub Release manually or let CI/CD create it automatically
 
 This order is intentional.
 
@@ -55,7 +55,7 @@ Manual release means:
 
 - you run `npm publish` yourself
 - you authenticate with OTP or a publish-capable token
-- you create the Git tag and optional GitHub Release yourself
+- you create the Git tag and, if wanted, the GitHub Release yourself
 
 ### CI/CD Release
 
@@ -66,7 +66,7 @@ CI/CD release means:
 - you still choose the version number locally
 - you still commit the version bump locally
 - you still create and push the Git tag locally
-- GitHub Actions runs the verification suite and publishes to npm automatically
+- GitHub Actions runs the verification suite, publishes to npm, and creates or updates the matching GitHub Release automatically
 
 This repository now includes:
 
@@ -212,7 +212,9 @@ git push origin main --follow-tags
 
 ## Step 7: Create The GitHub Release
 
-This step is optional.
+For a manual release, this step is optional.
+
+For a CI/CD release, `publish.yml` creates or updates the matching GitHub Release automatically after npm publish succeeds.
 
 Create a GitHub Release from the same tag:
 
@@ -236,7 +238,7 @@ Expected result:
 - npm shows the same version as `package.json`
 - GitHub has the matching tag
 
-If you also create a GitHub Release, verify it too:
+If you used a manual release or want to confirm the CI/CD-created release, verify it too:
 
 ```bash
 gh release view "v$VERSION"
@@ -258,6 +260,7 @@ Current workflow behavior:
 - `publish.yml` runs when a tag matching `v*` is pushed
 - both workflows invoke `bunx npm@latest ...` instead of self-upgrading the runner npm in place
 - `publish.yml` verifies that `package.json` matches the pushed tag version before publishing
+- after npm publish succeeds, `publish.yml` creates or updates the matching GitHub Release with generated notes
 
 ### Option A: Configure Trusted Publishing In npm UI
 
@@ -290,7 +293,7 @@ Once trusted publishing is enabled, the release flow becomes:
 4. commit `package.json` and `package-lock.json`
 5. create a matching tag such as `v0.1.1`
 6. push `main` and the tag
-7. GitHub Actions publishes the npm package automatically
+7. GitHub Actions publishes the npm package and creates the matching GitHub Release automatically
 
 Example:
 
@@ -310,7 +313,7 @@ After the tag push:
 
 - GitHub Actions runs `publish.yml`
 - npm publishes `code-helm@$VERSION`
-- GitHub records the release version through the pushed tag
+- GitHub creates or updates the `v$VERSION` Release with generated notes
 - users can upgrade with `code-helm update`
 
 ## Recommended Command Sequence
@@ -348,12 +351,6 @@ git tag -a "v$VERSION" -m "v$VERSION"
 git push origin main --follow-tags
 ```
 
-Optional after the workflow succeeds:
-
-```bash
-gh release create "v$VERSION" --generate-notes
-```
-
 ## Failure Handling
 
 ### If Verification Fails Before Publish
@@ -362,7 +359,7 @@ If tests, typecheck, or dry-run fail before the publish step:
 
 - fix the issue
 - keep working on the same version bump if you want
-- do not tag or create a GitHub Release yet
+- do not tag or create a manual GitHub Release yet
 
 ### If npm Publish Fails
 
@@ -385,6 +382,7 @@ If npm publish succeeded but Git commit, tag push, or GitHub Release creation fa
 
 - do not republish the same version
 - finish the Git commit, tag, and release work using that same published version
+- if the automated GitHub Release step failed, repair the workflow or rerun it without changing the npm version
 
 ### If You Need To Ship A Fix After A Broken Public Release
 
