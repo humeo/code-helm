@@ -1267,12 +1267,6 @@ const parseStoredApprovalDecisions = (
   }
 };
 
-const toApprovalLifecycleEmbedTitle = (
-  approval: Pick<ApprovalRecord, "displayTitle">,
-) => {
-  return approval.displayTitle ?? "Approval request";
-};
-
 const toApprovalLifecycleEmbedColor = (
   approval: Pick<ApprovalRecord, "status">,
 ) => {
@@ -1295,11 +1289,10 @@ const renderApprovalLifecycleEmbeds = ({
   approval,
   description,
 }: {
-  approval: Pick<ApprovalRecord, "displayTitle" | "status">;
+  approval: Pick<ApprovalRecord, "status">;
   description: string;
 }) => {
   const embed: DiscordMessageEmbed = {
-    title: truncateApprovalText(toApprovalLifecycleEmbedTitle(approval), 256),
     description,
     color: toApprovalLifecycleEmbedColor(approval),
   };

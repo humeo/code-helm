@@ -5499,9 +5499,7 @@ test("approval lifecycle payload renders provider-driven thread components safel
   expect(threadPayload.allowedMentions).toEqual({ parse: [] });
   expect(threadPayload.content).toBeUndefined();
   expect(embeds).toHaveLength(1);
-  expect(embeds[0]).toMatchObject({
-    title: "Command approval",
-  });
+  expect(embeds[0]?.title).toBeUndefined();
   expect(rows).toHaveLength(2);
   expect(rows[0]?.components).toHaveLength(5);
   expect(rows[1]?.components).toHaveLength(1);
