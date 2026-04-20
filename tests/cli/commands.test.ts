@@ -874,7 +874,7 @@ describe("runCliCommand", () => {
     expect(result.output).toContain("automatic startup is unavailable");
   });
 
-  test("onboard already-running keeps the non-panel style output path", async () => {
+  test("onboard already-running renders blocked warning-family output", async () => {
     const services = createBaseServices();
 
     services.runOnboarding = async () => ({ kind: "already-running" });
@@ -896,15 +896,17 @@ describe("runCliCommand", () => {
 
     const result = await runCliCommand({ kind: "onboard" }, services);
 
-    expect(result.output).toContain("CodeHelm running");
-    expect(result.output).toContain("Mode: background");
-    expect(result.output).toContain(
-      "Stop the running instance with `code-helm stop`, then run `code-helm onboard` again.",
-    );
-    expect(result.output).not.toContain("CodeHelm Runtime");
+    expect(result.output).toContain("Onboarding blocked");
+    expect(result.output).toContain("Process");
+    expect(result.output).toContain("Try next");
+    expect(result.output).toMatch(/Mode\s+background/);
+    expect(result.output).toMatch(/PID\s+2222/);
+    expect(result.output).toContain("code-helm stop");
+    expect(result.output).toContain("code-helm onboard");
+    expect(result.output).not.toContain("CodeHelm running");
   });
 
-  test("onboard already-running with TZ set keeps legacy runtime-summary formatting", async () => {
+  test("onboard already-running with TZ set keeps display-formatted timestamps in blocked output", async () => {
     const services = createBaseServices();
     const startedAt = "2026-04-16T08:00:00.000Z";
 
@@ -930,13 +932,26 @@ describe("runCliCommand", () => {
     });
 
     const result = await runCliCommand({ kind: "onboard" }, services);
+    const escapedStarted = formatStartedAtForDisplay(startedAt, "Asia/Shanghai")
+      .replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-    expect(result.output).toContain("CodeHelm running");
-    expect(result.output).toContain(
-      `Started: ${formatStartedAtForDisplay(startedAt, "Asia/Shanghai")}`,
+    expect(result.output).toContain("Onboarding blocked");
+    expect(result.output).toContain("Process");
+    expect(result.output).toMatch(
+      new RegExp(`Started\\s+${escapedStarted}`),
     );
     expect(result.output).not.toContain("(Asia/Shanghai)");
-    expect(result.output).not.toContain("CodeHelm Runtime");
+    expect(result.output).not.toContain("CodeHelm running");
+  });
+
+  test("onboard cancellation stays concise at the command layer", async () => {
+    const services = createBaseServices();
+
+    services.runOnboarding = async () => ({ kind: "cancelled" });
+
+    const result = await runCliCommand({ kind: "onboard" }, services);
+
+    expect(result.output).toBe("Onboarding cancelled.");
   });
 
   test("stop shuts down the background daemon and its managed app server", async () => {

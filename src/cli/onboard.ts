@@ -19,6 +19,7 @@ import {
   type SelectableControlChannel,
   type SelectableGuild,
 } from "./discord-discovery";
+import { renderKeyValueRows } from "./output";
 
 export type OnboardingUiTokenResponse =
   | { kind: "submit"; token: string }
@@ -109,18 +110,21 @@ export const formatReviewSummary = (input: {
   secretsPath: string;
   databasePath: string;
 }) => {
-  return [
-    `Bot: ${input.botIdentity.botUser.username} (${input.botIdentity.application.name})`,
-    `Discord bot token: ${maskBotTokenForDisplay(input.botToken)}`,
-    `Guild: ${input.guild.name}`,
-    `Control channel: #${input.controlChannel.name}`,
-    "Codex App Server: managed (loopback, port assigned on start)",
-    `Codex App Server address: ${MANAGED_CODEX_APP_SERVER_ADDRESS}`,
-    `Connect: ${MANAGED_CODEX_CONNECT_COMMAND}`,
-    `Config: ${input.configPath}`,
-    `Secrets: ${input.secretsPath}`,
-    `Database: ${input.databasePath}`,
-  ].join("\n");
+  return renderKeyValueRows([
+    {
+      key: "Bot",
+      value: `${input.botIdentity.botUser.username} (${input.botIdentity.application.name})`,
+    },
+    { key: "Discord bot token", value: maskBotTokenForDisplay(input.botToken) },
+    { key: "Guild", value: input.guild.name },
+    { key: "Control channel", value: `#${input.controlChannel.name}` },
+    { key: "Codex App Server", value: "managed (loopback, port assigned on start)" },
+    { key: "Codex address", value: MANAGED_CODEX_APP_SERVER_ADDRESS },
+    { key: "Codex connect", value: MANAGED_CODEX_CONNECT_COMMAND },
+    { key: "Config path", value: input.configPath },
+    { key: "Secrets path", value: input.secretsPath },
+    { key: "Database path", value: input.databasePath },
+  ]).join("\n");
 };
 
 export const createOnboardingUi = (
@@ -133,10 +137,10 @@ export const createOnboardingUi = (
 
   return {
     async showWelcome() {
-      prompts.intro("CodeHelm onboarding");
+      prompts.intro("CodeHelm");
       prompts.note(
-        "CodeHelm will configure one local daemon, one Discord guild, and one Discord control channel.",
-        "Welcome",
+        "Connect Discord and save local runtime settings.",
+        "Onboarding",
       );
     },
     async promptBotToken(input = {}) {

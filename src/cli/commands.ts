@@ -277,32 +277,6 @@ const formatRuntimeStartedAt = (
   return formatValue();
 };
 
-const formatRuntimeSummary = (
-  runtime?: RuntimeSummary,
-  options: { timeZone?: string } = {},
-) => {
-  if (!runtime) {
-    return "CodeHelm stopped";
-  }
-
-  const lines = [
-    "CodeHelm running",
-    `Mode: ${runtime.mode}`,
-    `PID: ${runtime.pid}`,
-    `Discord: ${runtime.discord.connected === false ? "disconnected" : "connected"} guild ${runtime.discord.guildId}${runtime.discord.controlChannelId ? ` channel ${runtime.discord.controlChannelId}` : ""}`,
-    `Codex App Server: ${runtime.codex.running === false ? "stopped" : "running"} ${runtime.codex.appServerAddress}`,
-    `Connect: codex --remote ${runtime.codex.appServerAddress}`,
-  ];
-
-  if (runtime.startedAt) {
-    lines.splice(3, 0, `Started: ${formatRuntimeStartedAt(runtime.startedAt, {
-      timeZone: options.timeZone,
-    })}`);
-  }
-
-  return lines.join("\n");
-};
-
 const resolveDisplayTimeZone = (timeZone?: string) => {
   if (!timeZone) {
     return undefined;
@@ -1177,15 +1151,46 @@ export const runCliCommand = async (
           stateDir: store.paths.stateDir,
           isPidAlive: services.isPidAlive,
         });
-        const lines = [
-          formatRuntimeSummary(currentRuntime, {
-            timeZone: services.env.TZ,
-          }),
-          "Stop the running instance with `code-helm stop`, then run `code-helm onboard` again.",
-        ];
+        const displayTimeZone = resolveDisplayTimeZone(services.env.TZ);
+        const processRows = currentRuntime
+          ? [
+            { key: "Mode", value: currentRuntime.mode },
+            ...(currentRuntime.startedAt
+              ? [{
+                key: "Started",
+                value: formatRuntimeStartedAt(currentRuntime.startedAt, {
+                  timeZone: displayTimeZone,
+                }),
+              }]
+              : []),
+            { key: "PID", value: String(currentRuntime.pid) },
+          ]
+          : [{ key: "Mode", value: "running" }];
+        const tryNext = currentRuntime?.mode === "foreground"
+          ? [
+            "Stop the active foreground process from the terminal that started it.",
+            "code-helm onboard",
+          ]
+          : ["code-helm stop", "code-helm onboard"];
 
         return {
-          output: lines.join("\n"),
+          output: renderWarningPanel({
+            title: "Onboarding blocked",
+            headline: "Stop the active CodeHelm runtime before changing onboarding settings.",
+            sections: [
+              {
+                kind: "key-value",
+                title: "Process",
+                rows: processRows,
+              },
+              {
+                kind: "steps",
+                title: "Try next",
+                items: tryNext,
+              },
+            ],
+            env: services.env,
+          }),
           runtime: currentRuntime,
         };
       }

@@ -140,7 +140,7 @@ afterEach(() => {
 });
 
 describe("runOnboarding", () => {
-  test("review summary shows the first four bot-token characters and previews the managed Codex connect command", () => {
+  test("review summary uses stable aligned rows and masks the bot token", () => {
     const review = formatReviewSummary({
       botIdentity: {
         botUser: {
@@ -160,9 +160,19 @@ describe("runOnboarding", () => {
       databasePath: "/tmp/codehelm.sqlite",
     });
 
-    expect(review).toContain("Discord bot token: abcd****");
-    expect(review).toContain("Codex App Server address: ws://127.0.0.1:<auto>");
-    expect(review).toContain("Connect: codex --remote ws://127.0.0.1:<auto>");
+    const lines = review.split("\n");
+
+    expect(lines).toHaveLength(10);
+    expect(lines[0]).toMatch(/^Bot\s+code-helm \(CodeHelm Bot\)$/);
+    expect(lines[1]).toMatch(/^Discord bot token\s+abcd\*{4}$/);
+    expect(lines[2]).toMatch(/^Guild\s+Guild One$/);
+    expect(lines[3]).toMatch(/^Control channel\s+#control-room$/);
+    expect(lines[4]).toMatch(/^Codex App Server\s+managed \(loopback, port assigned on start\)$/);
+    expect(lines[5]).toMatch(/^Codex address\s+ws:\/\/127\.0\.0\.1:<auto>$/);
+    expect(lines[6]).toMatch(/^Codex connect\s+codex --remote ws:\/\/127\.0\.0\.1:<auto>$/);
+    expect(lines[7]).toMatch(/^Config path\s+\/tmp\/config\.toml$/);
+    expect(lines[8]).toMatch(/^Secrets path\s+\/tmp\/secrets\.toml$/);
+    expect(lines[9]).toMatch(/^Database path\s+\/tmp\/codehelm\.sqlite$/);
   });
 
   test("createOnboardingUi uses an asterisk mask for bot token entry", async () => {
@@ -178,6 +188,40 @@ describe("runOnboarding", () => {
 
     expect(response).toEqual({ kind: "submit", token: "token-1" });
     expect(capturedMask).toBe("*");
+  });
+
+  test("createOnboardingUi welcomes with a product title and concise note", async () => {
+    let introMessage: string | undefined;
+    let noteMessage: string | undefined;
+    let noteLabel: string | undefined;
+    const ui = createOnboardingUi({
+      intro(message) {
+        introMessage = message;
+      },
+      note(message, label) {
+        noteMessage = message;
+        noteLabel = label;
+      },
+    });
+
+    await ui.showWelcome();
+
+    expect(introMessage).toBe("CodeHelm");
+    expect(noteLabel).toBe("Onboarding");
+    expect(noteMessage).toBe("Connect Discord and save local runtime settings.");
+  });
+
+  test("createOnboardingUi completion copy ends with one explicit next command", async () => {
+    let outroMessage: string | undefined;
+    const ui = createOnboardingUi({
+      outro(message) {
+        outroMessage = message;
+      },
+    });
+
+    await ui.showCompleted();
+
+    expect(outroMessage).toBe("Onboarding complete. Run `code-helm start`.");
   });
 
   test("first-run onboarding saves config and secrets", async () => {
