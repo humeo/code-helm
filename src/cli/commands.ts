@@ -339,6 +339,16 @@ const renderRuntimeStatusOutput = (
     { key: "Time Zone", value: options.timeZone ?? "system default" },
     { key: "Runtime State", value: "local state file" },
   ];
+  const quickActions = [
+    `codex --remote ${runtime.codex.appServerAddress}`,
+    "code-helm status",
+  ];
+
+  if (runtime.mode === "background") {
+    quickActions.push("code-helm stop");
+  } else {
+    quickActions.push("Stop this foreground process with Ctrl+C.");
+  }
 
   return renderRuntimePanel({
     title: "CodeHelm Runtime",
@@ -358,11 +368,7 @@ const renderRuntimeStatusOutput = (
       },
       {
         title: "Quick Actions",
-        lines: [
-          `codex --remote ${runtime.codex.appServerAddress}`,
-          "code-helm status",
-          "code-helm stop",
-        ],
+        lines: quickActions,
       },
     ],
     env: options.env,
@@ -381,7 +387,7 @@ const trimDiagnostics = (diagnostics?: string) => {
 
 const classifyStartupFailure = (message: string) => {
   if (
-    /certificate|x509|cert chain|self[-\s]?signed|unknown ca|local issuer|hostname mismatch|unable to verify/i.test(
+    /certificate|x509|cert chain|self[-\s]?signed|unknown ca|local issuer|hostname mismatch|unable to verify|depth_zero_self_signed_cert|self_signed_cert_in_chain|cert_has_expired|unable_to_get_issuer_cert_locally|err_tls_cert_altname_invalid/i.test(
       message,
     )
   ) {

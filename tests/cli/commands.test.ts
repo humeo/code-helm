@@ -262,6 +262,8 @@ describe("runCliCommand", () => {
     expect(result.output).toMatch(/Started\s*:\s*/);
     expect(result.output).toMatch(/PID\s*:\s*\d+/);
     expect(result.output).toContain("codex --remote ws://127.0.0.1:4100");
+    expect(result.output).not.toContain("code-helm stop");
+    expect(result.output).toContain("Ctrl+C");
     expect(result.output).not.toContain("CodeHelm running\nMode:");
   });
 
@@ -352,6 +354,37 @@ describe("runCliCommand", () => {
     ).rejects.toThrow(/tls: failed to verify certificate chain/i);
   });
 
+  test("start treats known certificate error-code signatures as certificate guidance failures", async () => {
+    const services = createBaseServices();
+    const certificateCodes = [
+      "DEPTH_ZERO_SELF_SIGNED_CERT",
+      "SELF_SIGNED_CERT_IN_CHAIN",
+      "CERT_HAS_EXPIRED",
+      "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+      "ERR_TLS_CERT_ALTNAME_INVALID",
+    ];
+
+    for (const certificateCode of certificateCodes) {
+      services.startForeground = async () => {
+        throw new CodexSupervisorError(
+          "CODEX_APP_SERVER_FAILED_TO_START",
+          `Managed Codex App Server failed before becoming ready: ${certificateCode}`,
+          {
+            startupDisposition: "failed",
+            diagnostics: `startup failed with ${certificateCode}`,
+          },
+        );
+      };
+
+      await expect(
+        runCliCommand({ kind: "start", daemon: false }, services),
+      ).rejects.toThrow(/Startup Failed/i);
+      await expect(
+        runCliCommand({ kind: "start", daemon: false }, services),
+      ).rejects.toThrow(/certificate trust setup/i);
+    }
+  });
+
   test("start keeps non-certificate tls failures on generic startup-failed guidance", async () => {
     const services = createBaseServices();
 
@@ -408,6 +441,7 @@ describe("runCliCommand", () => {
     expect(result.output).toMatch(/Started\s*:\s*/);
     expect(result.output).toMatch(/PID\s*:\s*\d+/);
     expect(result.output).toContain("codex --remote ws://127.0.0.1:4100");
+    expect(result.output).toContain("code-helm stop");
     expect(result.output).not.toContain("CodeHelm running\nMode:");
     expect(spawnedEnv?.CODE_HELM_CONFIG).toBeTruthy();
     expect(spawnedEnv?.CODE_HELM_SECRETS).toBeTruthy();
@@ -524,6 +558,8 @@ describe("runCliCommand", () => {
     expect(result.output).toMatch(/PID\s*:\s*2222/);
     expect(result.output).toContain("ws://127.0.0.1:4400");
     expect(result.output).toContain("codex --remote ws://127.0.0.1:4400");
+    expect(result.output).not.toContain("code-helm stop");
+    expect(result.output).toContain("Ctrl+C");
     expect(result.output).not.toContain("CodeHelm running\nMode:");
   });
 
