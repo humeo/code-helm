@@ -502,6 +502,22 @@ const formatAutostartResult = (
   }
 
   if (action === "enable") {
+    if (result.kind !== "enabled") {
+      return renderWarningPanel({
+        title: "Autostart State Mismatch",
+        sections: [
+          {
+            title: "Status",
+            lines: renderKeyValueRows([
+              { key: "Requested Action", value: action },
+              { key: "Result Kind", value: result.kind },
+            ]),
+          },
+        ],
+        env,
+      });
+    }
+
     return renderSuccessPanel({
       title: "Autostart Enabled",
       sections: [
@@ -826,7 +842,7 @@ export const runCliCommand = async (
       try {
         const autostartResult = await services.disableAutostart();
 
-        if (autostartResult.kind !== "unsupported") {
+        if (autostartResult.kind === "disabled" && autostartResult.removed) {
           removedPaths.push(autostartResult.launchAgentPath);
         }
       } catch (error) {

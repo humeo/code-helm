@@ -630,6 +630,25 @@ describe("runCliCommand", () => {
     expect(result.output).toContain("Removed");
   });
 
+  test("autostart enable renders a mismatch warning when service returns disabled", async () => {
+    const services = createBaseServices();
+
+    services.enableAutostart = async () => ({
+      kind: "disabled",
+      label: "dev.codehelm.code-helm",
+      launchAgentPath: "/tmp/code-helm.plist",
+      removed: true,
+    });
+
+    const result = await runCliCommand({ kind: "autostart", action: "enable" }, services);
+
+    expect(result.output).toContain("Autostart State Mismatch");
+    expect(result.output).toContain("Requested Action");
+    expect(result.output).toContain("enable");
+    expect(result.output).toContain("Result Kind");
+    expect(result.output).toContain("disabled");
+  });
+
   test("autostart disable renders not-found status when launch agent was absent", async () => {
     const services = createBaseServices();
 
@@ -816,6 +835,32 @@ describe("runCliCommand", () => {
     expect(result.output).toContain("Removed");
     expect(result.output).toContain("Next Step");
     expect(result.output).toContain("npm uninstall -g code-helm");
+  });
+
+  test("uninstall does not list launch-agent path when autostart disable reports not found", async () => {
+    const services = createBaseServices();
+    const paths = createPaths();
+
+    services.loadConfigStore = () => ({
+      ...createBaseServices().loadConfigStore(),
+      paths,
+    });
+    services.disableAutostart = async () => ({
+      kind: "disabled",
+      label: "dev.codehelm.code-helm",
+      launchAgentPath: "/tmp/code-helm.plist",
+      removed: false,
+    });
+
+    const result = await runCliCommand({ kind: "uninstall" }, services);
+
+    expect(result.output).toContain("Uninstall Complete");
+    expect(result.output).toContain("Removed");
+    expect(result.output).not.toContain("/tmp/code-helm.plist");
+    expect(result.output).toContain(paths.configPath);
+    expect(result.output).toContain(paths.secretsPath);
+    expect(result.output).toContain(paths.databasePath);
+    expect(result.output).toContain(paths.stateDir);
   });
 
   test("uninstall attempts every cleanup path before surfacing failures", async () => {
