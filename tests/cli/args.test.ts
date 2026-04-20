@@ -2,6 +2,9 @@ import { expect, test } from "bun:test";
 import { parseCliArgs } from "../../src/cli/args";
 
 test("parses supported cli commands", () => {
+  expect(parseCliArgs(["help"])).toEqual({ kind: "help" });
+  expect(parseCliArgs(["-h"])).toEqual({ kind: "help" });
+  expect(parseCliArgs(["--help"])).toEqual({ kind: "help" });
   expect(parseCliArgs(["onboard"])).toEqual({ kind: "onboard" });
   expect(parseCliArgs(["start"])).toEqual({ kind: "start", daemon: false });
   expect(parseCliArgs(["start", "--daemon"])).toEqual({
@@ -10,6 +13,10 @@ test("parses supported cli commands", () => {
   });
   expect(parseCliArgs(["status"])).toEqual({ kind: "status" });
   expect(parseCliArgs(["stop"])).toEqual({ kind: "stop" });
+  expect(parseCliArgs(["version"])).toEqual({ kind: "version" });
+  expect(parseCliArgs(["-v"])).toEqual({ kind: "version" });
+  expect(parseCliArgs(["--version"])).toEqual({ kind: "version" });
+  expect(parseCliArgs(["update"])).toEqual({ kind: "update" });
   expect(parseCliArgs(["autostart", "enable"])).toEqual({
     kind: "autostart",
     action: "enable",
@@ -30,6 +37,12 @@ test("rejects empty argv with a usage error", () => {
 });
 
 test("rejects extra args for single-word commands", () => {
+  expect(() => parseCliArgs(["help", "extra"])).toThrow(
+    /Unknown arguments for help/,
+  );
+  expect(() => parseCliArgs(["--help", "extra"])).toThrow(
+    /Unknown arguments for help/,
+  );
   expect(() => parseCliArgs(["onboard", "extra"])).toThrow(
     /Unknown arguments for onboard/,
   );
@@ -39,12 +52,21 @@ test("rejects extra args for single-word commands", () => {
   expect(() => parseCliArgs(["stop", "extra"])).toThrow(
     /Unknown arguments for stop/,
   );
+  expect(() => parseCliArgs(["version", "extra"])).toThrow(
+    /Unknown arguments for version/,
+  );
+  expect(() => parseCliArgs(["update", "extra"])).toThrow(
+    /Unknown arguments for update/,
+  );
   expect(() => parseCliArgs(["uninstall", "extra"])).toThrow(
     /Unknown arguments for uninstall/,
   );
 });
 
 test("rejects invalid start flags and autostart arity", () => {
+  expect(() => parseCliArgs(["start", "--help"])).toThrow(
+    /Unknown arguments for start/,
+  );
   expect(() => parseCliArgs(["start", "--bogus"])).toThrow(
     /Unknown arguments for start/,
   );
