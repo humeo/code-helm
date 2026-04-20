@@ -23,10 +23,7 @@ export type RenderSemanticPanelOptions = {
 const localeVariables = ["LC_ALL", "LC_CTYPE", "LANG"] as const;
 
 const splitMultiline = (value: string) => {
-  return value
-    .split(/\r?\n/u)
-    .map((line) => line.trimEnd())
-    .filter((line) => line.length > 0);
+  return value.split(/\r?\n/u);
 };
 
 const isUtf8Locale = (value: string) => {
@@ -49,12 +46,67 @@ const isClearlyNonUtf8Locale = (value: string) => {
   return !isUtf8Locale(normalized);
 };
 
+const isWideCodePoint = (codePoint: number) => {
+  return (
+    (codePoint >= 0x1100 && codePoint <= 0x115f)
+    || codePoint === 0x2329
+    || codePoint === 0x232a
+    || (codePoint >= 0x2e80 && codePoint <= 0x303e)
+    || (codePoint >= 0x3040 && codePoint <= 0xa4cf)
+    || (codePoint >= 0xac00 && codePoint <= 0xd7a3)
+    || (codePoint >= 0xf900 && codePoint <= 0xfaff)
+    || (codePoint >= 0xfe10 && codePoint <= 0xfe19)
+    || (codePoint >= 0xfe30 && codePoint <= 0xfe6f)
+    || (codePoint >= 0xff00 && codePoint <= 0xff60)
+    || (codePoint >= 0xffe0 && codePoint <= 0xffe6)
+    || (codePoint >= 0x1f300 && codePoint <= 0x1faff)
+    || (codePoint >= 0x20000 && codePoint <= 0x3fffd)
+  );
+};
+
+const isZeroWidthCharacter = (character: string, codePoint: number) => {
+  if (character === "\u200D") {
+    return true;
+  }
+
+  if (
+    (codePoint >= 0x00 && codePoint <= 0x1f)
+    || (codePoint >= 0x7f && codePoint <= 0x9f)
+  ) {
+    return true;
+  }
+
+  if ((codePoint >= 0xfe00 && codePoint <= 0xfe0f) || (codePoint >= 0xe0100 && codePoint <= 0xe01ef)) {
+    return true;
+  }
+
+  return /\p{Mark}/u.test(character);
+};
+
+const getDisplayWidth = (value: string) => {
+  let width = 0;
+
+  for (const character of value) {
+    const codePoint = character.codePointAt(0) ?? 0;
+
+    if (isZeroWidthCharacter(character, codePoint)) {
+      continue;
+    }
+
+    width += isWideCodePoint(codePoint) ? 2 : 1;
+  }
+
+  return width;
+};
+
 const padLine = (value: string, width: number) => {
-  if (value.length >= width) {
+  const displayWidth = getDisplayWidth(value);
+
+  if (displayWidth >= width) {
     return value;
   }
 
-  return value + " ".repeat(width - value.length);
+  return value + " ".repeat(width - displayWidth);
 };
 
 const createFrameChars = (charset: CliCharset) => {
@@ -134,20 +186,16 @@ export const detectCliCharset = (env: Record<string, string | undefined>): CliCh
     return "ascii";
   }
 
-  for (const key of localeVariables) {
-    const locale = env[key];
+  const locales = localeVariables
+    .map((key) => env[key])
+    .filter((locale): locale is string => Boolean(locale));
 
-    if (!locale) {
-      continue;
-    }
+  if (locales.some((locale) => isUtf8Locale(locale))) {
+    return "unicode";
+  }
 
-    if (isUtf8Locale(locale)) {
-      return "unicode";
-    }
-
-    if (isClearlyNonUtf8Locale(locale)) {
-      return "ascii";
-    }
+  if (locales.some((locale) => isClearlyNonUtf8Locale(locale))) {
+    return "ascii";
   }
 
   return "unicode";
@@ -157,7 +205,7 @@ export const renderPanelFrame = (options: RenderPanelOptions) => {
   const charset = detectCliCharset(options.env);
   const chars = createFrameChars(charset);
   const contentLines = [options.title, ...options.lines];
-  const width = contentLines.reduce((max, line) => Math.max(max, line.length), 0);
+  const width = contentLines.reduce((max, line) => Math.max(max, getDisplayWidth(line)), 0);
   const horizontal = chars.horizontal.repeat(width + 2);
 
   const framedLines = [
@@ -177,15 +225,13 @@ export const renderKeyValueRows = (rows: Array<{ key: string; value: string }>) 
 };
 
 export const renderDiagnosticsSection = (details?: string): PanelSection | undefined => {
-  const trimmed = details?.trim();
-
-  if (!trimmed) {
+  if (details === undefined || details.length === 0) {
     return undefined;
   }
 
   return {
     title: "Diagnostics",
-    lines: splitMultiline(trimmed),
+    lines: splitMultiline(details),
   };
 };
 
