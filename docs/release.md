@@ -201,7 +201,7 @@ Create a Git tag that matches the npm version:
 
 ```bash
 VERSION="$(node -p "require('./package.json').version")"
-git tag "v$VERSION"
+git tag -a "v$VERSION" -m "v$VERSION"
 ```
 
 Push the branch and tag:
@@ -301,7 +301,7 @@ npm version patch --no-git-tag-version
 VERSION="$(node -p "require('./package.json').version")"
 git add package.json package-lock.json
 git commit -m "chore(release): v$VERSION"
-git tag "v$VERSION"
+git tag -a "v$VERSION" -m "v$VERSION"
 git push origin main --follow-tags
 ```
 
@@ -326,7 +326,7 @@ npm publish --otp 123456
 VERSION="$(node -p "require('./package.json').version")"
 git add package.json package-lock.json
 git commit -m "chore(release): v$VERSION"
-git tag "v$VERSION"
+git tag -a "v$VERSION" -m "v$VERSION"
 git push origin main --follow-tags
 gh release create "v$VERSION" --generate-notes
 npm view code-helm version
@@ -343,7 +343,7 @@ npm version patch --no-git-tag-version
 VERSION="$(node -p "require('./package.json').version")"
 git add package.json package-lock.json
 git commit -m "chore(release): v$VERSION"
-git tag "v$VERSION"
+git tag -a "v$VERSION" -m "v$VERSION"
 git push origin main --follow-tags
 ```
 
