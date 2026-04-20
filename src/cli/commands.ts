@@ -788,37 +788,51 @@ const uninstallPaths = (store: LoadedConfigStore) => {
 
 const renderHelpOutput = (env: Record<string, string | undefined>) => {
   return renderSuccessPanel({
-    title: "CodeHelm CLI",
+    title: "CodeHelm",
+    headline: "Control Codex from Discord",
     sections: [
       {
-        title: "Overview",
-        lines: [
-          "CodeHelm turns Codex into a local daemon you control from Discord.",
-          "Use these commands to configure, run, inspect, and update the local runtime.",
+        kind: "command-list",
+        title: "Get started",
+        items: [
+          { command: "onboard", description: "Connect Discord and initialize local state" },
+          { command: "help", description: "Show the command overview" },
+          { command: "version", description: "Show the installed version" },
         ],
       },
       {
-        title: "Commands",
-        lines: [
-          "code-helm onboard",
-          "code-helm start",
-          "code-helm status",
-          "code-helm stop",
-          "code-helm autostart enable",
-          "code-helm autostart disable",
-          "code-helm help",
-          "code-helm version",
-          "code-helm update",
-          "code-helm uninstall",
+        kind: "command-list",
+        title: "Runtime",
+        items: [
+          { command: "start", description: "Start CodeHelm in foreground" },
+          { command: "start --daemon", description: "Start CodeHelm in background" },
+          { command: "status", description: "Show runtime state" },
+          { command: "stop", description: "Stop the background runtime" },
         ],
       },
       {
-        title: "Examples",
-        lines: [
+        kind: "command-list",
+        title: "Automation",
+        items: [
+          { command: "autostart enable", description: "Enable automatic startup" },
+          { command: "autostart disable", description: "Disable automatic startup" },
+        ],
+      },
+      {
+        kind: "command-list",
+        title: "Maintenance",
+        items: [
+          { command: "update", description: "Install the latest published package" },
+          { command: "uninstall", description: "Remove local CodeHelm data" },
+        ],
+      },
+      {
+        kind: "steps",
+        title: "Common flows",
+        items: [
           "code-helm onboard",
           "code-helm start --daemon",
           "code-helm status",
-          "code-helm update",
         ],
       },
     ],
@@ -830,17 +844,8 @@ const renderVersionOutput = (env: Record<string, string | undefined>) => {
   const packageMetadata = readPackageMetadata();
 
   return renderSuccessPanel({
-    title: "CodeHelm Version",
-    sections: [
-      {
-        title: "Version",
-        lines: [packageMetadata.version],
-      },
-      {
-        title: "Package",
-        lines: [packageMetadata.name],
-      },
-    ],
+    title: `CodeHelm ${packageMetadata.version}`,
+    headline: packageMetadata.name,
     env,
   });
 };
@@ -861,18 +866,16 @@ const renderUpdateSuccessOutput = (
 ) => {
   return renderSuccessPanel({
     title: "CodeHelm Updated",
+    headline: "The latest published package was installed.",
     sections: [
       {
-        title: "Result",
-        lines: ["Installed the latest npm package release."],
-      },
-      {
-        title: "Command",
+        title: "Command run",
         lines: [result.command],
       },
       {
-        title: "Next Step",
-        lines: ["code-helm version"],
+        kind: "steps",
+        title: "Next steps",
+        items: ["code-helm version"],
       },
     ],
     env,
@@ -889,11 +892,24 @@ const renderUpdateFailureOutput = (
     title: "Update Failed",
     headline: missingNpm
       ? "npm could not be launched from PATH."
-      : "CodeHelm could not update via npm.",
+      : "The package update did not complete.",
     sections: [
       {
-        title: "Command",
+        title: "Command run",
         lines: [result.command],
+      },
+      {
+        kind: "steps",
+        title: "Try next",
+        items: missingNpm
+          ? [
+            "Install npm or ensure it is available on PATH.",
+            "code-helm update",
+          ]
+          : [
+            "Inspect the diagnostics below, resolve the npm issue, then retry.",
+            "code-helm update",
+          ],
       },
     ],
     diagnostics: formatUpdateDiagnostics(result),

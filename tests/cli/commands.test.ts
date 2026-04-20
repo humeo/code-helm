@@ -186,20 +186,21 @@ describe("runCliCommand", () => {
 
     expect(loadConfigStoreCalls).toBe(0);
     expect(readRuntimeSummaryCalls).toBe(0);
-    expect(result.output).toContain("CodeHelm CLI");
-    expect(result.output).toContain("Overview");
-    expect(result.output).toContain("Commands");
-    expect(result.output).toContain("Examples");
-    expect(result.output).toContain("code-helm onboard");
-    expect(result.output).toContain("code-helm start");
-    expect(result.output).toContain("code-helm status");
-    expect(result.output).toContain("code-helm stop");
-    expect(result.output).toContain("code-helm autostart enable");
-    expect(result.output).toContain("code-helm autostart disable");
-    expect(result.output).toContain("code-helm help");
-    expect(result.output).toContain("code-helm version");
-    expect(result.output).toContain("code-helm update");
-    expect(result.output).toContain("code-helm uninstall");
+    expect(result.output).toContain("CodeHelm");
+    expect(result.output).toContain("Get started");
+    expect(result.output).toContain("Runtime");
+    expect(result.output).toContain("Automation");
+    expect(result.output).toContain("Maintenance");
+    expect(result.output).toContain("Common flows");
+    expect(result.output).toContain("onboard");
+    expect(result.output).toContain("Connect Discord and initialize local state");
+    expect(result.output).toContain("start --daemon");
+    expect(result.output).toContain("Start CodeHelm in background");
+    expect(result.output).toContain("autostart enable");
+    expect(result.output).toContain("Enable automatic startup");
+    expect(result.output).toContain("uninstall");
+    expect(result.output).toContain("Remove local CodeHelm data");
+    expect(result.output).not.toContain("Overview");
   });
 
   test("version renders package metadata without touching config or runtime", async () => {
@@ -221,9 +222,9 @@ describe("runCliCommand", () => {
 
     expect(loadConfigStoreCalls).toBe(0);
     expect(readRuntimeSummaryCalls).toBe(0);
-    expect(result.output).toContain("CodeHelm Version");
+    expect(result.output).toContain(`CodeHelm ${expectedMetadata.version}`);
     expect(result.output).toContain(expectedMetadata.name);
-    expect(result.output).toContain(expectedMetadata.version);
+    expect(result.output).not.toContain("CodeHelm Version");
   });
 
   test("update renders a success panel without touching config or runtime", async () => {
@@ -259,7 +260,9 @@ describe("runCliCommand", () => {
     expect(loadConfigStoreCalls).toBe(0);
     expect(readRuntimeSummaryCalls).toBe(0);
     expect(result.output).toContain("CodeHelm Updated");
+    expect(result.output).toContain("Command run");
     expect(result.output).toContain("npm install -g code-helm@latest");
+    expect(result.output).toContain("Next steps");
     expect(result.output).toContain("code-helm version");
   });
 
