@@ -32,8 +32,8 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Upgrade npm for trusted publishing compatibility
-        run: npm install -g npm@11
+      - name: Show npm CLI version used for publish
+        run: bunx npm@latest --version
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -54,5 +54,5 @@ jobs:
             exit 1
           fi
 
-      - name: Publish to npm
-        run: npm publish
+      - name: Publish to npm with latest npm CLI
+        run: bunx npm@latest publish

@@ -127,7 +127,7 @@ Run the local verification suite before changing the release version:
 ```bash
 bun test
 bun run typecheck
-npm publish --dry-run
+bunx npm@latest publish --dry-run
 ```
 
 Expected result:
@@ -172,13 +172,13 @@ Publish only after the version bump is correct.
 If your npm account publishes with a one-time password:
 
 ```bash
-npm publish --otp 123456
+bunx npm@latest publish --otp 123456
 ```
 
 If your npm account uses a granular access token that can bypass 2FA for publish:
 
 ```bash
-npm publish
+bunx npm@latest publish
 ```
 
 If publish succeeds, the version is now permanently used on npm.
@@ -256,6 +256,7 @@ Current workflow behavior:
 
 - `ci.yml` runs on pushes to `main` and on pull requests
 - `publish.yml` runs when a tag matching `v*` is pushed
+- both workflows invoke `bunx npm@latest ...` instead of self-upgrading the runner npm in place
 - `publish.yml` verifies that `package.json` matches the pushed tag version before publishing
 
 ### Option A: Configure Trusted Publishing In npm UI
@@ -296,7 +297,7 @@ Example:
 ```bash
 bun test
 bun run typecheck
-npm publish --dry-run
+bunx npm@latest publish --dry-run
 npm version patch --no-git-tag-version
 VERSION="$(node -p "require('./package.json').version")"
 git add package.json package-lock.json
@@ -320,9 +321,9 @@ For a manual patch release:
 git status --short --branch
 bun test
 bun run typecheck
-npm publish --dry-run
+bunx npm@latest publish --dry-run
 npm version patch --no-git-tag-version
-npm publish --otp 123456
+bunx npm@latest publish --otp 123456
 VERSION="$(node -p "require('./package.json').version")"
 git add package.json package-lock.json
 git commit -m "chore(release): v$VERSION"
@@ -338,7 +339,7 @@ For a CI/CD patch release after trusted publishing is configured:
 git status --short --branch
 bun test
 bun run typecheck
-npm publish --dry-run
+bunx npm@latest publish --dry-run
 npm version patch --no-git-tag-version
 VERSION="$(node -p "require('./package.json').version")"
 git add package.json package-lock.json
@@ -357,7 +358,7 @@ gh release create "v$VERSION" --generate-notes
 
 ### If Verification Fails Before Publish
 
-If tests, typecheck, or dry-run fail before `npm publish`:
+If tests, typecheck, or dry-run fail before the publish step:
 
 - fix the issue
 - keep working on the same version bump if you want
@@ -365,7 +366,7 @@ If tests, typecheck, or dry-run fail before `npm publish`:
 
 ### If npm Publish Fails
 
-If `npm publish` fails before upload is accepted:
+If the publish step fails before upload is accepted:
 
 - fix the auth or package issue
 - retry the same version if npm did not publish it
@@ -412,7 +413,7 @@ It updates the installed npm package for future invocations and future restarts.
 
 ## Notes On Auth
 
-`npm publish` may require stronger auth than `npm whoami`.
+The publish command may require stronger auth than `npm whoami`.
 
 Common cases:
 

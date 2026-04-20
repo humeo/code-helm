@@ -26,8 +26,8 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Upgrade npm for trusted publishing compatibility
-        run: npm install -g npm@11
+      - name: Show npm CLI version used for packaging
+        run: bunx npm@latest --version
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -38,5 +38,5 @@ jobs:
       - name: Run typecheck
         run: bun run typecheck
 
-      - name: Verify npm package dry-run
-        run: npm publish --dry-run
+      - name: Verify npm package dry-run with latest npm CLI
+        run: bunx npm@latest publish --dry-run
