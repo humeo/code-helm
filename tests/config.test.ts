@@ -108,6 +108,31 @@ describe("loadAppConfig", () => {
     expect(config.DISCORD_APP_ID).toBe(OVERRIDE_DISCORD_APP_ID);
   });
 
+  test("ignores legacy unprefixed CODEX_APP_SERVER_URL overrides in favor of managed startup", () => {
+    const directory = createTempDir();
+    const configPath = join(directory, "config.toml");
+    const secretsPath = join(directory, "secrets.toml");
+
+    saveStoredConfig(createStoredConfig(), { configPath });
+    saveStoredSecrets(createStoredSecrets(), { secretsPath });
+
+    const config = loadAppConfig({
+      CODE_HELM_CONFIG: configPath,
+      CODE_HELM_SECRETS: secretsPath,
+      DISCORD_BOT_TOKEN: OVERRIDE_BOT_TOKEN,
+      DISCORD_GUILD_ID: "legacy-guild",
+      DISCORD_CONTROL_CHANNEL_ID: "legacy-channel",
+      CODEX_APP_SERVER_URL: "ws://127.0.0.1:4500",
+      DATABASE_PATH: "/tmp/legacy-codehelm.sqlite",
+    });
+
+    expect(config.discord.botToken).toBe(STORED_BOT_TOKEN);
+    expect(config.discord.guildId).toBe("stored-guild");
+    expect(config.discord.controlChannelId).toBe("stored-channel");
+    expect(config.codex.appServerUrl).toBe(DEFAULT_CODEX_APP_SERVER_URL);
+    expect(config.databasePath).toBe("/tmp/stored-codehelm.sqlite");
+  });
+
   test("keeps the daemon compatibility bridge values required by the runtime", () => {
     const directory = createTempDir();
     const configPath = join(directory, "config.toml");
@@ -165,7 +190,7 @@ describe("loadAppConfig", () => {
     const config = loadAppConfig({
       CODE_HELM_CONFIG: configPath,
       CODE_HELM_SECRETS: secretsPath,
-      CODEX_APP_SERVER_URL: "ws://127.0.0.1:4090",
+      CODE_HELM_CODEX_APP_SERVER_URL: "ws://127.0.0.1:4090",
     });
 
     expect(config.DISCORD_APP_ID).toBe(DEFAULT_DISCORD_APP_ID);
@@ -183,7 +208,7 @@ describe("loadAppConfig", () => {
     const config = loadAppConfig({
       CODE_HELM_CONFIG: configPath,
       CODE_HELM_SECRETS: secretsPath,
-      CODEX_APP_SERVER_URL: "ws://127.0.0.1:4090",
+      CODE_HELM_CODEX_APP_SERVER_URL: "ws://127.0.0.1:4090",
     });
 
     expect(() => assertOperationalConfigReady(config)).not.toThrow();

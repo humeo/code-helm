@@ -96,7 +96,6 @@ const resolveAppConfigInput = (env: Record<string, string | undefined>) => {
       ?? storedConfig?.discord.controlChannelId
       ?? env.DISCORD_CONTROL_CHANNEL_ID,
     codexAppServerUrl: env.CODE_HELM_CODEX_APP_SERVER_URL
-      ?? env.CODEX_APP_SERVER_URL
       ?? DEFAULT_CODEX_APP_SERVER_URL,
     databasePath: expandHomePath(
       env.CODE_HELM_DATABASE_PATH

@@ -93,11 +93,11 @@ const defaultOnboardingPrompts: OnboardingPrompts = {
 };
 
 const maskBotTokenForDisplay = (token: string) => {
-  if (token.length <= 2) {
+  if (token.length <= 4) {
     return token;
   }
 
-  return `${token[0]}${"*".repeat(token.length - 2)}${token[token.length - 1]}`;
+  return `${token.slice(0, 4)}${"*".repeat(token.length - 4)}`;
 };
 
 export const formatReviewSummary = (input: {

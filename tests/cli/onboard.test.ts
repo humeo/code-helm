@@ -140,7 +140,7 @@ afterEach(() => {
 });
 
 describe("runOnboarding", () => {
-  test("review summary masks the bot token and previews the managed Codex connect command", () => {
+  test("review summary shows the first four bot-token characters and previews the managed Codex connect command", () => {
     const review = formatReviewSummary({
       botIdentity: {
         botUser: {
@@ -160,7 +160,7 @@ describe("runOnboarding", () => {
       databasePath: "/tmp/codehelm.sqlite",
     });
 
-    expect(review).toContain("Discord bot token: a******4");
+    expect(review).toContain("Discord bot token: abcd****");
     expect(review).toContain("Codex App Server address: ws://127.0.0.1:<auto>");
     expect(review).toContain("Connect: codex --remote ws://127.0.0.1:<auto>");
   });
