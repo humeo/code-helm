@@ -277,6 +277,20 @@ const renderRuntimeStatusOutput = (
           lines: ["CodeHelm is not running."],
         },
         {
+          title: "Connections",
+          lines: renderKeyValueRows([
+            { key: "Discord", value: "not connected" },
+            { key: "Codex App Server", value: "not running" },
+          ]),
+        },
+        {
+          title: "Configuration",
+          lines: renderKeyValueRows([
+            { key: "Mode", value: "n/a" },
+            { key: "PID", value: "n/a" },
+          ]),
+        },
+        {
           title: "Quick Actions",
           lines: [
             "code-helm start",
@@ -288,10 +302,7 @@ const renderRuntimeStatusOutput = (
     });
   }
 
-  const statusRows = [
-    { key: "Status", value: "running" },
-    { key: "Mode", value: runtime.mode },
-    { key: "PID", value: String(runtime.pid) },
+  const connectionRows = [
     {
       key: "Discord",
       value: `${runtime.discord.connected === false ? "disconnected" : "connected"} guild ${runtime.discord.guildId}${runtime.discord.controlChannelId ? ` channel ${runtime.discord.controlChannelId}` : ""}`,
@@ -301,9 +312,13 @@ const renderRuntimeStatusOutput = (
       value: `${runtime.codex.running === false ? "stopped" : "running"} ${runtime.codex.appServerAddress}`,
     },
   ];
+  const configurationRows = [
+    { key: "Mode", value: runtime.mode },
+    { key: "PID", value: String(runtime.pid) },
+  ];
 
   if (runtime.startedAt) {
-    statusRows.splice(3, 0, {
+    configurationRows.push({
       key: "Started",
       value: formatRuntimeStartedAt(runtime.startedAt, options.timeZone),
     });
@@ -315,7 +330,15 @@ const renderRuntimeStatusOutput = (
     sections: [
       {
         title: "Status",
-        lines: renderKeyValueRows(statusRows),
+        lines: ["CodeHelm is running."],
+      },
+      {
+        title: "Connections",
+        lines: renderKeyValueRows(connectionRows),
+      },
+      {
+        title: "Configuration",
+        lines: renderKeyValueRows(configurationRows),
       },
       {
         title: "Quick Actions",

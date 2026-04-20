@@ -207,6 +207,8 @@ describe("runCliCommand", () => {
     expect(started).toBe(false);
     expect(result.output).toContain("CodeHelm Runtime");
     expect(result.output).toContain("Status");
+    expect(result.output).toContain("Connections");
+    expect(result.output).toContain("Configuration");
     expect(result.output).toContain("Quick Actions");
     expect(result.output).toContain("codex --remote ws://127.0.0.1:4200");
     expect(result.output).toContain("already running");
@@ -253,6 +255,8 @@ describe("runCliCommand", () => {
 
     expect(result.output).toContain("CodeHelm Runtime");
     expect(result.output).toContain("Status");
+    expect(result.output).toContain("Connections");
+    expect(result.output).toContain("Configuration");
     expect(result.output).toContain("Quick Actions");
     expect(result.output).toContain("codex --remote ws://127.0.0.1:4100");
     expect(result.output).not.toContain("CodeHelm running\nMode:");
@@ -359,6 +363,8 @@ describe("runCliCommand", () => {
 
     expect(result.output).toContain("CodeHelm Runtime");
     expect(result.output).toContain("Status");
+    expect(result.output).toContain("Connections");
+    expect(result.output).toContain("Configuration");
     expect(result.output).toContain("Quick Actions");
     expect(result.output).toMatch(/Mode\s*:\s*background/);
     expect(result.output).toContain("codex --remote ws://127.0.0.1:4100");
@@ -470,6 +476,8 @@ describe("runCliCommand", () => {
 
     expect(result.output).toContain("CodeHelm Runtime");
     expect(result.output).toContain("Status");
+    expect(result.output).toContain("Connections");
+    expect(result.output).toContain("Configuration");
     expect(result.output).toContain("Quick Actions");
     expect(result.output).toContain("ws://127.0.0.1:4400");
     expect(result.output).toContain("codex --remote ws://127.0.0.1:4400");
@@ -483,6 +491,8 @@ describe("runCliCommand", () => {
 
     expect(result.output).toContain("CodeHelm Runtime");
     expect(result.output).toContain("Status");
+    expect(result.output).toContain("Connections");
+    expect(result.output).toContain("Configuration");
     expect(result.output).toContain("not running");
     expect(result.output).not.toContain("CodeHelm stopped");
   });
