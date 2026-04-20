@@ -508,6 +508,7 @@ const formatAutostartResult = (
         {
           title: "Configuration",
           lines: renderKeyValueRows([
+            { key: "Current State", value: "Enabled" },
             { key: "Label", value: result.label },
             { key: "Launch Agent", value: result.launchAgentPath },
           ]),
@@ -855,7 +856,7 @@ export const runCliCommand = async (
 
       return {
         output: renderSuccessPanel({
-          title: "CodeHelm Removed",
+          title: "Uninstall Complete",
           sections: [
             {
               title: "Removed",

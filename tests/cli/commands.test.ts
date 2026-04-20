@@ -599,6 +599,8 @@ describe("runCliCommand", () => {
     expect(called).toBe(true);
     expect(result.output).toContain("Autostart Enabled");
     expect(result.output).toContain("Configuration");
+    expect(result.output).toContain("Current State");
+    expect(result.output).toContain("Enabled");
     expect(result.output).toContain("Label");
     expect(result.output).toContain("dev.codehelm.code-helm");
     expect(result.output).toContain("Launch Agent");
@@ -793,7 +795,7 @@ describe("runCliCommand", () => {
     expect(existsSync(paths.secretsPath)).toBe(false);
     expect(existsSync(paths.databasePath)).toBe(false);
     expect(existsSync(paths.stateDir)).toBe(false);
-    expect(result.output).toContain("CodeHelm Removed");
+    expect(result.output).toContain("Uninstall Complete");
     expect(result.output).toContain("Removed");
     expect(result.output).toContain("Next Step");
     expect(result.output).toContain("npm uninstall -g code-helm");
