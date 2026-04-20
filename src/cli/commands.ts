@@ -272,6 +272,7 @@ const renderRuntimeStatusOutput = (
     env: Record<string, string | undefined>;
     timeZone?: string;
     alreadyRunningNote?: string;
+    isCurrentForegroundInvocation?: boolean;
   },
 ) => {
   if (!runtime) {
@@ -347,7 +348,11 @@ const renderRuntimeStatusOutput = (
   if (runtime.mode === "background") {
     quickActions.push("code-helm stop");
   } else {
-    quickActions.push("Stop this foreground process with Ctrl+C.");
+    quickActions.push(
+      options.isCurrentForegroundInvocation
+        ? "Stop this foreground process with Ctrl+C."
+        : "Use the terminal running this foreground process to stop it.",
+    );
   }
 
   return renderRuntimePanel({
@@ -713,6 +718,7 @@ export const runCliCommand = async (
         output: renderRuntimeStatusOutput(foregroundRuntime, {
           env: services.env,
           timeZone: services.env.TZ,
+          isCurrentForegroundInvocation: true,
         }),
         runtime: foregroundRuntime,
       };

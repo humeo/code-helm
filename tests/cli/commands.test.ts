@@ -241,11 +241,12 @@ describe("runCliCommand", () => {
 
     const result = await runCliCommand({ kind: "start", daemon: false }, services);
 
+    const escapedStarted = formatStartedAtForDisplay(startedAt, "Asia/Shanghai")
+      .replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     expect(result.output).toMatch(
-      new RegExp(`Started\\s*:\\s*${formatStartedAtForDisplay(startedAt, "Asia/Shanghai").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`),
+      new RegExp(`Started\\s*:\\s*${escapedStarted}\\s*\\(Asia\\/Shanghai\\)`),
     );
     expect(result.output).not.toContain(`Started: ${startedAt}`);
-    expect(result.output).toContain("Asia/Shanghai");
   });
 
   test("start foreground success renders runtime panel output", async () => {
@@ -559,7 +560,8 @@ describe("runCliCommand", () => {
     expect(result.output).toContain("ws://127.0.0.1:4400");
     expect(result.output).toContain("codex --remote ws://127.0.0.1:4400");
     expect(result.output).not.toContain("code-helm stop");
-    expect(result.output).toContain("Ctrl+C");
+    expect(result.output).not.toContain("Ctrl+C");
+    expect(result.output).toContain("Use the terminal running this foreground process to stop it.");
     expect(result.output).not.toContain("CodeHelm running\nMode:");
   });
 
