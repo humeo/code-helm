@@ -247,6 +247,11 @@ bun run dev
 bun run migrate
 ```
 
+Release workflow:
+
+- see [docs/release.md](./docs/release.md) for the npm and GitHub publishing steps
+- CI/CD workflows live in `.github/workflows/ci.yml` and `.github/workflows/publish.yml`
+
 ## Advanced Overrides
 
 Normal users should prefer `code-helm onboard`.
