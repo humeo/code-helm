@@ -200,7 +200,10 @@ const isConfigured = (store: LoadedConfigStore) => {
   return Boolean(store.config && store.secrets);
 };
 
-const formatRuntimeStartedAt = (value: string, timeZone?: string) => {
+const formatRuntimeStartedAt = (
+  value: string,
+  options: { timeZone?: string; includeTimeZoneLabel?: boolean } = {},
+) => {
   const date = new Date(value);
 
   if (Number.isNaN(date.getTime())) {
@@ -227,9 +230,10 @@ const formatRuntimeStartedAt = (value: string, timeZone?: string) => {
     return `${readPart("year")}-${readPart("month")}-${readPart("day")} ${readPart("hour")}:${readPart("minute")}:${readPart("second")} ${readPart("timeZoneName")}`;
   };
 
-  if (timeZone) {
+  if (options.timeZone) {
     try {
-      return `${formatValue(timeZone)} (${timeZone})`;
+      const formatted = formatValue(options.timeZone);
+      return options.includeTimeZoneLabel ? `${formatted} (${options.timeZone})` : formatted;
     } catch {}
   }
 
@@ -254,7 +258,9 @@ const formatRuntimeSummary = (
   ];
 
   if (runtime.startedAt) {
-    lines.splice(3, 0, `Started: ${formatRuntimeStartedAt(runtime.startedAt, options.timeZone)}`);
+    lines.splice(3, 0, `Started: ${formatRuntimeStartedAt(runtime.startedAt, {
+      timeZone: options.timeZone,
+    })}`);
   }
 
   return lines.join("\n");
@@ -321,7 +327,10 @@ const renderRuntimeStatusOutput = (
     {
       key: "Started",
       value: runtime.startedAt
-        ? formatRuntimeStartedAt(runtime.startedAt, options.timeZone)
+        ? formatRuntimeStartedAt(runtime.startedAt, {
+          timeZone: options.timeZone,
+          includeTimeZoneLabel: true,
+        })
         : "n/a",
     },
     { key: "PID", value: String(runtime.pid) },

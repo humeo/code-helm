@@ -612,6 +612,41 @@ describe("runCliCommand", () => {
     expect(result.output).not.toContain("CodeHelm Runtime");
   });
 
+  test("onboard already-running with TZ set keeps legacy runtime-summary formatting", async () => {
+    const services = createBaseServices();
+    const startedAt = "2026-04-16T08:00:00.000Z";
+
+    services.env = {
+      ...services.env,
+      TZ: "Asia/Shanghai",
+    };
+    services.runOnboarding = async () => ({ kind: "already-running" });
+    services.readRuntimeSummary = () => ({
+      pid: 2222,
+      mode: "background",
+      discord: {
+        guildId: "guild-1",
+        controlChannelId: "channel-1",
+        connected: true,
+      },
+      codex: {
+        appServerAddress: "ws://127.0.0.1:4200",
+        pid: 999,
+        running: true,
+      },
+      startedAt,
+    });
+
+    const result = await runCliCommand({ kind: "onboard" }, services);
+
+    expect(result.output).toContain("CodeHelm running");
+    expect(result.output).toContain(
+      `Started: ${formatStartedAtForDisplay(startedAt, "Asia/Shanghai")}`,
+    );
+    expect(result.output).not.toContain("(Asia/Shanghai)");
+    expect(result.output).not.toContain("CodeHelm Runtime");
+  });
+
   test("stop shuts down the background daemon and its managed app server", async () => {
     const services = createBaseServices();
     const signals: Array<{ pid: number; signal: NodeJS.Signals }> = [];
