@@ -783,6 +783,41 @@ describe("runCliCommand", () => {
     expect(result.output).toContain("stopped");
   });
 
+  test("stop on foreground runtime renders a panel that explains it must be stopped from the owning terminal", async () => {
+    const services = createBaseServices();
+    let signaled = false;
+
+    services.readRuntimeSummary = () => ({
+      pid: 3333,
+      mode: "foreground",
+      discord: {
+        guildId: "guild-1",
+        controlChannelId: "channel-1",
+        connected: true,
+      },
+      codex: {
+        appServerAddress: "ws://127.0.0.1:4500",
+        pid: 7777,
+        running: true,
+      },
+      startedAt: "2026-04-16T10:00:00.000Z",
+    });
+    services.signalProcess = () => {
+      signaled = true;
+      return true;
+    };
+
+    const result = await runCliCommand({ kind: "stop" }, services);
+
+    expect(signaled).toBe(false);
+    expect(result.output).toContain("CodeHelm Runtime Still Running");
+    expect(result.output).toContain("Status");
+    expect(result.output).toMatch(/Mode\s*:\s*foreground/);
+    expect(result.output).toMatch(/PID\s*:\s*3333/);
+    expect(result.output).toContain("Stop this runtime from the terminal/session that started it.");
+    expect(result.output).not.toContain("CodeHelm running\nMode:");
+  });
+
   test("stop when not running renders an inactive panel", async () => {
     const services = createBaseServices();
 

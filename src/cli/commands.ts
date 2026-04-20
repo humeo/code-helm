@@ -670,8 +670,24 @@ const stopBackgroundRuntime = async (
 ) => {
   if (runtime.mode !== "background") {
     return {
-      output: formatRuntimeSummary(runtime, {
-        timeZone: services.env.TZ,
+      output: renderWarningPanel({
+        title: "CodeHelm Runtime Still Running",
+        sections: [
+          {
+            title: "Status",
+            lines: renderKeyValueRows([
+              { key: "Mode", value: runtime.mode },
+              { key: "PID", value: String(runtime.pid) },
+            ]),
+          },
+          {
+            title: "Next Step",
+            lines: [
+              "Stop this runtime from the terminal/session that started it.",
+            ],
+          },
+        ],
+        env: services.env,
       }),
       runtime,
     };
