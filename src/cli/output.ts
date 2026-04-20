@@ -88,7 +88,7 @@ const isExplicitNonUtf8CharsetToken = (token: string) => {
     return true;
   }
 
-  return /^iso[-_]?8859-\d+$/u.test(token) || /^latin\d+$/u.test(token);
+  return /^iso[-_]?8859[-_]?\d+$/u.test(token) || /^latin\d+$/u.test(token);
 };
 
 const isClearlyNonUtf8Locale = (value: string) => {

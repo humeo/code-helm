@@ -157,6 +157,11 @@ describe("cli output renderer", () => {
     expect(detectCliCharset({ LANG: "latin1" })).toBe("ascii");
   });
 
+  test("falls back to ascii for dotted explicit non-utf8 iso locales", () => {
+    expect(detectCliCharset({ LANG: "de_DE.iso88591" })).toBe("ascii");
+    expect(detectCliCharset({ LANG: "de_DE.iso885915@euro" })).toBe("ascii");
+  });
+
   test("uses locale precedence with LC_ALL over lower-priority utf-8 locale", () => {
     expect(detectCliCharset({ LC_ALL: "C", LANG: "en_US.UTF-8" })).toBe("ascii");
   });
