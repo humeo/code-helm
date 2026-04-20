@@ -600,6 +600,7 @@ describe("runCliCommand", () => {
     expect(result.output).toContain("Autostart Enabled");
     expect(result.output).toContain("Configuration");
     expect(result.output).toContain("Label");
+    expect(result.output).toContain("dev.codehelm.code-helm");
     expect(result.output).toContain("Launch Agent");
     expect(result.output).toContain("/tmp/code-helm.plist");
   });
@@ -815,9 +816,24 @@ describe("runCliCommand", () => {
       }
     };
 
-    await expect(
-      runCliCommand({ kind: "uninstall" }, services),
-    ).rejects.toThrow(/Uninstall Incomplete[\s\S]*cannot remove config/i);
+    let thrown: unknown;
+
+    try {
+      await runCliCommand({ kind: "uninstall" }, services);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    const message = (thrown as Error).message;
+    expect(message).toMatch(/Uninstall Incomplete/i);
+    expect(message).toMatch(/Removed/i);
+    expect(message).toMatch(/Failed/i);
+    expect(message).toContain("/tmp/code-helm.plist");
+    expect(message).toContain(paths.secretsPath);
+    expect(message).toContain(paths.databasePath);
+    expect(message).toContain(paths.stateDir);
+    expect(message).toMatch(/cannot remove config/i);
     expect(attemptedPaths).toEqual([
       paths.configPath,
       paths.secretsPath,
