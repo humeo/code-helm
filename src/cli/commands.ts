@@ -1,4 +1,4 @@
-import { spawn, type SpawnOptions } from "node:child_process";
+import { spawn, spawnSync, type SpawnOptions } from "node:child_process";
 import { existsSync, rmSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -43,6 +43,14 @@ export type CommandExecutionResult = {
   runtime?: RuntimeSummary;
 };
 
+export type PackageUpdateResult = {
+  command: string;
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  error?: string;
+};
+
 export type CommandServices = {
   backgroundRuntimeTimeoutMs: number;
   disableAutostart: () => Promise<AutostartResult>;
@@ -80,6 +88,7 @@ export type CommandServices = {
     isPidAlive: (pid: number) => boolean;
     timeoutMs?: number;
   }) => Promise<boolean>;
+  runPackageUpdate: () => Promise<PackageUpdateResult>;
   removePath: (targetPath: string) => void;
 };
 
@@ -170,6 +179,32 @@ const defaultRunOnboarding: CommandServices["runOnboarding"] = async (options) =
   });
 };
 
+export const buildDefaultPackageUpdateCommand = () => [
+  "npm",
+  "install",
+  "-g",
+  "code-helm@latest",
+] as const;
+
+const defaultRunPackageUpdate = async (
+  env: Record<string, string | undefined>,
+): Promise<PackageUpdateResult> => {
+  const commandParts = [...buildDefaultPackageUpdateCommand()];
+  const [command, ...args] = commandParts;
+  const result = spawnSync(command, args, {
+    encoding: "utf8",
+    env: env as Record<string, string>,
+  });
+
+  return {
+    command: commandParts.join(" "),
+    exitCode: result.status ?? (result.error ? 1 : 0),
+    stdout: result.stdout ?? "",
+    stderr: result.stderr ?? "",
+    error: result.error?.message,
+  };
+};
+
 const createDefaultServices = (
   env: Record<string, string | undefined>,
 ): CommandServices => ({
@@ -195,6 +230,7 @@ const createDefaultServices = (
       timeoutMs: options.timeoutMs,
     }, { readRuntimeSummary }),
   waitForRuntimeExit: defaultWaitForRuntimeExit,
+  runPackageUpdate: async () => defaultRunPackageUpdate(env),
   removePath: defaultRemovePath,
 });
 
@@ -809,6 +845,62 @@ const renderVersionOutput = (env: Record<string, string | undefined>) => {
   });
 };
 
+const formatUpdateDiagnostics = (result: PackageUpdateResult) => {
+  const diagnostics = [
+    result.error?.trim(),
+    result.stderr.trim(),
+    result.stdout.trim(),
+  ].filter((value): value is string => Boolean(value && value.length > 0));
+
+  return diagnostics.length > 0 ? diagnostics.join("\n\n") : undefined;
+};
+
+const renderUpdateSuccessOutput = (
+  env: Record<string, string | undefined>,
+  result: PackageUpdateResult,
+) => {
+  return renderSuccessPanel({
+    title: "CodeHelm Updated",
+    sections: [
+      {
+        title: "Result",
+        lines: ["Installed the latest npm package release."],
+      },
+      {
+        title: "Command",
+        lines: [result.command],
+      },
+      {
+        title: "Next Step",
+        lines: ["code-helm version"],
+      },
+    ],
+    env,
+  });
+};
+
+const renderUpdateFailureOutput = (
+  env: Record<string, string | undefined>,
+  result: PackageUpdateResult,
+) => {
+  const missingNpm = (result.error ?? "").toLowerCase().includes("enoent");
+
+  return renderErrorPanel({
+    title: "Update Failed",
+    headline: missingNpm
+      ? "npm could not be launched from PATH."
+      : "CodeHelm could not update via npm.",
+    sections: [
+      {
+        title: "Command",
+        lines: [result.command],
+      },
+    ],
+    diagnostics: formatUpdateDiagnostics(result),
+    env,
+  });
+};
+
 export const runCliCommand = async (
   command: CliCommand,
   overrides?: Partial<CommandServices>,
@@ -827,6 +919,17 @@ export const runCliCommand = async (
       return {
         output: renderVersionOutput(services.env),
       };
+    case "update": {
+      const result = await services.runPackageUpdate();
+
+      if (result.exitCode !== 0) {
+        throw new Error(renderUpdateFailureOutput(services.env, result));
+      }
+
+      return {
+        output: renderUpdateSuccessOutput(services.env, result),
+      };
+    }
   }
 
   const store = services.loadConfigStore({

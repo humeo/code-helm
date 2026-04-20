@@ -3,7 +3,11 @@ import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CliCommand } from "../../src/cli/args";
-import { runCliCommand, type CommandServices } from "../../src/cli/commands";
+import {
+  buildDefaultPackageUpdateCommand,
+  runCliCommand,
+  type CommandServices,
+} from "../../src/cli/commands";
 import { CodexSupervisorError } from "../../src/codex/supervisor";
 import type { AppConfig } from "../../src/config";
 import { readPackageMetadata } from "../../src/package-metadata";
@@ -112,6 +116,12 @@ const createBaseServices = (): CommandServices => {
       launchAgentPath: "/tmp/code-helm.plist",
       removed: true,
     }),
+    runPackageUpdate: async () => ({
+      command: buildDefaultPackageUpdateCommand().join(" "),
+      exitCode: 0,
+      stdout: "changed 1 package",
+      stderr: "",
+    }),
     removePath: () => {},
   };
 };
@@ -149,6 +159,15 @@ afterEach(() => {
 });
 
 describe("runCliCommand", () => {
+  test("default package update command targets npm global latest install", () => {
+    expect(buildDefaultPackageUpdateCommand()).toEqual([
+      "npm",
+      "install",
+      "-g",
+      "code-helm@latest",
+    ]);
+  });
+
   test("help renders the full operator-facing command surface without touching config or runtime", async () => {
     const services = createBaseServices();
     let loadConfigStoreCalls = 0;
@@ -205,6 +224,90 @@ describe("runCliCommand", () => {
     expect(result.output).toContain("CodeHelm Version");
     expect(result.output).toContain(expectedMetadata.name);
     expect(result.output).toContain(expectedMetadata.version);
+  });
+
+  test("update renders a success panel without touching config or runtime", async () => {
+    const services = createBaseServices() as CommandServices & {
+      runPackageUpdate: () => Promise<{
+        command: string;
+        exitCode: number;
+        stdout: string;
+        stderr: string;
+        error?: string;
+      }>;
+    };
+    let loadConfigStoreCalls = 0;
+    let readRuntimeSummaryCalls = 0;
+
+    services.loadConfigStore = () => {
+      loadConfigStoreCalls += 1;
+      throw new Error("update should not load config");
+    };
+    services.readRuntimeSummary = () => {
+      readRuntimeSummaryCalls += 1;
+      throw new Error("update should not read runtime");
+    };
+    services.runPackageUpdate = async () => ({
+      command: buildDefaultPackageUpdateCommand().join(" "),
+      exitCode: 0,
+      stdout: "changed 1 package",
+      stderr: "",
+    });
+
+    const result = await runCliCommand({ kind: "update" }, services);
+
+    expect(loadConfigStoreCalls).toBe(0);
+    expect(readRuntimeSummaryCalls).toBe(0);
+    expect(result.output).toContain("CodeHelm Updated");
+    expect(result.output).toContain("npm install -g code-helm@latest");
+    expect(result.output).toContain("code-helm version");
+  });
+
+  test("update surfaces a failed npm exit as an error panel", async () => {
+    const services = createBaseServices() as CommandServices & {
+      runPackageUpdate: () => Promise<{
+        command: string;
+        exitCode: number;
+        stdout: string;
+        stderr: string;
+        error?: string;
+      }>;
+    };
+
+    services.runPackageUpdate = async () => ({
+      command: buildDefaultPackageUpdateCommand().join(" "),
+      exitCode: 1,
+      stdout: "",
+      stderr: "npm ERR! code EACCES",
+    });
+
+    await expect(
+      runCliCommand({ kind: "update" }, services),
+    ).rejects.toThrow(/Update Failed/);
+  });
+
+  test("update reports missing npm with explicit failure copy", async () => {
+    const services = createBaseServices() as CommandServices & {
+      runPackageUpdate: () => Promise<{
+        command: string;
+        exitCode: number;
+        stdout: string;
+        stderr: string;
+        error?: string;
+      }>;
+    };
+
+    services.runPackageUpdate = async () => ({
+      command: buildDefaultPackageUpdateCommand().join(" "),
+      exitCode: 1,
+      stdout: "",
+      stderr: "",
+      error: "spawn npm ENOENT",
+    });
+
+    await expect(
+      runCliCommand({ kind: "update" }, services),
+    ).rejects.toThrow(/npm/i);
   });
 
   test("start auto-enters onboarding when config is missing", async () => {
