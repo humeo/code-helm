@@ -94,7 +94,6 @@ const approvalQuestionCharacterLimit = 160;
 const approvalCommandPreviewCharacterLimit = 640;
 const approvalJustificationCharacterLimit = 700;
 const approvalCwdCharacterLimit = 180;
-const approvalRequestKindCharacterLimit = 80;
 const approvalRequestIdCharacterLimit = 80;
 const approvalTruncationSuffix = "…";
 
@@ -296,15 +295,6 @@ const renderPendingApprovalBody = (
   if (snapshot.cwd) {
     metadata.push(
       `CWD: \`${truncateApprovalText(snapshot.cwd, approvalCwdCharacterLimit)}\``,
-    );
-  }
-
-  if (snapshot.requestKind) {
-    metadata.push(
-      `Kind: \`${truncateApprovalText(
-        snapshot.requestKind,
-        approvalRequestKindCharacterLimit,
-      )}\``,
     );
   }
 

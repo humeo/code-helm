@@ -5084,8 +5084,7 @@ test("live command approvals persist snapshot data before lifecycle rendering", 
       + "touch c.txt\n"
       + "```\n"
       + "要允许我在项目根目录创建 c.txt 吗？\n"
-      + "CWD: `/tmp/ws1/app`\n"
-      + "Kind: `command_execution`",
+      + "CWD: `/tmp/ws1/app`",
   );
 
   db.close();
@@ -5188,8 +5187,7 @@ test("live file-change approvals persist fallback title and request kind before 
   })).toBe(
     "**Would you like to apply these file changes?**\n"
       + "Allow updating tracked files?\n"
-      + "CWD: `/tmp/ws1/app`\n"
-      + "Kind: `file_change`",
+      + "CWD: `/tmp/ws1/app`",
   );
 
   db.close();
@@ -5241,8 +5239,7 @@ test("live permissions approvals persist fallback title and request kind before 
   })).toBe(
     "**Would you like to grant these permissions?**\n"
       + "Allow elevated permissions for this step?\n"
-      + "CWD: `/tmp/ws1/app`\n"
-      + "Kind: `permissions`",
+      + "CWD: `/tmp/ws1/app`",
   );
 
   db.close();

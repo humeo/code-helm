@@ -128,6 +128,7 @@ test("pending panels lead with the human question and render only offered provid
   expect(rendered.content).not.toContain("**Approval request**");
   expect(rendered.content).toContain("touch c.txt");
   expect(rendered.content).not.toContain("Request ID:");
+  expect(rendered.content).not.toContain("Kind:");
   expect(rendered.content).not.toContain("\n\n");
   expect(rendered.decisions.map((button) => button.label)).toEqual([
     "Yes, proceed",
