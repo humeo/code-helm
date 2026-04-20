@@ -7,6 +7,19 @@ import {
 } from "../../src/cli/output";
 
 describe("cli output renderer", () => {
+  const expectPanelRowsToStayFramed = (output: string) => {
+    const lines = output.split("\n");
+
+    for (const line of lines.slice(1, -1)) {
+      if (line.startsWith("├") || line.startsWith("+")) {
+        continue;
+      }
+
+      expect(line.startsWith("│ ")).toBe(true);
+      expect(line.endsWith(" │")).toBe(true);
+    }
+  };
+
   test("uses unicode panel framing by default", () => {
     const output = renderSuccessPanel({
       title: "CodeHelm Stopped",
@@ -204,9 +217,52 @@ describe("cli output renderer", () => {
 
     expect(output).not.toContain("\r");
     expect(output).not.toContain("\b");
-    expect(output).toContain("Bad Title ");
-    expect(output).toContain("line reset");
-    expect(output).toContain("value fix");
-    expect(output).toContain("next line");
+    expect(output).toContain("│ Bad");
+    expect(output).toContain("│ Title");
+    expect(output).toContain("│ line");
+    expect(output).toContain("│ reset");
+    expect(output).toContain("│ value fix");
+    expect(output).toContain("│ next");
+    expect(output).toContain("│ line");
+    expectPanelRowsToStayFramed(output);
+  });
+
+  test("splits embedded newlines in headline into safe framed lines", () => {
+    const output = renderErrorPanel({
+      title: "CodeHelm Start Failed",
+      headline: "first line\nsecond line",
+      env: {},
+    });
+
+    expect(output).toContain("│ first line            │");
+    expect(output).toContain("│ second line           │");
+    expectPanelRowsToStayFramed(output);
+  });
+
+  test("splits embedded newlines in section content into safe framed lines", () => {
+    const output = renderSuccessPanel({
+      title: "CodeHelm running",
+      sections: [
+        {
+          title: "Result\nDetails",
+          lines: ["line one\nline two", "plain line"],
+        },
+      ],
+      commandHints: ["code-helm status\ncode-helm stop"],
+      env: {},
+    });
+
+    const innerLines = output
+      .split("\n")
+      .filter((line) => line.startsWith("│ ") && line.endsWith(" │"))
+      .map((line) => line.slice(2, -2).trimRight());
+
+    expect(innerLines).toContain("Result");
+    expect(innerLines).toContain("Details");
+    expect(innerLines).toContain("line one");
+    expect(innerLines).toContain("line two");
+    expect(innerLines).toContain("$ code-helm status");
+    expect(innerLines).toContain("code-helm stop");
+    expectPanelRowsToStayFramed(output);
   });
 });

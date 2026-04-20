@@ -36,6 +36,12 @@ const sanitizeRenderableText = (value: string) => {
     .replace(unsafeControlPattern, " ");
 };
 
+const toRenderableLines = (value: string) => {
+  return value
+    .split(/\r\n|\n|\r/u)
+    .map((line) => sanitizeRenderableText(line));
+};
+
 const isUtf8Locale = (value: string) => {
   const normalized = value.trim().toLowerCase();
 
@@ -206,14 +212,17 @@ const appendSectionLines = (
     lines.push("");
   }
 
-  lines.push(section.title, ...section.lines);
+  lines.push(
+    ...toRenderableLines(section.title),
+    ...section.lines.flatMap((line) => toRenderableLines(line)),
+  );
 };
 
 const renderSemanticPanel = (options: RenderSemanticPanelOptions) => {
   const lines: string[] = [];
 
   if (options.headline) {
-    lines.push(options.headline);
+    lines.push(...toRenderableLines(options.headline));
   }
 
   for (const section of options.sections ?? []) {
@@ -267,8 +276,9 @@ export const detectCliCharset = (env: Record<string, string | undefined>): CliCh
 export const renderPanelFrame = (options: RenderPanelOptions) => {
   const charset = detectCliCharset(options.env);
   const chars = createFrameChars(charset);
-  const sanitizedTitle = sanitizeRenderableText(options.title);
-  const sanitizedLines = options.lines.map((line) => sanitizeRenderableText(line));
+  const titleLines = toRenderableLines(options.title);
+  const sanitizedTitle = titleLines[0] ?? "";
+  const sanitizedLines = [...titleLines.slice(1), ...options.lines.flatMap((line) => toRenderableLines(line))];
   const contentLines = [sanitizedTitle, ...sanitizedLines];
   const width = contentLines.reduce((max, line) => Math.max(max, getDisplayWidth(line)), 0);
   const horizontal = chars.horizontal.repeat(width + 2);
@@ -300,12 +310,19 @@ export const renderDiagnosticsSection = (details?: string): PanelSection | undef
 
   return {
     title: "Diagnostics",
-    lines: splitMultiline(details).map((line) => sanitizeRenderableText(line)),
+    lines: splitMultiline(details).flatMap((line) => toRenderableLines(line)),
   };
 };
 
 export const renderCommandHint = (command: string) => {
-  return `$ ${command.trim()}`;
+  const commandLines = toRenderableLines(command.trim());
+  const [firstLine, ...extraLines] = commandLines;
+
+  if (!firstLine) {
+    return "$";
+  }
+
+  return [`$ ${firstLine}`, ...extraLines].join("\n");
 };
 
 export const renderRuntimePanel = (options: RenderSemanticPanelOptions) => {
