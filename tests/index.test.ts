@@ -5079,11 +5079,11 @@ test("live command approvals persist snapshot data before lifecycle rendering", 
   expect(renderApprovalLifecycleMessage({
     approval,
   })).toBe(
-    "**Would you like to run the following command?**\n\n"
+    "**Would you like to run the following command?**\n"
       + "```sh\n"
       + "touch c.txt\n"
-      + "```\n\n"
-      + "要允许我在项目根目录创建 c.txt 吗？\n\n"
+      + "```\n"
+      + "要允许我在项目根目录创建 c.txt 吗？\n"
       + "CWD: `/tmp/ws1/app`\n"
       + "Kind: `command_execution`",
   );
@@ -5186,8 +5186,8 @@ test("live file-change approvals persist fallback title and request kind before 
   expect(renderApprovalLifecycleMessage({
     approval,
   })).toBe(
-    "**Would you like to apply these file changes?**\n\n"
-      + "Allow updating tracked files?\n\n"
+    "**Would you like to apply these file changes?**\n"
+      + "Allow updating tracked files?\n"
       + "CWD: `/tmp/ws1/app`\n"
       + "Kind: `file_change`",
   );
@@ -5239,8 +5239,8 @@ test("live permissions approvals persist fallback title and request kind before 
   expect(renderApprovalLifecycleMessage({
     approval,
   })).toBe(
-    "**Would you like to grant these permissions?**\n\n"
-      + "Allow elevated permissions for this step?\n\n"
+    "**Would you like to grant these permissions?**\n"
+      + "Allow elevated permissions for this step?\n"
       + "CWD: `/tmp/ws1/app`\n"
       + "Kind: `permissions`",
   );

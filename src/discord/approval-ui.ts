@@ -273,7 +273,6 @@ const renderPendingApprovalBody = (
 
   if (snapshot.commandPreview) {
     lines.push(
-      "",
       "```sh",
       truncateApprovalText(
         sanitizeApprovalCommandPreview(snapshot.commandPreview),
@@ -285,7 +284,6 @@ const renderPendingApprovalBody = (
 
   if (snapshot.justification) {
     lines.push(
-      "",
       truncateApprovalText(
         snapshot.justification,
         approvalJustificationCharacterLimit,
@@ -311,7 +309,7 @@ const renderPendingApprovalBody = (
   }
 
   if (metadata.length > 0) {
-    lines.push("", ...metadata);
+    lines.push(...metadata);
   }
 
   const content = lines.join("\n");
