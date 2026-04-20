@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   detectCliCharset,
+  renderCliCaughtError,
   renderErrorPanel,
   renderKeyValueRows,
   renderSuccessPanel,
@@ -100,6 +101,45 @@ describe("cli output renderer", () => {
 
     expect(headlineIndex).toBeGreaterThan(-1);
     expect(diagnosticsIndex).toBeGreaterThan(headlineIndex);
+  });
+
+  test("renders plain caught errors as Problem and Details sections", () => {
+    const output = renderCliCaughtError(new Error("boom"), {});
+
+    expect(output).toContain("Command Failed");
+    expect(output).toContain("Problem");
+    expect(output).toContain("Unhandled CLI error.");
+    expect(output).toContain("Details");
+    expect(output).toContain("boom");
+  });
+
+  test("splits usage-shaped caught errors into Problem and Usage sections", () => {
+    const output = renderCliCaughtError(
+      new Error("Unknown command: wat\nUsage: code-helm <...>"),
+      {},
+    );
+
+    expect(output).toContain("Invalid Arguments");
+    expect(output).toContain("Problem");
+    expect(output).toContain("Unknown command: wat");
+    expect(output).toContain("Usage");
+    expect(output).toContain("code-helm <...>");
+    expect(output).not.toContain("Details");
+  });
+
+  test("keeps diagnostics in a dedicated Diagnostics section for caught errors", () => {
+    const output = renderCliCaughtError(
+      new Error("boom"),
+      {},
+      "listen EADDRINUSE: address already in use",
+    );
+
+    const detailsIndex = output.indexOf("Details");
+    const diagnosticsIndex = output.indexOf("Diagnostics");
+
+    expect(detailsIndex).toBeGreaterThan(-1);
+    expect(diagnosticsIndex).toBeGreaterThan(detailsIndex);
+    expect(output).not.toContain("Command Failed: listen EADDRINUSE");
   });
 
   test("preserves intentional blank lines in diagnostics output", () => {

@@ -1,5 +1,6 @@
 import { parseCliArgs } from "./cli/args";
 import { runCliCommand } from "./cli/commands";
+import { renderCliCaughtError } from "./cli/output";
 
 const runCommand = async (command: ReturnType<typeof parseCliArgs>) => {
   const result = await runCliCommand(command, {
@@ -17,7 +18,8 @@ const main = async () => {
 };
 
 void main().catch((error: unknown) => {
-  const message = error instanceof Error ? error.message : String(error);
-  console.error(message);
+  console.error(
+    renderCliCaughtError(error, process.env as Record<string, string | undefined>),
+  );
   process.exitCode = 1;
 });

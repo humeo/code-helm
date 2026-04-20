@@ -342,3 +342,39 @@ export const renderWarningPanel = (options: RenderSemanticPanelOptions) => {
 export const renderErrorPanel = (options: RenderSemanticPanelOptions) => {
   return renderSemanticPanel(options);
 };
+
+export const renderCliCaughtError = (
+  error: unknown,
+  env: Record<string, string | undefined>,
+  diagnostics?: string,
+) => {
+  const message = error instanceof Error ? error.message : String(error);
+  const finalMessage = message.trim().length > 0 ? message.trim() : "Unknown CLI error.";
+  const usageSplitToken = "\nUsage:";
+  const usageIndex = finalMessage.indexOf(usageSplitToken);
+
+  if (usageIndex >= 0) {
+    const problem = finalMessage.slice(0, usageIndex).trim() || "Invalid command arguments.";
+    const usage = finalMessage.slice(usageIndex + 1).trim();
+
+    return renderErrorPanel({
+      title: "Invalid Arguments",
+      sections: [
+        { title: "Problem", lines: [problem] },
+        { title: "Usage", lines: [usage] },
+      ],
+      diagnostics,
+      env,
+    });
+  }
+
+  return renderErrorPanel({
+    title: "Command Failed",
+    sections: [
+      { title: "Problem", lines: ["Unhandled CLI error."] },
+      { title: "Details", lines: [finalMessage] },
+    ],
+    diagnostics,
+    env,
+  });
+};
