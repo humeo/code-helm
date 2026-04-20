@@ -274,7 +274,11 @@ const renderRuntimeStatusOutput = (
       sections: [
         {
           title: "Status",
-          lines: ["CodeHelm is not running."],
+          lines: renderKeyValueRows([
+            { key: "Mode", value: "not running" },
+            { key: "Started", value: "n/a" },
+            { key: "PID", value: "n/a" },
+          ]),
         },
         {
           title: "Connections",
@@ -286,8 +290,8 @@ const renderRuntimeStatusOutput = (
         {
           title: "Configuration",
           lines: renderKeyValueRows([
-            { key: "Mode", value: "n/a" },
-            { key: "PID", value: "n/a" },
+            { key: "Time Zone", value: options.timeZone ?? "system default" },
+            { key: "Runtime State", value: "local state file" },
           ]),
         },
         {
@@ -312,17 +316,20 @@ const renderRuntimeStatusOutput = (
       value: `${runtime.codex.running === false ? "stopped" : "running"} ${runtime.codex.appServerAddress}`,
     },
   ];
-  const configurationRows = [
+  const statusRows = [
     { key: "Mode", value: runtime.mode },
+    {
+      key: "Started",
+      value: runtime.startedAt
+        ? formatRuntimeStartedAt(runtime.startedAt, options.timeZone)
+        : "n/a",
+    },
     { key: "PID", value: String(runtime.pid) },
   ];
-
-  if (runtime.startedAt) {
-    configurationRows.push({
-      key: "Started",
-      value: formatRuntimeStartedAt(runtime.startedAt, options.timeZone),
-    });
-  }
+  const configurationRows = [
+    { key: "Time Zone", value: options.timeZone ?? "system default" },
+    { key: "Runtime State", value: "local state file" },
+  ];
 
   return renderRuntimePanel({
     title: "CodeHelm Runtime",
@@ -330,7 +337,7 @@ const renderRuntimeStatusOutput = (
     sections: [
       {
         title: "Status",
-        lines: ["CodeHelm is running."],
+        lines: renderKeyValueRows(statusRows),
       },
       {
         title: "Connections",
@@ -409,7 +416,7 @@ const formatStartupFailure = (
 
     if (classification === "certificate") {
       return renderErrorPanel({
-        title: "CodeHelm Startup Failed",
+        title: "Startup Failed",
         headline: "Managed Codex App Server failed certificate verification during startup.",
         sections: [
           {
@@ -428,7 +435,7 @@ const formatStartupFailure = (
     }
 
     return renderErrorPanel({
-      title: "CodeHelm Startup Failed",
+      title: "Startup Failed",
       headline: "Managed Codex App Server failed to start.",
       sections: [
         {

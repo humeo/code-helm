@@ -258,6 +258,9 @@ describe("runCliCommand", () => {
     expect(result.output).toContain("Connections");
     expect(result.output).toContain("Configuration");
     expect(result.output).toContain("Quick Actions");
+    expect(result.output).toMatch(/Mode\s*:\s*foreground/);
+    expect(result.output).toMatch(/Started\s*:\s*/);
+    expect(result.output).toMatch(/PID\s*:\s*\d+/);
     expect(result.output).toContain("codex --remote ws://127.0.0.1:4100");
     expect(result.output).not.toContain("CodeHelm running\nMode:");
   });
@@ -312,6 +315,9 @@ describe("runCliCommand", () => {
     ).rejects.toThrow(/failed to start/i);
     await expect(
       runCliCommand({ kind: "start", daemon: false }, services),
+    ).rejects.toThrow(/Startup Failed/i);
+    await expect(
+      runCliCommand({ kind: "start", daemon: false }, services),
     ).rejects.toThrow(/try running the command again/i);
     await expect(
       runCliCommand({ kind: "start", daemon: false }, services),
@@ -335,6 +341,9 @@ describe("runCliCommand", () => {
     await expect(
       runCliCommand({ kind: "start", daemon: false }, services),
     ).rejects.toThrow(/certificate trust setup/i);
+    await expect(
+      runCliCommand({ kind: "start", daemon: false }, services),
+    ).rejects.toThrow(/Startup Failed/i);
     await expect(
       runCliCommand({ kind: "start", daemon: false }, services),
     ).rejects.toThrow(/proxy/i);
@@ -367,6 +376,8 @@ describe("runCliCommand", () => {
     expect(result.output).toContain("Configuration");
     expect(result.output).toContain("Quick Actions");
     expect(result.output).toMatch(/Mode\s*:\s*background/);
+    expect(result.output).toMatch(/Started\s*:\s*/);
+    expect(result.output).toMatch(/PID\s*:\s*\d+/);
     expect(result.output).toContain("codex --remote ws://127.0.0.1:4100");
     expect(result.output).not.toContain("CodeHelm running\nMode:");
     expect(spawnedEnv?.CODE_HELM_CONFIG).toBeTruthy();
@@ -479,6 +490,9 @@ describe("runCliCommand", () => {
     expect(result.output).toContain("Connections");
     expect(result.output).toContain("Configuration");
     expect(result.output).toContain("Quick Actions");
+    expect(result.output).toMatch(/Mode\s*:\s*foreground/);
+    expect(result.output).toMatch(/Started\s*:\s*/);
+    expect(result.output).toMatch(/PID\s*:\s*2222/);
     expect(result.output).toContain("ws://127.0.0.1:4400");
     expect(result.output).toContain("codex --remote ws://127.0.0.1:4400");
     expect(result.output).not.toContain("CodeHelm running\nMode:");
@@ -494,6 +508,9 @@ describe("runCliCommand", () => {
     expect(result.output).toContain("Connections");
     expect(result.output).toContain("Configuration");
     expect(result.output).toContain("not running");
+    expect(result.output).toMatch(/Mode\s*:\s*not running/);
+    expect(result.output).toMatch(/Started\s*:\s*n\/a/);
+    expect(result.output).toMatch(/PID\s*:\s*n\/a/);
     expect(result.output).not.toContain("CodeHelm stopped");
   });
 
