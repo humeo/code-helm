@@ -1,5 +1,6 @@
 import { EventRouter } from "./event-router";
 import { logger } from "../logger";
+import { readPackageMetadata } from "../package-metadata";
 import {
   isApprovalRequestMethod,
   isRoutedEventMethod,
@@ -59,11 +60,12 @@ type WebSocketLike = {
 };
 
 const webSocketOpenState = 1;
+const packageMetadata = readPackageMetadata();
 const initializeParams = {
   clientInfo: {
-    name: "code-helm",
+    name: packageMetadata.name,
     title: "CodeHelm",
-    version: "0.1.0",
+    version: packageMetadata.version,
   },
   capabilities: {
     experimentalApi: true,

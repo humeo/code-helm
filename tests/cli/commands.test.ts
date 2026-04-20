@@ -6,6 +6,7 @@ import type { CliCommand } from "../../src/cli/args";
 import { runCliCommand, type CommandServices } from "../../src/cli/commands";
 import { CodexSupervisorError } from "../../src/codex/supervisor";
 import type { AppConfig } from "../../src/config";
+import { readPackageMetadata } from "../../src/package-metadata";
 
 const tempDirs: string[] = [];
 
@@ -148,6 +149,64 @@ afterEach(() => {
 });
 
 describe("runCliCommand", () => {
+  test("help renders the full operator-facing command surface without touching config or runtime", async () => {
+    const services = createBaseServices();
+    let loadConfigStoreCalls = 0;
+    let readRuntimeSummaryCalls = 0;
+
+    services.loadConfigStore = () => {
+      loadConfigStoreCalls += 1;
+      throw new Error("help should not load config");
+    };
+    services.readRuntimeSummary = () => {
+      readRuntimeSummaryCalls += 1;
+      throw new Error("help should not read runtime");
+    };
+
+    const result = await runCliCommand({ kind: "help" }, services);
+
+    expect(loadConfigStoreCalls).toBe(0);
+    expect(readRuntimeSummaryCalls).toBe(0);
+    expect(result.output).toContain("CodeHelm CLI");
+    expect(result.output).toContain("Overview");
+    expect(result.output).toContain("Commands");
+    expect(result.output).toContain("Examples");
+    expect(result.output).toContain("code-helm onboard");
+    expect(result.output).toContain("code-helm start");
+    expect(result.output).toContain("code-helm status");
+    expect(result.output).toContain("code-helm stop");
+    expect(result.output).toContain("code-helm autostart enable");
+    expect(result.output).toContain("code-helm autostart disable");
+    expect(result.output).toContain("code-helm help");
+    expect(result.output).toContain("code-helm version");
+    expect(result.output).toContain("code-helm update");
+    expect(result.output).toContain("code-helm uninstall");
+  });
+
+  test("version renders package metadata without touching config or runtime", async () => {
+    const services = createBaseServices();
+    const expectedMetadata = readPackageMetadata();
+    let loadConfigStoreCalls = 0;
+    let readRuntimeSummaryCalls = 0;
+
+    services.loadConfigStore = () => {
+      loadConfigStoreCalls += 1;
+      throw new Error("version should not load config");
+    };
+    services.readRuntimeSummary = () => {
+      readRuntimeSummaryCalls += 1;
+      throw new Error("version should not read runtime");
+    };
+
+    const result = await runCliCommand({ kind: "version" }, services);
+
+    expect(loadConfigStoreCalls).toBe(0);
+    expect(readRuntimeSummaryCalls).toBe(0);
+    expect(result.output).toContain("CodeHelm Version");
+    expect(result.output).toContain(expectedMetadata.name);
+    expect(result.output).toContain(expectedMetadata.version);
+  });
+
   test("start auto-enters onboarding when config is missing", async () => {
     const services = createBaseServices();
     let loadCalls = 0;

@@ -6,6 +6,7 @@ import {
 } from "../../src/codex/jsonrpc-client";
 import type { StartTurnParams } from "../../src/codex/protocol-types";
 import { SessionController } from "../../src/codex/session-controller";
+import { readPackageMetadata } from "../../src/package-metadata";
 
 const createTransportStub = () => {
   const sent: string[] = [];
@@ -156,6 +157,7 @@ test("initialize sends initialize request before initialized notification", asyn
   const client = new JsonRpcClient("ws://example.test", {
     transport: stub.transport,
   });
+  const expectedMetadata = readPackageMetadata();
   const initializePromise = client.initialize();
 
   await Promise.resolve();
@@ -167,9 +169,9 @@ test("initialize sends initialize request before initialized notification", asyn
     method: "initialize",
     params: {
       clientInfo: {
-        name: "code-helm",
+        name: expectedMetadata.name,
         title: "CodeHelm",
-        version: "0.1.0",
+        version: expectedMetadata.version,
       },
       capabilities: {
         experimentalApi: true,

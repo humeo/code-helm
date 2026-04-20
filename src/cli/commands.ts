@@ -26,6 +26,7 @@ import {
   runOnboarding,
   type OnboardingResult,
 } from "./onboard";
+import { readPackageMetadata } from "../package-metadata";
 
 type StartHandle = {
   config: AppConfig;
@@ -749,6 +750,65 @@ const uninstallPaths = (store: LoadedConfigStore) => {
   ];
 };
 
+const renderHelpOutput = (env: Record<string, string | undefined>) => {
+  return renderSuccessPanel({
+    title: "CodeHelm CLI",
+    sections: [
+      {
+        title: "Overview",
+        lines: [
+          "CodeHelm turns Codex into a local daemon you control from Discord.",
+          "Use these commands to configure, run, inspect, and update the local runtime.",
+        ],
+      },
+      {
+        title: "Commands",
+        lines: [
+          "code-helm onboard",
+          "code-helm start",
+          "code-helm status",
+          "code-helm stop",
+          "code-helm autostart enable",
+          "code-helm autostart disable",
+          "code-helm help",
+          "code-helm version",
+          "code-helm update",
+          "code-helm uninstall",
+        ],
+      },
+      {
+        title: "Examples",
+        lines: [
+          "code-helm onboard",
+          "code-helm start --daemon",
+          "code-helm status",
+          "code-helm update",
+        ],
+      },
+    ],
+    env,
+  });
+};
+
+const renderVersionOutput = (env: Record<string, string | undefined>) => {
+  const packageMetadata = readPackageMetadata();
+
+  return renderSuccessPanel({
+    title: "CodeHelm Version",
+    sections: [
+      {
+        title: "Version",
+        lines: [packageMetadata.version],
+      },
+      {
+        title: "Package",
+        lines: [packageMetadata.name],
+      },
+    ],
+    env,
+  });
+};
+
 export const runCliCommand = async (
   command: CliCommand,
   overrides?: Partial<CommandServices>,
@@ -757,6 +817,18 @@ export const runCliCommand = async (
     ...createDefaultServices(overrides?.env ?? {}),
     ...overrides,
   } satisfies CommandServices;
+
+  switch (command.kind) {
+    case "help":
+      return {
+        output: renderHelpOutput(services.env),
+      };
+    case "version":
+      return {
+        output: renderVersionOutput(services.env),
+      };
+  }
+
   const store = services.loadConfigStore({
     env: services.env,
   });
