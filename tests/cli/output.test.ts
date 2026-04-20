@@ -154,6 +154,21 @@ describe("cli output renderer", () => {
     expect(output).not.toContain("Details");
   });
 
+  test("does not classify non-code-helm usage text as Invalid Arguments", () => {
+    const output = renderCliCaughtError(
+      new Error("helper failed\nUsage: helper [opts]"),
+      {},
+    );
+
+    expect(output).toContain("Command Failed");
+    expect(output).toContain("Problem");
+    expect(output).toContain("Unhandled CLI error.");
+    expect(output).toContain("Details");
+    expect(output).toContain("helper failed");
+    expect(output).toContain("Usage: helper [opts]");
+    expect(output).not.toContain("Invalid Arguments");
+  });
+
   test("keeps diagnostics in a dedicated Diagnostics section for caught errors", () => {
     const output = renderCliCaughtError(
       new Error("boom"),

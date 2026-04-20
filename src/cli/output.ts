@@ -369,6 +369,10 @@ const looksLikeRenderedPanel = (message: string) => {
   return isUnicodePanel || isAsciiPanel;
 };
 
+const isCodeHelmUsageLine = (line: string) => {
+  return /^Usage:\s*code-helm(?:\s|$)/u.test(line);
+};
+
 export const renderCliCaughtError = (
   error: unknown,
   env: Record<string, string | undefined>,
@@ -396,6 +400,21 @@ export const renderCliCaughtError = (
   if (firstUsageLineIndex >= 0) {
     const problemLines = messageLines.slice(0, firstUsageLineIndex);
     const usageLines = messageLines.slice(firstUsageLineIndex);
+    const hasOnlyCodeHelmUsageLines = usageLines.length > 0
+      && usageLines.every((line) => isCodeHelmUsageLine(line));
+
+    if (!hasOnlyCodeHelmUsageLines) {
+      return renderErrorPanel({
+        title: "Command Failed",
+        sections: [
+          { title: "Problem", lines: ["Unhandled CLI error."] },
+          { title: "Details", lines: [finalMessage] },
+        ],
+        diagnostics,
+        env,
+      });
+    }
+
     const problem = problemLines.join("\n").trim() || "Invalid command arguments.";
 
     return renderErrorPanel({

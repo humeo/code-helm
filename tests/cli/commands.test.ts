@@ -249,6 +249,34 @@ describe("runCliCommand", () => {
     expect(result.output).not.toContain(`Started: ${startedAt}`);
   });
 
+  test("start with invalid TZ falls back to system-default timezone display in runtime panel", async () => {
+    const services = createBaseServices();
+    services.env = {
+      ...services.env,
+      TZ: "Mars/Phobos",
+    };
+    services.readRuntimeSummary = () => ({
+      pid: 2222,
+      mode: "background",
+      discord: {
+        guildId: "guild-1",
+        controlChannelId: "channel-1",
+        connected: true,
+      },
+      codex: {
+        appServerAddress: "ws://127.0.0.1:4200",
+        pid: 999,
+        running: true,
+      },
+      startedAt: "2026-04-17T08:22:19.208Z",
+    });
+
+    const result = await runCliCommand({ kind: "start", daemon: false }, services);
+
+    expect(result.output).toMatch(/Time Zone\s*:\s*system default/);
+    expect(result.output).not.toContain("Mars/Phobos");
+  });
+
   test("start foreground success renders runtime panel output", async () => {
     const services = createBaseServices();
 

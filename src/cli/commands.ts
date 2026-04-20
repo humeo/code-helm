@@ -267,6 +267,19 @@ const formatRuntimeSummary = (
   return lines.join("\n");
 };
 
+const resolveDisplayTimeZone = (timeZone?: string) => {
+  if (!timeZone) {
+    return undefined;
+  }
+
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone }).format(new Date());
+    return timeZone;
+  } catch {
+    return undefined;
+  }
+};
+
 const renderRuntimeStatusOutput = (
   runtime: RuntimeSummary | undefined,
   options: {
@@ -276,6 +289,8 @@ const renderRuntimeStatusOutput = (
     isCurrentForegroundInvocation?: boolean;
   },
 ) => {
+  const displayTimeZone = resolveDisplayTimeZone(options.timeZone);
+
   if (!runtime) {
     return renderRuntimePanel({
       title: "CodeHelm Runtime",
@@ -298,7 +313,7 @@ const renderRuntimeStatusOutput = (
         {
           title: "Configuration",
           lines: renderKeyValueRows([
-            { key: "Time Zone", value: options.timeZone ?? "system default" },
+            { key: "Time Zone", value: displayTimeZone ?? "system default" },
             { key: "Runtime State", value: "local state file" },
           ]),
         },
@@ -330,7 +345,7 @@ const renderRuntimeStatusOutput = (
       key: "Started",
       value: runtime.startedAt
         ? formatRuntimeStartedAt(runtime.startedAt, {
-          timeZone: options.timeZone,
+          timeZone: displayTimeZone,
           includeTimeZoneLabel: true,
         })
         : "n/a",
@@ -338,7 +353,7 @@ const renderRuntimeStatusOutput = (
     { key: "PID", value: String(runtime.pid) },
   ];
   const configurationRows = [
-    { key: "Time Zone", value: options.timeZone ?? "system default" },
+    { key: "Time Zone", value: displayTimeZone ?? "system default" },
     { key: "Runtime State", value: "local state file" },
   ];
   const quickActions = [
