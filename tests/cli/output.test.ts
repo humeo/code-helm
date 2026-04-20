@@ -172,6 +172,10 @@ describe("cli output renderer", () => {
     expect(detectCliCharset({ LANG: "en_US.UTF-8" })).toBe("unicode");
   });
 
+  test("does not force ascii when LANG has no explicit charset", () => {
+    expect(detectCliCharset({ LANG: "en_US" })).toBe("unicode");
+  });
+
   test("falls back to ascii when LC_ALL is C", () => {
     expect(detectCliCharset({ LC_ALL: "C" })).toBe("ascii");
   });
@@ -180,9 +184,13 @@ describe("cli output renderer", () => {
     expect(detectCliCharset({ LC_CTYPE: "POSIX" })).toBe("ascii");
   });
 
-  test("keeps unicode on conflicting locale values if utf-8 is explicit", () => {
-    expect(detectCliCharset({ LC_ALL: "C", LANG: "en_US.UTF-8" })).toBe("unicode");
-    expect(detectCliCharset({ LC_CTYPE: "POSIX", LANG: "en_US.utf8" })).toBe("unicode");
+  test("uses locale precedence with LC_ALL over lower-priority utf-8 locale", () => {
+    expect(detectCliCharset({ LC_ALL: "C", LANG: "en_US.UTF-8" })).toBe("ascii");
+  });
+
+  test("keeps unicode when highest-precedence effective locale is utf-8", () => {
+    expect(detectCliCharset({ LC_CTYPE: "en_US.UTF-8", LANG: "C" })).toBe("unicode");
+    expect(detectCliCharset({ LC_ALL: "en_US.utf8", LC_CTYPE: "POSIX" })).toBe("unicode");
   });
 
   test("keeps frame display width aligned for cjk lines", () => {

@@ -32,6 +32,23 @@ const isUtf8Locale = (value: string) => {
   return normalized.includes("utf-8") || normalized.includes("utf8");
 };
 
+const getExplicitCharsetToken = (value: string) => {
+  const normalized = value.trim().toLowerCase();
+  const dotIndex = normalized.indexOf(".");
+
+  if (dotIndex === -1 || dotIndex === normalized.length - 1) {
+    return undefined;
+  }
+
+  const charsetWithModifier = normalized.slice(dotIndex + 1);
+  const modifierIndex = charsetWithModifier.indexOf("@");
+  const charset = modifierIndex === -1
+    ? charsetWithModifier
+    : charsetWithModifier.slice(0, modifierIndex);
+
+  return charset.length > 0 ? charset : undefined;
+};
+
 const isClearlyNonUtf8Locale = (value: string) => {
   const normalized = value.trim().toLowerCase();
 
@@ -43,7 +60,13 @@ const isClearlyNonUtf8Locale = (value: string) => {
     return true;
   }
 
-  return !isUtf8Locale(normalized);
+  const explicitCharset = getExplicitCharsetToken(normalized);
+
+  if (!explicitCharset) {
+    return false;
+  }
+
+  return explicitCharset !== "utf-8" && explicitCharset !== "utf8";
 };
 
 const isWideCodePoint = (codePoint: number) => {
@@ -186,15 +209,19 @@ export const detectCliCharset = (env: Record<string, string | undefined>): CliCh
     return "ascii";
   }
 
-  const locales = localeVariables
+  const effectiveLocale = localeVariables
     .map((key) => env[key])
-    .filter((locale): locale is string => Boolean(locale));
+    .find((locale): locale is string => Boolean(locale && locale.trim().length > 0));
 
-  if (locales.some((locale) => isUtf8Locale(locale))) {
+  if (!effectiveLocale) {
     return "unicode";
   }
 
-  if (locales.some((locale) => isClearlyNonUtf8Locale(locale))) {
+  if (isUtf8Locale(effectiveLocale)) {
+    return "unicode";
+  }
+
+  if (isClearlyNonUtf8Locale(effectiveLocale)) {
     return "ascii";
   }
 
