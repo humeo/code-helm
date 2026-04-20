@@ -138,6 +138,12 @@ describe("cli output renderer", () => {
     expect(detectCliCharset({ LC_CTYPE: "POSIX" })).toBe("ascii");
   });
 
+  test("falls back to ascii for explicit non-utf8 locales without dot suffix", () => {
+    expect(detectCliCharset({ LANG: "ISO-8859-1" })).toBe("ascii");
+    expect(detectCliCharset({ LANG: "US-ASCII" })).toBe("ascii");
+    expect(detectCliCharset({ LANG: "latin1" })).toBe("ascii");
+  });
+
   test("uses locale precedence with LC_ALL over lower-priority utf-8 locale", () => {
     expect(detectCliCharset({ LC_ALL: "C", LANG: "en_US.UTF-8" })).toBe("ascii");
   });
@@ -186,5 +192,21 @@ describe("cli output renderer", () => {
     expect(output).toContain("line  one");
     expect(output).toContain("warn  item");
     expect(new Set(lines.map((line) => line.length)).size).toBe(1);
+  });
+
+  test("neutralizes carriage return and backspace control characters", () => {
+    const output = renderErrorPanel({
+      title: "Bad\rTitle\b",
+      headline: "line\rreset",
+      diagnostics: "value\bfix\nnext\rline",
+      env: {},
+    });
+
+    expect(output).not.toContain("\r");
+    expect(output).not.toContain("\b");
+    expect(output).toContain("Bad Title ");
+    expect(output).toContain("line reset");
+    expect(output).toContain("value fix");
+    expect(output).toContain("next line");
   });
 });
