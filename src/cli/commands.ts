@@ -4,6 +4,12 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CliCommand } from "./args";
 import {
+  renderErrorPanel,
+  renderKeyValueRows,
+  renderRuntimePanel,
+  renderWarningPanel,
+} from "./output";
+import {
   disableAutostart,
   enableAutostart,
   type AutostartResult,
@@ -223,7 +229,7 @@ const formatRuntimeStartedAt = (value: string, timeZone?: string) => {
 
   if (timeZone) {
     try {
-      return formatValue(timeZone);
+      return `${formatValue(timeZone)} (${timeZone})`;
     } catch {}
   }
 
@@ -254,17 +260,98 @@ const formatRuntimeSummary = (
   return lines.join("\n");
 };
 
-const appendDiagnosticsBlock = (lines: string[], diagnostics?: string) => {
+const renderRuntimeStatusOutput = (
+  runtime: RuntimeSummary | undefined,
+  options: {
+    env: Record<string, string | undefined>;
+    timeZone?: string;
+    alreadyRunningNote?: string;
+  },
+) => {
+  if (!runtime) {
+    return renderRuntimePanel({
+      title: "CodeHelm Runtime",
+      sections: [
+        {
+          title: "Status",
+          lines: ["CodeHelm is not running."],
+        },
+        {
+          title: "Quick Actions",
+          lines: [
+            "code-helm start",
+            "code-helm onboard",
+          ],
+        },
+      ],
+      env: options.env,
+    });
+  }
+
+  const statusRows = [
+    { key: "Status", value: "running" },
+    { key: "Mode", value: runtime.mode },
+    { key: "PID", value: String(runtime.pid) },
+    {
+      key: "Discord",
+      value: `${runtime.discord.connected === false ? "disconnected" : "connected"} guild ${runtime.discord.guildId}${runtime.discord.controlChannelId ? ` channel ${runtime.discord.controlChannelId}` : ""}`,
+    },
+    {
+      key: "Codex App Server",
+      value: `${runtime.codex.running === false ? "stopped" : "running"} ${runtime.codex.appServerAddress}`,
+    },
+  ];
+
+  if (runtime.startedAt) {
+    statusRows.splice(3, 0, {
+      key: "Started",
+      value: formatRuntimeStartedAt(runtime.startedAt, options.timeZone),
+    });
+  }
+
+  return renderRuntimePanel({
+    title: "CodeHelm Runtime",
+    headline: options.alreadyRunningNote,
+    sections: [
+      {
+        title: "Status",
+        lines: renderKeyValueRows(statusRows),
+      },
+      {
+        title: "Quick Actions",
+        lines: [
+          `codex --remote ${runtime.codex.appServerAddress}`,
+          "code-helm status",
+          "code-helm stop",
+        ],
+      },
+    ],
+    env: options.env,
+  });
+};
+
+const trimDiagnostics = (diagnostics?: string) => {
   const trimmed = diagnostics?.trim();
 
   if (!trimmed) {
-    return;
+    return undefined;
   }
 
-  lines.push("", "Diagnostics:", trimmed);
+  return trimmed;
 };
 
-const formatStartupFailure = (error: unknown) => {
+const classifyStartupFailure = (message: string) => {
+  if (/certificate|verification|tls|ssl/i.test(message)) {
+    return "certificate";
+  }
+
+  return "generic";
+};
+
+const formatStartupFailure = (
+  error: unknown,
+  options: { env: Record<string, string | undefined> },
+) => {
   if (
     !(error instanceof CodexSupervisorError)
     || error.code !== "CODEX_APP_SERVER_FAILED_TO_START"
@@ -273,23 +360,66 @@ const formatStartupFailure = (error: unknown) => {
   }
 
   if (error.startupDisposition === "delayed") {
-    const lines = [
-      "Managed Codex App Server startup is taking longer than expected.",
-      "Codex requests are not ready yet.",
-      "You can keep waiting, inspect logs, or restart CodeHelm if the state does not recover.",
-    ];
-    appendDiagnosticsBlock(lines, error.diagnostics);
-    return lines.join("\n");
+    return renderWarningPanel({
+      title: "CodeHelm Startup Delayed",
+      headline: "Managed Codex App Server startup is taking longer than expected.",
+      sections: [
+        {
+          title: "Status",
+          lines: [
+            "Codex requests are not ready yet.",
+            "Wait briefly, then try running the command again.",
+          ],
+        },
+      ],
+      diagnostics: trimDiagnostics(error.diagnostics),
+      commandHints: ["code-helm start", "code-helm status"],
+      env: options.env,
+    });
   }
 
   if (error.startupDisposition === "failed") {
-    const lines = [
-      "Managed Codex App Server failed to start.",
-      "CodeHelm could not finish startup.",
-      "Inspect the diagnostics below and retry after fixing the startup issue.",
-    ];
-    appendDiagnosticsBlock(lines, error.diagnostics ?? error.message);
-    return lines.join("\n");
+    const diagnostics = trimDiagnostics(error.diagnostics ?? error.message);
+    const classification = classifyStartupFailure(
+      `${error.message}\n${diagnostics ?? ""}`,
+    );
+
+    if (classification === "certificate") {
+      return renderErrorPanel({
+        title: "CodeHelm Startup Failed",
+        headline: "Managed Codex App Server failed certificate verification during startup.",
+        sections: [
+          {
+            title: "How To Fix",
+            lines: [
+              "Review network and proxy settings between CodeHelm and Codex App Server.",
+              "Verify certificate trust setup and TLS interception policies on this machine.",
+              "After fixing trust settings, try running the command again.",
+            ],
+          },
+        ],
+        diagnostics,
+        commandHints: ["code-helm start"],
+        env: options.env,
+      });
+    }
+
+    return renderErrorPanel({
+      title: "CodeHelm Startup Failed",
+      headline: "Managed Codex App Server failed to start.",
+      sections: [
+        {
+          title: "How To Fix",
+          lines: [
+            "CodeHelm could not finish startup.",
+            "Inspect the diagnostics below, resolve the startup issue, then try running the command again.",
+          ],
+        },
+      ],
+      diagnostics,
+      commandHints: ["code-helm start"],
+      env: options.env,
+    });
   }
 
   return null;
@@ -468,8 +598,10 @@ export const runCliCommand = async (
     case "start": {
       if (runtime) {
         return {
-          output: formatRuntimeSummary(runtime, {
+          output: renderRuntimeStatusOutput(runtime, {
+            env: services.env,
             timeZone: services.env.TZ,
+            alreadyRunningNote: "CodeHelm is already running; showing the current runtime details.",
           }),
           runtime,
         };
@@ -480,7 +612,8 @@ export const runCliCommand = async (
       if (command.daemon) {
         const backgroundRuntime = await startInBackground(configuredStore, services);
         return {
-          output: formatRuntimeSummary(backgroundRuntime, {
+          output: renderRuntimeStatusOutput(backgroundRuntime, {
+            env: services.env,
             timeZone: services.env.TZ,
           }),
           runtime: backgroundRuntime,
@@ -501,7 +634,7 @@ export const runCliCommand = async (
           stateDir: configuredStore.paths.stateDir,
         });
       } catch (error) {
-        const formattedStartupFailure = formatStartupFailure(error);
+        const formattedStartupFailure = formatStartupFailure(error, { env: services.env });
 
         if (formattedStartupFailure) {
           throw new Error(formattedStartupFailure);
@@ -527,7 +660,8 @@ export const runCliCommand = async (
       };
 
       return {
-        output: formatRuntimeSummary(foregroundRuntime, {
+        output: renderRuntimeStatusOutput(foregroundRuntime, {
+          env: services.env,
           timeZone: services.env.TZ,
         }),
         runtime: foregroundRuntime,
@@ -535,7 +669,8 @@ export const runCliCommand = async (
     }
     case "status":
       return {
-        output: formatRuntimeSummary(runtime, {
+        output: renderRuntimeStatusOutput(runtime, {
+          env: services.env,
           timeZone: services.env.TZ,
         }),
         runtime,

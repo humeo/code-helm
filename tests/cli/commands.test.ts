@@ -205,8 +205,12 @@ describe("runCliCommand", () => {
     const result = await runCliCommand({ kind: "start", daemon: false }, services);
 
     expect(started).toBe(false);
-    expect(result.output).toContain("CodeHelm running");
+    expect(result.output).toContain("CodeHelm Runtime");
+    expect(result.output).toContain("Status");
+    expect(result.output).toContain("Quick Actions");
     expect(result.output).toContain("codex --remote ws://127.0.0.1:4200");
+    expect(result.output).toContain("already running");
+    expect(result.output).not.toContain("CodeHelm running\nMode:");
   });
 
   test("start renders runtime start time in local display format instead of raw UTC iso", async () => {
@@ -235,10 +239,11 @@ describe("runCliCommand", () => {
 
     const result = await runCliCommand({ kind: "start", daemon: false }, services);
 
-    expect(result.output).toContain(
-      `Started: ${formatStartedAtForDisplay(startedAt, "Asia/Shanghai")}`,
+    expect(result.output).toMatch(
+      new RegExp(`Started\\s*:\\s*${formatStartedAtForDisplay(startedAt, "Asia/Shanghai").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`),
     );
     expect(result.output).not.toContain(`Started: ${startedAt}`);
+    expect(result.output).toContain("Asia/Shanghai");
   });
 
   test("start renders delayed managed startup as warning-style copy", async () => {
@@ -261,15 +266,14 @@ describe("runCliCommand", () => {
     await expect(
       runCliCommand({ kind: "start", daemon: false }, services),
     ).rejects.toThrow(
-      [
-        "Managed Codex App Server startup is taking longer than expected.",
-        "Codex requests are not ready yet.",
-        "You can keep waiting, inspect logs, or restart CodeHelm if the state does not recover.",
-        "",
-        "Diagnostics:",
-        "last stderr line",
-      ].join("\n"),
+      /taking longer than expected/i,
     );
+    await expect(
+      runCliCommand({ kind: "start", daemon: false }, services),
+    ).rejects.toThrow(/try running the command again/i);
+    await expect(
+      runCliCommand({ kind: "start", daemon: false }, services),
+    ).rejects.toThrow(/last stderr line/i);
     expect(startedRuntime).toBe(true);
   });
 
@@ -289,16 +293,38 @@ describe("runCliCommand", () => {
 
     await expect(
       runCliCommand({ kind: "start", daemon: false }, services),
-    ).rejects.toThrow(
-      [
-        "Managed Codex App Server failed to start.",
-        "CodeHelm could not finish startup.",
-        "Inspect the diagnostics below and retry after fixing the startup issue.",
-        "",
-        "Diagnostics:",
-        "spawn boom",
-      ].join("\n"),
-    );
+    ).rejects.toThrow(/failed to start/i);
+    await expect(
+      runCliCommand({ kind: "start", daemon: false }, services),
+    ).rejects.toThrow(/try running the command again/i);
+    await expect(
+      runCliCommand({ kind: "start", daemon: false }, services),
+    ).rejects.toThrow(/spawn boom/i);
+  });
+
+  test("start renders certificate verification startup failures with targeted certificate guidance", async () => {
+    const services = createBaseServices();
+
+    services.startForeground = async () => {
+      throw new CodexSupervisorError(
+        "CODEX_APP_SERVER_FAILED_TO_START",
+        "Managed Codex App Server failed before becoming ready: tls certificate verify failed",
+        {
+          startupDisposition: "failed",
+          diagnostics: "tls: failed to verify certificate chain",
+        },
+      );
+    };
+
+    await expect(
+      runCliCommand({ kind: "start", daemon: false }, services),
+    ).rejects.toThrow(/certificate trust setup/i);
+    await expect(
+      runCliCommand({ kind: "start", daemon: false }, services),
+    ).rejects.toThrow(/proxy/i);
+    await expect(
+      runCliCommand({ kind: "start", daemon: false }, services),
+    ).rejects.toThrow(/tls: failed to verify certificate chain/i);
   });
 
   test("start --daemon records background runtime state", async () => {
@@ -319,8 +345,12 @@ describe("runCliCommand", () => {
 
     const result = await runCliCommand({ kind: "start", daemon: true }, services);
 
-    expect(result.output).toContain("Mode: background");
+    expect(result.output).toContain("CodeHelm Runtime");
+    expect(result.output).toContain("Status");
+    expect(result.output).toContain("Quick Actions");
+    expect(result.output).toMatch(/Mode\s*:\s*background/);
     expect(result.output).toContain("codex --remote ws://127.0.0.1:4100");
+    expect(result.output).not.toContain("CodeHelm running\nMode:");
     expect(spawnedEnv?.CODE_HELM_CONFIG).toBeTruthy();
     expect(spawnedEnv?.CODE_HELM_SECRETS).toBeTruthy();
   });
@@ -405,7 +435,7 @@ describe("runCliCommand", () => {
     });
   });
 
-  test("status prints concise summary including app-server address and codex remote command", async () => {
+  test("status renders the runtime panel including app-server address and codex remote command", async () => {
     const services = createBaseServices();
 
     services.readRuntimeSummary = () => ({
@@ -426,9 +456,23 @@ describe("runCliCommand", () => {
 
     const result = await runCliCommand({ kind: "status" }, services);
 
-    expect(result.output).toContain("CodeHelm running");
+    expect(result.output).toContain("CodeHelm Runtime");
+    expect(result.output).toContain("Status");
+    expect(result.output).toContain("Quick Actions");
     expect(result.output).toContain("ws://127.0.0.1:4400");
     expect(result.output).toContain("codex --remote ws://127.0.0.1:4400");
+    expect(result.output).not.toContain("CodeHelm running\nMode:");
+  });
+
+  test("status renders a not-running runtime panel when no instance is active", async () => {
+    const services = createBaseServices();
+
+    const result = await runCliCommand({ kind: "status" }, services);
+
+    expect(result.output).toContain("CodeHelm Runtime");
+    expect(result.output).toContain("Status");
+    expect(result.output).toContain("not running");
+    expect(result.output).not.toContain("CodeHelm stopped");
   });
 
   test("autostart enable delegates to the autostart service", async () => {
