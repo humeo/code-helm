@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import type { CliCommand } from "./args";
 import {
   renderErrorPanel,
+  renderSuccessPanel,
   renderKeyValueRows,
   renderRuntimePanel,
   renderWarningPanel,
@@ -483,14 +484,53 @@ const formatStartupFailure = (
 const formatAutostartResult = (
   result: AutostartResult,
   action: "enable" | "disable",
+  env: Record<string, string | undefined>,
 ) => {
   if (result.kind === "unsupported") {
-    return `Autostart is unsupported on ${result.platform}.`;
+    return renderWarningPanel({
+      title: "Autostart Unsupported",
+      sections: [
+        {
+          title: "Status",
+          lines: renderKeyValueRows([
+            { key: "Platform", value: result.platform },
+          ]),
+        },
+      ],
+      env,
+    });
   }
 
-  return action === "enable"
-    ? `Autostart enabled\nLaunchAgent: ${result.launchAgentPath}`
-    : `Autostart disabled\nLaunchAgent: ${result.launchAgentPath}`;
+  if (action === "enable") {
+    return renderSuccessPanel({
+      title: "Autostart Enabled",
+      sections: [
+        {
+          title: "Configuration",
+          lines: renderKeyValueRows([
+            { key: "Label", value: result.label },
+            { key: "Launch Agent", value: result.launchAgentPath },
+          ]),
+        },
+      ],
+      env,
+    });
+  }
+
+  return renderSuccessPanel({
+    title: "Autostart Disabled",
+    sections: [
+      {
+        title: "Status",
+        lines: renderKeyValueRows([
+          { key: "Label", value: result.label },
+          { key: "Launch Agent", value: result.launchAgentPath },
+          { key: "Removal", value: result.removed ? "Removed" : "Not found" },
+        ]),
+      },
+    ],
+    env,
+  });
 };
 
 const waitForRuntimeSummary = async (
@@ -620,7 +660,19 @@ const stopBackgroundRuntime = async (
   }
 
   return {
-    output: "CodeHelm stopped",
+    output: renderSuccessPanel({
+      title: "CodeHelm Stopped",
+      sections: [
+        {
+          title: "Status",
+          lines: renderKeyValueRows([
+            { key: "Mode", value: "stopped" },
+            { key: "PID", value: String(runtime.pid) },
+          ]),
+        },
+      ],
+      env: services.env,
+    }),
   };
 };
 
@@ -734,7 +786,18 @@ export const runCliCommand = async (
     case "stop":
       if (!runtime) {
         return {
-          output: "CodeHelm not running",
+          output: renderWarningPanel({
+            title: "CodeHelm Not Running",
+            sections: [
+              {
+                title: "Status",
+                lines: renderKeyValueRows([
+                  { key: "Mode", value: "not running" },
+                ]),
+              },
+            ],
+            env: services.env,
+          }),
         };
       }
 
@@ -774,15 +837,37 @@ export const runCliCommand = async (
       }
 
       if (uninstallErrors.length > 0) {
-        throw new Error([
-          "Uninstall completed with errors.",
-          removedPaths.length > 0 ? `Removed:\n${removedPaths.join("\n")}` : undefined,
-          `Failed:\n${uninstallErrors.join("\n")}`,
-        ].filter(Boolean).join("\n"));
+        throw new Error(renderErrorPanel({
+          title: "Uninstall Incomplete",
+          sections: [
+            {
+              title: "Removed",
+              lines: removedPaths.length > 0 ? removedPaths : ["(none)"],
+            },
+            {
+              title: "Failed",
+              lines: uninstallErrors,
+            },
+          ],
+          env: services.env,
+        }));
       }
 
       return {
-        output: "Uninstall complete\nRemove the global package with: npm uninstall -g code-helm",
+        output: renderSuccessPanel({
+          title: "CodeHelm Removed",
+          sections: [
+            {
+              title: "Removed",
+              lines: removedPaths,
+            },
+            {
+              title: "Next Step",
+              lines: ["npm uninstall -g code-helm"],
+            },
+          ],
+          env: services.env,
+        }),
       };
     }
     case "onboard": {
@@ -821,6 +906,7 @@ export const runCliCommand = async (
             ? await services.enableAutostart()
             : await services.disableAutostart(),
           command.action,
+          services.env,
         ),
       };
   }

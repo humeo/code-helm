@@ -597,7 +597,11 @@ describe("runCliCommand", () => {
     const result = await runCliCommand({ kind: "autostart", action: "enable" }, services);
 
     expect(called).toBe(true);
-    expect(result.output).toContain("Autostart enabled");
+    expect(result.output).toContain("Autostart Enabled");
+    expect(result.output).toContain("Configuration");
+    expect(result.output).toContain("Label");
+    expect(result.output).toContain("Launch Agent");
+    expect(result.output).toContain("/tmp/code-helm.plist");
   });
 
   test("autostart disable delegates to the autostart service", async () => {
@@ -617,7 +621,27 @@ describe("runCliCommand", () => {
     const result = await runCliCommand({ kind: "autostart", action: "disable" }, services);
 
     expect(called).toBe(true);
-    expect(result.output).toContain("Autostart disabled");
+    expect(result.output).toContain("Autostart Disabled");
+    expect(result.output).toContain("Status");
+    expect(result.output).toContain("Removal");
+    expect(result.output).toContain("Removed");
+  });
+
+  test("autostart unsupported renders a warning-style panel", async () => {
+    const services = createBaseServices();
+
+    services.enableAutostart = async () => ({
+      kind: "unsupported",
+      platform: "linux",
+    });
+
+    const result = await runCliCommand({ kind: "autostart", action: "enable" }, services);
+
+    expect(result.output).toContain("Autostart Unsupported");
+    expect(result.output).toContain("Status");
+    expect(result.output).toContain("Platform");
+    expect(result.output).toContain("linux");
+    expect(result.output).not.toContain("Autostart is unsupported on linux.");
   });
 
   test("onboard already-running keeps the non-panel style output path", async () => {
@@ -714,7 +738,21 @@ describe("runCliCommand", () => {
     const result = await runCliCommand({ kind: "stop" }, services);
 
     expect(signals).toEqual([{ pid: 3333, signal: "SIGTERM" }]);
-    expect(result.output).toContain("CodeHelm stopped");
+    expect(result.output).toContain("CodeHelm Stopped");
+    expect(result.output).toContain("Status");
+    expect(result.output).toContain("Mode");
+    expect(result.output).toContain("stopped");
+  });
+
+  test("stop when not running renders an inactive panel", async () => {
+    const services = createBaseServices();
+
+    const result = await runCliCommand({ kind: "stop" }, services);
+
+    expect(result.output).toContain("CodeHelm Not Running");
+    expect(result.output).toContain("Status");
+    expect(result.output).toContain("Mode");
+    expect(result.output).toContain("not running");
   });
 
   test("uninstall clears config, secrets, db, and runtime state without confirmation", async () => {
@@ -754,7 +792,10 @@ describe("runCliCommand", () => {
     expect(existsSync(paths.secretsPath)).toBe(false);
     expect(existsSync(paths.databasePath)).toBe(false);
     expect(existsSync(paths.stateDir)).toBe(false);
-    expect(result.output).toContain("Uninstall complete");
+    expect(result.output).toContain("CodeHelm Removed");
+    expect(result.output).toContain("Removed");
+    expect(result.output).toContain("Next Step");
+    expect(result.output).toContain("npm uninstall -g code-helm");
   });
 
   test("uninstall attempts every cleanup path before surfacing failures", async () => {
@@ -776,7 +817,7 @@ describe("runCliCommand", () => {
 
     await expect(
       runCliCommand({ kind: "uninstall" }, services),
-    ).rejects.toThrow(/cannot remove config/i);
+    ).rejects.toThrow(/Uninstall Incomplete[\s\S]*cannot remove config/i);
     expect(attemptedPaths).toEqual([
       paths.configPath,
       paths.secretsPath,
