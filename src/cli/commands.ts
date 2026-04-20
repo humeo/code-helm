@@ -322,7 +322,7 @@ const renderRuntimeStatusOutput = (
   options: {
     env: Record<string, string | undefined>;
     timeZone?: string;
-    alreadyRunningNote?: string;
+    headline?: string;
     isCurrentForegroundInvocation?: boolean;
   },
 ) => {
@@ -330,78 +330,36 @@ const renderRuntimeStatusOutput = (
 
   if (!runtime) {
     return renderRuntimePanel({
-      title: "CodeHelm Runtime",
+      title: "Runtime",
+      headline: "CodeHelm is not running",
       sections: [
         {
-          title: "Status",
-          lines: renderKeyValueRows([
+          kind: "key-value",
+          title: "Process",
+          rows: [
             { key: "Mode", value: "not running" },
-            { key: "Started", value: "n/a" },
-            { key: "PID", value: "n/a" },
-          ]),
-        },
-        {
-          title: "Connections",
-          lines: renderKeyValueRows([
-            { key: "Discord", value: "not connected" },
-            { key: "Codex App Server", value: "not running" },
-          ]),
-        },
-        {
-          title: "Configuration",
-          lines: renderKeyValueRows([
             { key: "Time Zone", value: displayTimeZone ?? "system default" },
-            { key: "Runtime State", value: "local state file" },
-          ]),
+          ],
         },
         {
-          title: "Quick Actions",
-          lines: [
-            "code-helm start",
-            "code-helm onboard",
-          ],
+          kind: "steps",
+          title: "Next steps",
+          items: ["code-helm start", "code-helm onboard"],
         },
       ],
       env: options.env,
     });
   }
 
-  const connectionRows = [
-    {
-      key: "Discord",
-      value: `${runtime.discord.connected === false ? "disconnected" : "connected"} guild ${runtime.discord.guildId}${runtime.discord.controlChannelId ? ` channel ${runtime.discord.controlChannelId}` : ""}`,
-    },
-    {
-      key: "Codex App Server",
-      value: `${runtime.codex.running === false ? "stopped" : "running"} ${runtime.codex.appServerAddress}`,
-    },
-  ];
-  const statusRows = [
-    { key: "Mode", value: runtime.mode },
-    {
-      key: "Started",
-      value: runtime.startedAt
-        ? formatRuntimeStartedAt(runtime.startedAt, {
-          timeZone: displayTimeZone,
-          includeTimeZoneLabel: true,
-        })
-        : "n/a",
-    },
-    { key: "PID", value: String(runtime.pid) },
-  ];
-  const configurationRows = [
-    { key: "Time Zone", value: displayTimeZone ?? "system default" },
-    { key: "Runtime State", value: "local state file" },
-  ];
-  const quickActions = [
+  const nextSteps = [
     `codex --remote ${runtime.codex.appServerAddress}`,
     "code-helm status",
   ];
 
   if (runtime.mode === "background") {
-    quickActions.push("code-helm stop");
+    nextSteps.push("code-helm stop");
   } else {
-    quickActions.push(
+    nextSteps.push(
       options.isCurrentForegroundInvocation
         ? "Stop this foreground process with Ctrl+C."
         : "Use the terminal running this foreground process to stop it.",
@@ -409,24 +367,52 @@ const renderRuntimeStatusOutput = (
   }
 
   return renderRuntimePanel({
-    title: "CodeHelm Runtime",
-    headline: options.alreadyRunningNote,
+    title: "Runtime",
+    headline: options.headline ?? `CodeHelm is running in ${runtime.mode} mode`,
     sections: [
       {
-        title: "Status",
-        lines: renderKeyValueRows(statusRows),
+        kind: "key-value",
+        title: "Process",
+        rows: [
+          { key: "Mode", value: runtime.mode },
+          {
+            key: "Started",
+            value: runtime.startedAt
+              ? formatRuntimeStartedAt(runtime.startedAt, {
+                timeZone: displayTimeZone,
+                includeTimeZoneLabel: true,
+              })
+              : "n/a",
+          },
+          { key: "PID", value: String(runtime.pid) },
+        ],
       },
       {
+        kind: "key-value",
         title: "Connections",
-        lines: renderKeyValueRows(connectionRows),
+        rows: [
+          {
+            key: "Discord",
+            value: `${runtime.discord.connected === false ? "disconnected" : "connected"} guild ${runtime.discord.guildId}${runtime.discord.controlChannelId ? ` channel ${runtime.discord.controlChannelId}` : ""}`,
+          },
+          {
+            key: "Codex App Server",
+            value: `${runtime.codex.running === false ? "stopped" : "running"} ${runtime.codex.appServerAddress}`,
+          },
+        ],
       },
       {
+        kind: "key-value",
         title: "Configuration",
-        lines: renderKeyValueRows(configurationRows),
+        rows: [
+          { key: "Time Zone", value: displayTimeZone ?? "system default" },
+          { key: "Runtime State", value: "local state file" },
+        ],
       },
       {
-        title: "Quick Actions",
-        lines: quickActions,
+        kind: "steps",
+        title: "Next steps",
+        items: nextSteps,
       },
     ],
     env: options.env,
@@ -468,7 +454,7 @@ const formatStartupFailure = (
 
   if (error.startupDisposition === "delayed") {
     return renderWarningPanel({
-      title: "CodeHelm Startup Delayed",
+      title: "Startup Delayed",
       headline: "Managed Codex App Server startup is taking longer than expected.",
       sections: [
         {
@@ -479,9 +465,13 @@ const formatStartupFailure = (
             "If this appears transient, try running the command again.",
           ],
         },
+        {
+          kind: "steps",
+          title: "Try next",
+          items: ["code-helm start"],
+        },
       ],
       diagnostics: trimDiagnostics(error.diagnostics),
-      commandHints: ["code-helm start"],
       env: options.env,
     });
   }
@@ -498,16 +488,17 @@ const formatStartupFailure = (
         headline: "Managed Codex App Server failed certificate verification during startup.",
         sections: [
           {
-            title: "How To Fix",
-            lines: [
+            kind: "steps",
+            title: "Try next",
+            items: [
               "Review network and proxy settings between CodeHelm and Codex App Server.",
               "Verify certificate trust setup and TLS interception policies on this machine.",
               "After fixing trust settings, try running the command again.",
+              "code-helm start",
             ],
           },
         ],
         diagnostics,
-        commandHints: ["code-helm start"],
         env: options.env,
       });
     }
@@ -517,15 +508,16 @@ const formatStartupFailure = (
       headline: "Managed Codex App Server failed to start.",
       sections: [
         {
-          title: "How To Fix",
-          lines: [
+          kind: "steps",
+          title: "Try next",
+          items: [
             "CodeHelm could not finish startup.",
             "Inspect the diagnostics below, resolve the startup issue, then try running the command again.",
+            "code-helm start",
           ],
         },
       ],
       diagnostics,
-      commandHints: ["code-helm start"],
       env: options.env,
     });
   }
@@ -723,19 +715,15 @@ const stopBackgroundRuntime = async (
   if (runtime.mode !== "background") {
     return {
       output: renderWarningPanel({
-        title: "CodeHelm Runtime Still Running",
+        title: "Runtime still running",
+        headline: "Stop this runtime from the terminal/session that started it.",
         sections: [
           {
-            title: "Status",
-            lines: renderKeyValueRows([
+            kind: "key-value",
+            title: "Process",
+            rows: [
               { key: "Mode", value: runtime.mode },
               { key: "PID", value: String(runtime.pid) },
-            ]),
-          },
-          {
-            title: "Next Step",
-            lines: [
-              "Stop this runtime from the terminal/session that started it.",
             ],
           },
         ],
@@ -762,14 +750,13 @@ const stopBackgroundRuntime = async (
 
   return {
     output: renderSuccessPanel({
-      title: "CodeHelm Stopped",
+      title: "Runtime stopped",
+      headline: "The background CodeHelm process is no longer active.",
       sections: [
         {
-          title: "Status",
-          lines: renderKeyValueRows([
-            { key: "Mode", value: "stopped" },
-            { key: "PID", value: String(runtime.pid) },
-          ]),
+          kind: "steps",
+          title: "Next steps",
+          items: ["code-helm start", "code-helm status"],
         },
       ],
       env: services.env,
@@ -963,7 +950,7 @@ export const runCliCommand = async (
           output: renderRuntimeStatusOutput(runtime, {
             env: services.env,
             timeZone: services.env.TZ,
-            alreadyRunningNote: "CodeHelm is already running; showing the current runtime details.",
+            headline: "A CodeHelm runtime is already active.",
           }),
           runtime,
         };
@@ -1041,14 +1028,21 @@ export const runCliCommand = async (
     case "stop":
       if (!runtime) {
         return {
-          output: renderWarningPanel({
-            title: "CodeHelm Not Running",
+          output: renderRuntimePanel({
+            title: "Runtime",
+            headline: "CodeHelm is not running",
             sections: [
               {
-                title: "Status",
-                lines: renderKeyValueRows([
+                kind: "key-value",
+                title: "Process",
+                rows: [
                   { key: "Mode", value: "not running" },
-                ]),
+                ],
+              },
+              {
+                kind: "steps",
+                title: "Next steps",
+                items: ["code-helm start", "code-helm onboard"],
               },
             ],
             env: services.env,

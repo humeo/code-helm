@@ -370,13 +370,12 @@ describe("runCliCommand", () => {
     const result = await runCliCommand({ kind: "start", daemon: false }, services);
 
     expect(started).toBe(false);
-    expect(result.output).toContain("CodeHelm Runtime");
-    expect(result.output).toContain("Status");
+    expect(result.output).toContain("Runtime");
+    expect(result.output).toContain("Process");
     expect(result.output).toContain("Connections");
-    expect(result.output).toContain("Configuration");
-    expect(result.output).toContain("Quick Actions");
+    expect(result.output).toContain("Next steps");
     expect(result.output).toContain("codex --remote ws://127.0.0.1:4200");
-    expect(result.output).toContain("already running");
+    expect(result.output).toContain("already active");
     expect(result.output).not.toContain("CodeHelm running\nMode:");
   });
 
@@ -409,9 +408,9 @@ describe("runCliCommand", () => {
     const escapedStarted = formatStartedAtForDisplay(startedAt, "Asia/Shanghai")
       .replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     expect(result.output).toMatch(
-      new RegExp(`Started\\s*:\\s*${escapedStarted}\\s*\\(Asia\\/Shanghai\\)`),
+      new RegExp(`Started\\s+${escapedStarted}\\s*\\(Asia\\/Shanghai\\)`),
     );
-    expect(result.output).not.toContain(`Started: ${startedAt}`);
+    expect(result.output).not.toContain(`Started  ${startedAt}`);
   });
 
   test("start with invalid TZ falls back to system-default timezone display in runtime panel", async () => {
@@ -438,7 +437,7 @@ describe("runCliCommand", () => {
 
     const result = await runCliCommand({ kind: "start", daemon: false }, services);
 
-    expect(result.output).toMatch(/Time Zone\s*:\s*system default/);
+    expect(result.output).toMatch(/Time Zone\s+system default/);
     expect(result.output).not.toContain("Mars/Phobos");
   });
 
@@ -447,14 +446,14 @@ describe("runCliCommand", () => {
 
     const result = await runCliCommand({ kind: "start", daemon: false }, services);
 
-    expect(result.output).toContain("CodeHelm Runtime");
-    expect(result.output).toContain("Status");
+    expect(result.output).toContain("Runtime");
+    expect(result.output).toContain("Process");
     expect(result.output).toContain("Connections");
     expect(result.output).toContain("Configuration");
-    expect(result.output).toContain("Quick Actions");
-    expect(result.output).toMatch(/Mode\s*:\s*foreground/);
-    expect(result.output).toMatch(/Started\s*:\s*/);
-    expect(result.output).toMatch(/PID\s*:\s*\d+/);
+    expect(result.output).toContain("Next steps");
+    expect(result.output).toMatch(/Mode\s+foreground/);
+    expect(result.output).toMatch(/Started\s+/);
+    expect(result.output).toMatch(/PID\s+\d+/);
     expect(result.output).toContain("codex --remote ws://127.0.0.1:4100");
     expect(result.output).not.toContain("code-helm stop");
     expect(result.output).toContain("Ctrl+C");
@@ -626,14 +625,13 @@ describe("runCliCommand", () => {
 
     const result = await runCliCommand({ kind: "start", daemon: true }, services);
 
-    expect(result.output).toContain("CodeHelm Runtime");
-    expect(result.output).toContain("Status");
+    expect(result.output).toContain("Runtime");
+    expect(result.output).toContain("Process");
     expect(result.output).toContain("Connections");
-    expect(result.output).toContain("Configuration");
-    expect(result.output).toContain("Quick Actions");
-    expect(result.output).toMatch(/Mode\s*:\s*background/);
-    expect(result.output).toMatch(/Started\s*:\s*/);
-    expect(result.output).toMatch(/PID\s*:\s*\d+/);
+    expect(result.output).toContain("Next steps");
+    expect(result.output).toMatch(/Mode\s+background/);
+    expect(result.output).toMatch(/Started\s+/);
+    expect(result.output).toMatch(/PID\s+\d+/);
     expect(result.output).toContain("codex --remote ws://127.0.0.1:4100");
     expect(result.output).toContain("code-helm stop");
     expect(result.output).not.toContain("CodeHelm running\nMode:");
@@ -742,14 +740,13 @@ describe("runCliCommand", () => {
 
     const result = await runCliCommand({ kind: "status" }, services);
 
-    expect(result.output).toContain("CodeHelm Runtime");
-    expect(result.output).toContain("Status");
+    expect(result.output).toContain("Runtime");
+    expect(result.output).toContain("Process");
     expect(result.output).toContain("Connections");
-    expect(result.output).toContain("Configuration");
-    expect(result.output).toContain("Quick Actions");
-    expect(result.output).toMatch(/Mode\s*:\s*foreground/);
-    expect(result.output).toMatch(/Started\s*:\s*/);
-    expect(result.output).toMatch(/PID\s*:\s*2222/);
+    expect(result.output).toContain("Next steps");
+    expect(result.output).toMatch(/Mode\s+foreground/);
+    expect(result.output).toMatch(/Started\s+/);
+    expect(result.output).toMatch(/PID\s+2222/);
     expect(result.output).toContain("ws://127.0.0.1:4400");
     expect(result.output).toContain("codex --remote ws://127.0.0.1:4400");
     expect(result.output).not.toContain("code-helm stop");
@@ -763,14 +760,13 @@ describe("runCliCommand", () => {
 
     const result = await runCliCommand({ kind: "status" }, services);
 
-    expect(result.output).toContain("CodeHelm Runtime");
-    expect(result.output).toContain("Status");
-    expect(result.output).toContain("Connections");
-    expect(result.output).toContain("Configuration");
+    expect(result.output).toContain("Runtime");
+    expect(result.output).toContain("Process");
+    expect(result.output).toContain("Next steps");
     expect(result.output).toContain("not running");
-    expect(result.output).toMatch(/Mode\s*:\s*not running/);
-    expect(result.output).toMatch(/Started\s*:\s*n\/a/);
-    expect(result.output).toMatch(/PID\s*:\s*n\/a/);
+    expect(result.output).toMatch(/Mode\s+not running/);
+    expect(result.output).not.toContain("Started  n/a");
+    expect(result.output).not.toContain("PID  n/a");
     expect(result.output).not.toContain("CodeHelm stopped");
   });
 
@@ -970,10 +966,9 @@ describe("runCliCommand", () => {
     const result = await runCliCommand({ kind: "stop" }, services);
 
     expect(signals).toEqual([{ pid: 3333, signal: "SIGTERM" }]);
-    expect(result.output).toContain("CodeHelm Stopped");
-    expect(result.output).toContain("Status");
-    expect(result.output).toContain("Mode");
-    expect(result.output).toContain("stopped");
+    expect(result.output).toContain("Runtime stopped");
+    expect(result.output).toContain("no longer active");
+    expect(result.output).toContain("Next steps");
   });
 
   test("stop on foreground runtime renders a panel that explains it must be stopped from the owning terminal", async () => {
@@ -1003,10 +998,10 @@ describe("runCliCommand", () => {
     const result = await runCliCommand({ kind: "stop" }, services);
 
     expect(signaled).toBe(false);
-    expect(result.output).toContain("CodeHelm Runtime Still Running");
-    expect(result.output).toContain("Status");
-    expect(result.output).toMatch(/Mode\s*:\s*foreground/);
-    expect(result.output).toMatch(/PID\s*:\s*3333/);
+    expect(result.output).toContain("Runtime still running");
+    expect(result.output).toContain("Process");
+    expect(result.output).toMatch(/Mode\s+foreground/);
+    expect(result.output).toMatch(/PID\s+3333/);
     expect(result.output).toContain("Stop this runtime from the terminal/session that started it.");
     expect(result.output).not.toContain("CodeHelm running\nMode:");
   });
@@ -1016,9 +1011,9 @@ describe("runCliCommand", () => {
 
     const result = await runCliCommand({ kind: "stop" }, services);
 
-    expect(result.output).toContain("CodeHelm Not Running");
-    expect(result.output).toContain("Status");
-    expect(result.output).toContain("Mode");
+    expect(result.output).toContain("Runtime");
+    expect(result.output).toContain("not running");
+    expect(result.output).toContain("Next steps");
     expect(result.output).toContain("not running");
   });
 
