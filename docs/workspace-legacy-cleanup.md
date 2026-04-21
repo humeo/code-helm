@@ -53,7 +53,7 @@ When this legacy cleanup is scheduled, evaluate the following as one grouped cha
 3. Delete `seedLegacyWorkspaceBootstrap(...)`.
 4. Stop writing to `workspaces` and `workdirs`.
 5. Decide whether the legacy tables stay temporarily for migration compatibility or can be removed outright.
-6. Update tests, `.env.example`, onboarding, and README to reflect the simplified model.
+6. Update tests, any legacy env-override documentation, onboarding, and README to reflect the simplified model.
 
 ## Non-Goal For Now
 

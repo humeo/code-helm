@@ -31,7 +31,7 @@ Use this order:
 
 1. finish and commit the product changes
 2. verify the release candidate locally
-3. bump `package.json` and `package-lock.json`
+3. bump `package.json`
 4. publish to npm
 5. commit the version bump
 6. create and push the matching Git tag
@@ -156,12 +156,11 @@ npm version major --no-git-tag-version
 This updates:
 
 - `package.json`
-- `package-lock.json`
 
 Check the result:
 
 ```bash
-git diff -- package.json package-lock.json
+git diff -- package.json
 node -p "require('./package.json').version"
 ```
 
@@ -191,7 +190,7 @@ After npm publish succeeds, commit the version files:
 
 ```bash
 VERSION="$(node -p "require('./package.json').version")"
-git add package.json package-lock.json
+git add package.json
 git commit -m "chore(release): v$VERSION"
 ```
 
@@ -290,7 +289,7 @@ Once trusted publishing is enabled, the release flow becomes:
 1. commit product changes to `main`
 2. run local preflight checks if you want an early signal
 3. bump the version locally with `npm version ... --no-git-tag-version`
-4. commit `package.json` and `package-lock.json`
+4. commit `package.json`
 5. create a matching tag such as `v0.1.1`
 6. push `main` and the tag
 7. GitHub Actions publishes the npm package and creates the matching GitHub Release automatically
@@ -303,7 +302,7 @@ bun run typecheck
 bunx npm@latest publish --dry-run
 npm version patch --no-git-tag-version
 VERSION="$(node -p "require('./package.json').version")"
-git add package.json package-lock.json
+git add package.json
 git commit -m "chore(release): v$VERSION"
 git tag -a "v$VERSION" -m "v$VERSION"
 git push origin main --follow-tags
@@ -328,7 +327,7 @@ bunx npm@latest publish --dry-run
 npm version patch --no-git-tag-version
 bunx npm@latest publish --otp 123456
 VERSION="$(node -p "require('./package.json').version")"
-git add package.json package-lock.json
+git add package.json
 git commit -m "chore(release): v$VERSION"
 git tag -a "v$VERSION" -m "v$VERSION"
 git push origin main --follow-tags
@@ -345,7 +344,7 @@ bun run typecheck
 bunx npm@latest publish --dry-run
 npm version patch --no-git-tag-version
 VERSION="$(node -p "require('./package.json').version")"
-git add package.json package-lock.json
+git add package.json
 git commit -m "chore(release): v$VERSION"
 git tag -a "v$VERSION" -m "v$VERSION"
 git push origin main --follow-tags
