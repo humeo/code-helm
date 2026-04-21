@@ -418,7 +418,7 @@ describe("runCliCommand", () => {
     expect(result.output).not.toContain(`Started  ${startedAt}`);
   });
 
-  test("start with invalid TZ falls back to system-default timezone display in runtime panel", async () => {
+  test("start with invalid TZ omits the invalid timezone while keeping shared runtime panel metadata", async () => {
     const services = createBaseServices();
     const expectedStatePath = join(services.loadConfigStore().paths.stateDir, "runtime.json");
     services.env = {
@@ -789,6 +789,7 @@ describe("runCliCommand", () => {
     expect(result.output).toContain("Runtime");
     expect(result.output).toContain("Process");
     expect(result.output).toContain("Quick actions");
+    expect(result.output).not.toContain("State Source");
     expect(result.output).not.toContain("Time Zone");
     expect(result.output).toContain("not running");
     expect(result.output).toMatch(/Mode\s+not running/);
