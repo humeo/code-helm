@@ -50,7 +50,7 @@
 - Modify: `docs/superpowers/plans/2026-04-21-approval-event-audit-implementation.md`
 - Reference: `docs/superpowers/specs/2026-04-21-approval-event-audit-design.md`
 
-- [ ] **Step 1: Create the report skeleton**
+- [x] **Step 1: Create the report skeleton**
 
 Create `docs/superpowers/specs/2026-04-21-approval-event-audit-report.md` with these sections:
 
@@ -78,7 +78,7 @@ Date: 2026-04-21
 ## Cross-Cutting Root Causes
 ```
 
-- [ ] **Step 2: Generate the current protocol bindings**
+- [x] **Step 2: Generate the current protocol bindings**
 
 Run:
 
@@ -96,7 +96,7 @@ Expected: PASS. A temporary directory is printed and contains generated files su
 - `ApplyPatchApprovalParams.ts`
 - `ExecCommandApprovalParams.ts`
 
-- [ ] **Step 3: Record the authoritative files for later sections**
+- [x] **Step 3: Record the authoritative files for later sections**
 
 Run:
 
@@ -108,7 +108,7 @@ Expected: PASS. The output lists the exact generated request and response files 
 
 Paste the generated-path references into the report introduction so later tasks can cite the same protocol snapshot consistently.
 
-- [ ] **Step 4: Verify the repository already exposes the shared approval chain**
+- [x] **Step 4: Verify the repository already exposes the shared approval chain**
 
 Run:
 
