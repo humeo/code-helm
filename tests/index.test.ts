@@ -65,6 +65,8 @@ import {
   upsertStreamingTranscriptMessage,
   buildResumeSessionAutocompleteChoices,
   describeCodexThreadStatus,
+  formatResumeWorkdirHintChoice,
+  RESUME_WORKDIR_HINT_VALUE,
   resolveLegacyWorkspaceBootstrap,
   type EditableStatusCardMessage,
   findReusableStatusCardMessage,
@@ -758,7 +760,29 @@ test("resume picker threads sort by normalized provider timestamps", () => {
   ]);
 });
 
-test("resume session autocomplete pipeline scopes threads, sorts them, formats labels, and truncates to 25", async () => {
+test("resume workdir hint choice uses the sentinel value and fixed copy", () => {
+  expect(formatResumeWorkdirHintChoice({
+    cwd: "/Users/tester/code-github/code-helm",
+    homeDir: "/Users/tester",
+  })).toEqual({
+    name: "Current workdir: ~/code-github/code-helm · Use /workdir to switch directories",
+    value: RESUME_WORKDIR_HINT_VALUE,
+  });
+});
+
+test("resume workdir hint choice truncates only the path segment to fit Discord limits", () => {
+  const choice = formatResumeWorkdirHintChoice({
+    cwd: "/Users/tester/code-github/projects/clients/acme/platforms/code-agent-helm-example",
+    homeDir: "/Users/tester",
+  });
+
+  expect(choice.value).toBe(RESUME_WORKDIR_HINT_VALUE);
+  expect(choice.name.length).toBeLessThanOrEqual(100);
+  expect(choice.name.startsWith("Current workdir: ")).toBe(true);
+  expect(choice.name.endsWith(" · Use /workdir to switch directories")).toBe(true);
+});
+
+test("resume session autocomplete pipeline prepends the workdir hint row and caps real sessions at 24", async () => {
   const baseTimestamp = 1_700_000_000_000;
   const calls: Array<Record<string, unknown>> = [];
   const activeThreads = Array.from({ length: 13 }, (_, index) =>
@@ -804,6 +828,7 @@ test("resume session autocomplete pipeline scopes threads, sorts them, formats l
     } as never,
     query: "  plan  ",
     cwd: defaultSessionPath,
+    homeDir: "/Users/tester",
     now: baseTimestamp + 7_200_000,
   });
 
@@ -824,10 +849,37 @@ test("resume session autocomplete pipeline scopes threads, sorts them, formats l
     },
   ]);
   expect(choices).toHaveLength(25);
-  expect(choices[0]?.value).toBe("codex-thread-12345678901");
-  expect(choices[0]?.name.length).toBeLessThanOrEqual(100);
-  expect(choices[0]?.name.endsWith(" · codex-thread-12345678901")).toBe(true);
-  expect(choices.at(-1)?.value).toBe("codex-thread-02");
+  expect(choices[0]).toEqual({
+    name: "Current workdir: /tmp/workspace/api · Use /workdir to switch directories",
+    value: RESUME_WORKDIR_HINT_VALUE,
+  });
+  expect(choices[1]?.value).toBe("codex-thread-12345678901");
+  expect(choices[1]?.name.length).toBeLessThanOrEqual(100);
+  expect(choices[1]?.name.endsWith(" · codex-thread-12345678901")).toBe(true);
+  expect(choices.at(-1)?.value).toBe("codex-thread-03");
+});
+
+test("resume session autocomplete keeps the workdir hint row even when no sessions match", async () => {
+  const choices = await buildResumeSessionAutocompleteChoices({
+    codexClient: {
+      async listThreads() {
+        return {
+          data: [],
+          nextCursor: null,
+        };
+      },
+    } as never,
+    query: "focused search",
+    cwd: defaultSessionPath,
+    homeDir: "/Users/tester",
+  });
+
+  expect(choices).toEqual([
+    {
+      name: "Current workdir: /tmp/workspace/api · Use /workdir to switch directories",
+      value: RESUME_WORKDIR_HINT_VALUE,
+    },
+  ]);
 });
 
 test("resume session autocomplete labels include updated time, preview or name, and the full thread id when it fits", () => {

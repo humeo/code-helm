@@ -107,6 +107,7 @@ import {
 import { createDiscordBot } from "./discord/bot";
 import {
   buildControlChannelCommands,
+  type DiscordAutocompleteChoice,
   type DiscordCommandResult,
   type DiscordCommandServices,
 } from "./discord/commands";
@@ -3385,6 +3386,25 @@ const truncateWithEllipsis = (value: string, maxLength: number) => {
 };
 
 const maxDiscordThreadNameLength = 100;
+export const RESUME_WORKDIR_HINT_VALUE = "__codehelm_resume_workdir_hint__";
+
+export const formatResumeWorkdirHintChoice = ({
+  cwd,
+  homeDir,
+}: {
+  cwd: string;
+  homeDir: string;
+}): DiscordAutocompleteChoice => {
+  const displayPath = formatSessionPathForDisplay(cwd, homeDir);
+  const prefix = "Current workdir: ";
+  const suffix = " · Use /workdir to switch directories";
+  const maxPathLength = maxDiscordThreadNameLength - prefix.length - suffix.length;
+
+  return {
+    name: `${prefix}${truncateWithEllipsis(displayPath, maxPathLength)}${suffix}`,
+    value: RESUME_WORKDIR_HINT_VALUE,
+  };
+};
 
 const formatBootstrapThreadTitleCandidate = (value: string) => {
   const normalized = normalizeBootstrapThreadTitle(value);
@@ -3524,11 +3544,13 @@ export const buildResumeSessionAutocompleteChoices = async ({
   codexClient,
   query,
   cwd,
+  homeDir = homedir(),
   now = Date.now(),
 }: {
   codexClient: Pick<JsonRpcClient, "listThreads">;
   query: string;
   cwd?: string;
+  homeDir?: string;
   now?: number;
 }) => {
   if (!cwd) {
@@ -3556,10 +3578,17 @@ export const buildResumeSessionAutocompleteChoices = async ({
     ...activeThreads.data,
     ...archivedThreads.data,
   ];
+  const hintChoice = formatResumeWorkdirHintChoice({
+    cwd,
+    homeDir,
+  });
 
-  return sortResumePickerThreads(threads)
-    .slice(0, 25)
-    .map((thread) => formatResumeSessionAutocompleteChoice(thread, now));
+  return [
+    hintChoice,
+    ...sortResumePickerThreads(threads)
+      .slice(0, 24)
+      .map((thread) => formatResumeSessionAutocompleteChoice(thread, now)),
+  ];
 };
 
 export const maybeBootstrapManagedThreadTitle = async ({
@@ -4000,6 +4029,7 @@ export const createControlChannelServices = ({
         codexClient,
         query,
         cwd: currentWorkdirResult.cwd,
+        homeDir,
       });
     },
     async resumeSession(input) {
