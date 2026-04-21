@@ -1,88 +1,53 @@
 # CodeHelm
 
-CodeHelm turns Codex into a local daemon you control from Discord.
+Control your Codex sessions from Discord.
 
-GitHub: `https://github.com/humeo/code-helm`
+CodeHelm turns Discord into the control surface for your Codex sessions. Start new sessions, resume existing ones, approve requests, and follow progress without leaving Discord. Each Discord thread stays attached to its Codex session so you can come back later and keep working without starting over.
 
-It solves the awkward setup that usually comes with remote Codex sessions:
+- Control Codex from Discord
+- Resume and continue existing Codex sessions
+- Approve requests without leaving Discord
+- Watch progress and final output in the same thread
 
-- no manual `.env` as the normal user path
-- no separate Codex App Server process to start yourself
-- one local daemon lifecycle with `onboard`, `start`, `status`, `stop`, `autostart`, and `uninstall`
-- Discord stays the day-to-day session surface
+## Demo Video
 
-## What It Does
+- [TODO: add demo video link]
+- [TODO: add demo thumbnail or GIF]
+- [TODO: define what the demo should show]
 
-- stores your CodeHelm config locally in TOML
-- manages a local Codex App Server for you
-- prints the remote address you use with `codex --remote <ws-url>`
-- registers and serves the Discord control commands
-- keeps Discord threads attached to Codex sessions
+The demo should show:
 
-## Before You Install
+- starting CodeHelm
+- connecting Codex with the printed `ws-url`
+- creating or resuming a session from Discord
+- approving a request from Discord
+- watching progress and final output in the session thread
 
-You need these tools on the machine:
+## Prerequisites
 
-- `bun`
-- `codex`
-- a Discord bot application that is already invited to the target server
+Before you install CodeHelm, make sure you already have:
 
-The bot needs:
-
-- the bot token
-- access to one target guild
-- one text channel to act as the control channel
-- `Message Content Intent` enabled
-
-## Trust And Local State
-
-CodeHelm does not install Codex for you.
-
-Normal local state lives here:
-
-- config: `~/.config/code-helm/config.toml`
-- secrets: `~/.config/code-helm/secrets.toml`
-- database: `~/.local/share/code-helm/codehelm.sqlite`
-- runtime state: `~/.local/state/code-helm/`
-
-What it touches:
-
-- Discord API for bot login, command registration, and thread operations
-- a local managed Codex App Server on loopback
-- local config, secrets, database, and runtime-state files
-
-What it does not try to do:
-
-- it does not uninstall the global npm package for you
-- it does not install Codex for you
-- it does not require a hand-written `.env` for the normal flow
-
-To stop it immediately:
-
-```bash
-code-helm stop
-```
-
-To remove local state:
-
-```bash
-code-helm uninstall
-```
+- Bun installed on the machine
+- Codex installed on the machine
+- a Discord bot token
+- the bot invited to the target Discord server
+- one text channel to use as the control channel
+- `Message Content Intent` enabled for the bot
+- [TODO: add Discord bot setup guide/link]
 
 ## Install
 
-CodeHelm is published as an npm package, but it still runs on Bun at runtime. Install Bun first, then install CodeHelm globally:
+Choose one install method:
 
 ```bash
 npm install -g code-helm
 ```
 
-Confirm what you installed:
-
 ```bash
-code-helm version
-code-helm help
+bun add -g code-helm
 ```
+
+Bun is still required at runtime no matter which install command you choose. CodeHelm keeps its config, secrets, database, and runtime state locally; see `Operational Notes` below for the exact paths and cleanup commands.
 
 ## Quick Start
 
@@ -92,13 +57,7 @@ code-helm help
 code-helm onboard
 ```
 
-The onboarding flow asks for only:
-
-- your Discord bot token
-- the guild to bind
-- the control channel to bind
-
-Everything else is defaulted and hidden.
+The guided setup asks for your Discord bot token, target server, and control channel.
 
 ### 2. Start CodeHelm
 
@@ -114,9 +73,9 @@ Background:
 code-helm start --daemon
 ```
 
-When startup succeeds, CodeHelm prints a concise status summary including the managed Codex App Server address.
+- [TODO: add sample startup output with ws-url]
 
-### 3. Connect Codex Remote
+### 3. Connect Codex
 
 Use the printed address with:
 
@@ -124,75 +83,60 @@ Use the printed address with:
 codex --remote <ws-url>
 ```
 
-### 4. Use Discord
+### 4. Control The Session From Discord
 
-In the configured control channel, use:
+Use the configured control channel to point Codex at a workdir, create or resume a session, approve requests, and follow progress:
 
 - `/workdir`
 - `/session-new`
 - `/session-resume`
-- `/session-close`
-- `/session-sync`
+- approve requests from Discord
+- watch progress and final output in the session thread
+- [TODO: add Discord thread screenshot or transcript snippet]
+- [TODO: add approval screenshot or transcript snippet]
 
-## Day-To-Day Commands
+Each Discord thread stays attached to its Codex session so you can come back later, resume, approve, and keep working without starting over.
 
-```bash
-code-helm help
-code-helm version
-code-helm status
-code-helm stop
-code-helm update
-code-helm autostart enable
-code-helm autostart disable
-code-helm uninstall
-```
+## Why CodeHelm
 
-`code-helm status` always includes the current Codex remote address and the matching:
+If you already use `codex --remote`, the model is familiar. CodeHelm packages that flow into one local daemon and a Discord-first control surface so you do not need to babysit a separate app-server process or rebuild session context every time.
 
-```bash
-codex --remote <ws-url>
-```
+CodeHelm is not just a Discord bot wrapper. It is a remote control layer for Codex sessions, with thread-to-session continuity, approval handling, and progress visibility built into the day-to-day workflow.
 
-## Update
+## How It Works
 
-To install the latest published npm release:
+- `code-helm start` runs a local daemon.
+- The daemon manages a local Codex App Server and prints the `ws-url` that Codex connects to.
+- CodeHelm binds Discord threads to Codex sessions so you can resume work instead of starting from scratch.
+- Session state, approval state, and thread metadata are persisted locally.
 
-```bash
-code-helm update
-```
+## Operational Notes
 
-This command runs:
+Normal local state lives here:
 
-```bash
-npm install -g code-helm@latest
-```
+- config: `~/.config/code-helm/config.toml`
+- secrets: `~/.config/code-helm/secrets.toml`
+- database: `~/.local/share/code-helm/codehelm.sqlite`
+- runtime state: `~/.local/state/code-helm/`
 
-What it updates:
+CodeHelm touches:
 
-- the global `code-helm` npm package for future invocations and restarts
+- Discord API for bot login, command registration, and thread operations
+- a local managed Codex App Server on loopback
+- local config, secrets, database, and runtime-state files
 
-What it does not update:
+CodeHelm does not install for you:
 
 - Bun
 - Codex
-- an already-running CodeHelm process in the current session
+- a hand-written `.env` file for the normal onboarding flow
 
-## See It Work
+To inspect or stop the local daemon:
 
 ```bash
-$ code-helm onboard
-$ code-helm start
-CodeHelm running
-Mode: foreground
-PID: 12345
-Discord: connected guild 123 channel 456
-Codex App Server: running ws://127.0.0.1:4123
-Connect: codex --remote ws://127.0.0.1:4123
-
-$ codex --remote ws://127.0.0.1:4123
+code-helm status
+code-helm stop
 ```
-
-Then switch to Discord and open or resume a session from the configured control channel.
 
 ## Autostart
 
@@ -212,27 +156,22 @@ On unsupported platforms, CodeHelm returns a clear unsupported result instead of
 
 ## Uninstall
 
-This removes CodeHelm-managed local resources:
-
 ```bash
 code-helm uninstall
 ```
 
-That command:
+That command stops the background daemon if one is running, disables autostart when supported, and removes local config, secrets, database, and runtime-state files.
 
-- stops the background daemon if one is running
-- disables autostart when supported
-- removes local config, secrets, database, and runtime-state files
-
-It does not remove the global npm package. To do that too:
+To remove the global package too, use the same package manager you used to install it:
 
 ```bash
 npm uninstall -g code-helm
+bun remove -g code-helm
 ```
 
 ## Development
 
-For local repo development:
+For local repository development:
 
 ```bash
 bun install
@@ -240,29 +179,11 @@ bun test
 bun run typecheck
 ```
 
-Useful dev commands:
+Useful development commands:
 
 ```bash
 bun run dev
 bun run migrate
 ```
 
-Release workflow:
-
-- see [docs/release.md](./docs/release.md) for the npm and GitHub publishing steps
-- CI/CD workflows live in `.github/workflows/ci.yml` and `.github/workflows/publish.yml`
-
-## Advanced Overrides
-
-Normal users should prefer `code-helm onboard`.
-
-If you need to override paths or inject values in development, see [.env.example](./.env.example).
-
-## Legacy Workspace Import
-
-CodeHelm still preserves a compatibility bridge for older installs that used:
-
-- `WORKSPACE_ROOT`
-- `WORKDIRS_JSON`
-
-That path is legacy-only and not part of the normal onboarding flow.
+Release workflow and publishing notes live in [docs/release.md](./docs/release.md).
