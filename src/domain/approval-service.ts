@@ -32,6 +32,7 @@ export type PersistedApprovalDecision = {
   providerDecision: string;
   label: string;
   consequence?: string | null;
+  replyPayload?: unknown;
 };
 
 export type ApprovalState = {
@@ -171,6 +172,12 @@ const fileChangeDecisionLabels: Record<string, string> = {
   cancel: "No, and tell Codex what to do differently",
 };
 
+const permissionsDecisionLabels: Record<string, string> = {
+  accept: "Yes, grant them for this turn",
+  acceptForSession: "Yes, and keep these permissions for this session",
+  decline: "No, continue without granting them",
+};
+
 const toDecisionLabelsByMethod = (
   requestMethod: ApprovalRequestMethod,
 ): Record<string, string> => {
@@ -180,6 +187,10 @@ const toDecisionLabelsByMethod = (
 
   if (requestMethod === "item/fileChange/requestApproval") {
     return fileChangeDecisionLabels;
+  }
+
+  if (requestMethod === "item/permissions/requestApproval") {
+    return permissionsDecisionLabels;
   }
 
   return {};
@@ -226,6 +237,10 @@ export const createPersistedApprovalDecisions = ({
         normalizedCandidate.consequence !== undefined
           ? normalizedCandidate.consequence
           : null,
+      replyPayload:
+        normalizedCandidate.replyPayload !== undefined
+          ? normalizedCandidate.replyPayload
+          : { decision: providerDecision },
     });
   }
 

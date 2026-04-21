@@ -3677,8 +3677,8 @@ test("approval interaction replies to Codex before persisting a terminal local d
       },
     } as never,
     client: {
-      replyToServerRequest: async (payload: { decision: string }) => {
-        calls.push(`rpc:${payload.decision}`);
+      replyToServerRequest: async (payload: { result: { decision: string } }) => {
+        calls.push(`rpc:${payload.result.decision}`);
       },
     } as never,
     sessionRepo: {
@@ -3731,7 +3731,7 @@ test("approval interaction replies to Codex before persisting a terminal local d
 });
 
 test("approval interaction preserves numeric-looking string request ids", async () => {
-  const rpcPayloads: Array<{ requestId: string | number; decision: string }> = [];
+  const rpcPayloads: Array<{ requestId: string | number; result: { decision: string } }> = [];
 
   const handled = await handleApprovalInteraction({
     interaction: {
@@ -3741,7 +3741,10 @@ test("approval interaction preserves numeric-looking string request ids", async 
       reply: async () => {},
     } as never,
     client: {
-      replyToServerRequest: async (payload: { requestId: string | number; decision: string }) => {
+      replyToServerRequest: async (payload: {
+        requestId: string | number;
+        result: { decision: string };
+      }) => {
         rpcPayloads.push(payload);
       },
     } as never,
@@ -3775,13 +3778,13 @@ test("approval interaction preserves numeric-looking string request ids", async 
   expect(rpcPayloads).toEqual([
     {
       requestId: "01",
-      decision: "accept",
+      result: { decision: "accept" },
     },
   ]);
 });
 
 test("approval interaction prefers the live provider request id type over the stored string id", async () => {
-  const rpcPayloads: Array<{ requestId: string | number; decision: string }> = [];
+  const rpcPayloads: Array<{ requestId: string | number; result: { decision: string } }> = [];
 
   const handled = await handleApprovalInteraction({
     interaction: {
@@ -3791,7 +3794,10 @@ test("approval interaction prefers the live provider request id type over the st
       reply: async () => {},
     } as never,
     client: {
-      replyToServerRequest: async (payload: { requestId: string | number; decision: string }) => {
+      replyToServerRequest: async (payload: {
+        requestId: string | number;
+        result: { decision: string };
+      }) => {
         rpcPayloads.push(payload);
       },
     } as never,
@@ -3828,13 +3834,13 @@ test("approval interaction prefers the live provider request id type over the st
   expect(rpcPayloads).toEqual([
     {
       requestId: 1,
-      decision: "accept",
+      result: { decision: "accept" },
     },
   ]);
 });
 
 test("approval interaction falls back to the persisted provider request id after restart", async () => {
-  const rpcPayloads: Array<{ requestId: string | number; decision: string }> = [];
+  const rpcPayloads: Array<{ requestId: string | number; result: { decision: string } }> = [];
 
   const handled = await handleApprovalInteraction({
     interaction: {
@@ -3844,7 +3850,10 @@ test("approval interaction falls back to the persisted provider request id after
       reply: async () => {},
     } as never,
     client: {
-      replyToServerRequest: async (payload: { requestId: string | number; decision: string }) => {
+      replyToServerRequest: async (payload: {
+        requestId: string | number;
+        result: { decision: string };
+      }) => {
         rpcPayloads.push(payload);
       },
     } as never,
@@ -3879,7 +3888,7 @@ test("approval interaction falls back to the persisted provider request id after
   expect(rpcPayloads).toEqual([
     {
       requestId: 1,
-      decision: "accept",
+      result: { decision: "accept" },
     },
   ]);
 });
@@ -3948,6 +3957,144 @@ test("approval interaction rejects unknown persisted provider decisions", async 
       allowedMentions: { parse: [] },
       content: "That approval no longer offers that decision.",
       ephemeral: true,
+    },
+  ]);
+});
+
+test("approval interaction replays structured command approval results from the persisted decision catalog", async () => {
+  const rpcPayloads: Array<{ requestId: string | number; result: unknown }> = [];
+
+  const handled = await handleApprovalInteraction({
+    interaction: {
+      customId: "approval|turn-1%3Aitem-1|acceptWithExecpolicyAmendment",
+      user: { id: "owner-1" },
+      deferUpdate: async () => {},
+      reply: async () => {},
+    } as never,
+    client: {
+      replyToServerRequest: async (payload: { requestId: string | number; result: unknown }) => {
+        rpcPayloads.push(payload);
+      },
+    } as never,
+    sessionRepo: {
+      getByDiscordThreadId: () =>
+        createSessionRecord({
+          discordThreadId: "discord-thread-1",
+          ownerDiscordUserId: "owner-1",
+        }),
+    } as never,
+    approvalRepo: {
+      getByApprovalKey: () => ({
+        approvalKey: "turn-1:item-1",
+        requestId: "req-structured-command",
+        codexThreadId: "codex-thread-1",
+        discordThreadId: "discord-thread-1",
+        status: "pending",
+        decisionCatalog: JSON.stringify([
+          {
+            key: "acceptWithExecpolicyAmendment",
+            providerDecision: "acceptWithExecpolicyAmendment",
+            label: "Yes, proceed and save this decision for this command policy",
+            replyPayload: {
+              decision: {
+                acceptWithExecpolicyAmendment: {
+                  execpolicy_amendment: {
+                    commandPattern: "^bun test$",
+                    timeoutMs: 120000,
+                  },
+                },
+              },
+            },
+          },
+        ]),
+      }),
+      insert: () => {},
+    } as never,
+  } as never);
+
+  expect(handled).toBe(true);
+  expect(rpcPayloads).toEqual([
+    {
+      requestId: "req-structured-command",
+      result: {
+        decision: {
+          acceptWithExecpolicyAmendment: {
+            execpolicy_amendment: {
+              commandPattern: "^bun test$",
+              timeoutMs: 120000,
+            },
+          },
+        },
+      },
+    },
+  ]);
+});
+
+test("approval interaction replies to permissions approvals with the stored structured grant payload", async () => {
+  const rpcPayloads: Array<{ requestId: string | number; result: unknown }> = [];
+
+  const handled = await handleApprovalInteraction({
+    interaction: {
+      customId: "approval|turn-1%3Aperm-1|acceptForSession",
+      user: { id: "owner-1" },
+      deferUpdate: async () => {},
+      reply: async () => {},
+    } as never,
+    client: {
+      replyToServerRequest: async (payload: { requestId: string | number; result: unknown }) => {
+        rpcPayloads.push(payload);
+      },
+    } as never,
+    sessionRepo: {
+      getByDiscordThreadId: () =>
+        createSessionRecord({
+          discordThreadId: "discord-thread-1",
+          ownerDiscordUserId: "owner-1",
+        }),
+    } as never,
+    approvalRepo: {
+      getByApprovalKey: () => ({
+        approvalKey: "turn-1:perm-1",
+        requestId: "req-permissions-1",
+        codexThreadId: "codex-thread-1",
+        discordThreadId: "discord-thread-1",
+        status: "pending",
+        decisionCatalog: JSON.stringify([
+          {
+            key: "acceptForSession",
+            providerDecision: "acceptForSession",
+            label: "Yes, and keep these permissions for this session",
+            replyPayload: {
+              permissions: {
+                network: { enabled: true },
+                fileSystem: {
+                  read: ["/tmp/ws1"],
+                  write: ["/tmp/ws1/app"],
+                },
+              },
+              scope: "session",
+            },
+          },
+        ]),
+      }),
+      insert: () => {},
+    } as never,
+  } as never);
+
+  expect(handled).toBe(true);
+  expect(rpcPayloads).toEqual([
+    {
+      requestId: "req-permissions-1",
+      result: {
+        permissions: {
+          network: { enabled: true },
+          fileSystem: {
+            read: ["/tmp/ws1"],
+            write: ["/tmp/ws1/app"],
+          },
+        },
+        scope: "session",
+      },
     },
   ]);
 });
@@ -5139,7 +5286,7 @@ test("live command approvals strip common shell wrappers from the displayed comm
   db.close();
 });
 
-test("live file-change approvals persist fallback title and request kind before lifecycle rendering", () => {
+test("live file-change approvals synthesize real decisions and grant-root copy from protocol-shaped events", () => {
   const db = createDatabaseClient(":memory:");
   applyMigrations(db);
   const sessionRepo = createSessionRepo(db);
@@ -5165,9 +5312,8 @@ test("live file-change approvals persist fallback title and request kind before 
       threadId: "codex-1",
       turnId: "turn-1",
       itemId: "call-2",
-      justification: "Allow updating tracked files?",
-      cwd: "/tmp/ws1/app",
-      availableDecisions: ["accept", "cancel"],
+      reason: "Allow updating tracked files?",
+      grantRoot: "/tmp/ws1/app",
     },
   });
 
@@ -5177,23 +5323,24 @@ test("live file-change approvals persist fallback title and request kind before 
     status: "pending",
     displayTitle: "File change approval",
     commandPreview: null,
-    justification: "Allow updating tracked files?",
-    cwd: "/tmp/ws1/app",
+    justification: expect.stringContaining("Allow updating tracked files?"),
     requestKind: "file_change",
-    decisionCatalog: expect.stringContaining("\"cancel\""),
   });
+  expect(approvalRepo.getByApprovalKey("turn-1:call-2")?.decisionCatalog).toEqual(
+    expect.stringContaining("\"acceptForSession\""),
+  );
   expect(renderApprovalLifecycleMessage({
     approval,
   })).toBe(
     "**Would you like to apply these file changes?**\n"
       + "Allow updating tracked files?\n"
-      + "CWD: `/tmp/ws1/app`",
+      + "Session write scope: `/tmp/ws1/app`",
   );
 
   db.close();
 });
 
-test("live permissions approvals persist fallback title and request kind before lifecycle rendering", () => {
+test("live permissions approvals synthesize structured grant decisions from protocol-shaped events", () => {
   const db = createDatabaseClient(":memory:");
   applyMigrations(db);
   const sessionRepo = createSessionRepo(db);
@@ -5219,8 +5366,14 @@ test("live permissions approvals persist fallback title and request kind before 
       threadId: "codex-1",
       turnId: "turn-1",
       itemId: "call-3",
-      justification: "Allow elevated permissions for this step?",
-      cwd: "/tmp/ws1/app",
+      reason: "Allow elevated permissions for this step?",
+      permissions: {
+        network: { enabled: true },
+        fileSystem: {
+          read: ["/tmp/ws1"],
+          write: ["/tmp/ws1/app"],
+        },
+      },
     },
   });
 
@@ -5230,17 +5383,25 @@ test("live permissions approvals persist fallback title and request kind before 
     status: "pending",
     displayTitle: "Permissions approval",
     commandPreview: null,
-    justification: "Allow elevated permissions for this step?",
-    cwd: "/tmp/ws1/app",
+    justification: expect.stringContaining("Allow elevated permissions for this step?"),
     requestKind: "permissions",
+    decisionCatalog: expect.stringContaining("\"acceptForSession\""),
   });
   expect(renderApprovalLifecycleMessage({
     approval,
-  })).toBe(
-    "**Would you like to grant these permissions?**\n"
-      + "Allow elevated permissions for this step?\n"
-      + "CWD: `/tmp/ws1/app`",
-  );
+  })).toContain("**Would you like to grant these permissions?**");
+  expect(renderApprovalLifecycleMessage({
+    approval,
+  })).toContain("Allow elevated permissions for this step?");
+  expect(renderApprovalLifecycleMessage({
+    approval,
+  })).toContain("Network access");
+  expect(renderApprovalLifecycleMessage({
+    approval,
+  })).toContain("Read: `/tmp/ws1`");
+  expect(renderApprovalLifecycleMessage({
+    approval,
+  })).toContain("Write: `/tmp/ws1/app`");
 
   db.close();
 });

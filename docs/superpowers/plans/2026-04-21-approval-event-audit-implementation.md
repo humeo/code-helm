@@ -50,7 +50,7 @@
 - Modify: `docs/superpowers/plans/2026-04-21-approval-event-audit-implementation.md`
 - Reference: `docs/superpowers/specs/2026-04-21-approval-event-audit-design.md`
 
-- [ ] **Step 1: Create the report skeleton**
+- [x] **Step 1: Create the report skeleton**
 
 Create `docs/superpowers/specs/2026-04-21-approval-event-audit-report.md` with these sections:
 
@@ -78,7 +78,7 @@ Date: 2026-04-21
 ## Cross-Cutting Root Causes
 ```
 
-- [ ] **Step 2: Generate the current protocol bindings**
+- [x] **Step 2: Generate the current protocol bindings**
 
 Run:
 
@@ -96,7 +96,7 @@ Expected: PASS. A temporary directory is printed and contains generated files su
 - `ApplyPatchApprovalParams.ts`
 - `ExecCommandApprovalParams.ts`
 
-- [ ] **Step 3: Record the authoritative files for later sections**
+- [x] **Step 3: Record the authoritative files for later sections**
 
 Run:
 
@@ -108,7 +108,7 @@ Expected: PASS. The output lists the exact generated request and response files 
 
 Paste the generated-path references into the report introduction so later tasks can cite the same protocol snapshot consistently.
 
-- [ ] **Step 4: Verify the repository already exposes the shared approval chain**
+- [x] **Step 4: Verify the repository already exposes the shared approval chain**
 
 Run:
 
@@ -118,7 +118,7 @@ rg -n "item/commandExecution/requestApproval|item/fileChange/requestApproval|ite
 
 Expected: PASS. The output shows which protocol surfaces are already wired into CodeHelm and which are absent or only represented in generated protocol artifacts.
 
-- [ ] **Step 5: Commit the audit scaffold**
+- [x] **Step 5: Commit the audit scaffold**
 
 ```bash
 git add docs/superpowers/specs/2026-04-21-approval-event-audit-report.md docs/superpowers/plans/2026-04-21-approval-event-audit-implementation.md
@@ -137,7 +137,7 @@ git commit -m "docs: scaffold approval event audit report"
 - Inspect: `tests/domain/approval-service.test.ts`
 - Inspect runtime artifact: `~/.local/share/code-helm/codehelm.sqlite`
 
-- [ ] **Step 1: Capture the real command-approval request and response shape**
+- [x] **Step 1: Capture the real command-approval request and response shape**
 
 Run:
 
@@ -148,7 +148,7 @@ sed -n '1,160p' "$tmpdir"/v2/CommandExecutionRequestApprovalResponse.ts
 
 Expected: PASS. The output shows the authoritative request fields, including `availableDecisions`, and the response shape that returns a command approval decision.
 
-- [ ] **Step 2: Capture current CodeHelm mapping points**
+- [x] **Step 2: Capture current CodeHelm mapping points**
 
 Run:
 
@@ -158,7 +158,7 @@ rg -n "availableDecisions|commandPreview|normalizeApprovalCommandPreview|replyTo
 
 Expected: PASS. The output identifies the exact lines where CodeHelm reads command approval fields, generates labels, serializes replies, and renders terminal outcomes.
 
-- [ ] **Step 3: Inspect real stored command approval rows**
+- [x] **Step 3: Inspect real stored command approval rows**
 
 Run:
 
@@ -184,7 +184,7 @@ PY
 
 Expected: PASS. Recent command approvals should show persisted `decision_catalog` data and enough terminal metadata to judge whether command semantics survive persistence.
 
-- [ ] **Step 4: Run the focused command approval tests**
+- [x] **Step 4: Run the focused command approval tests**
 
 Run:
 
@@ -195,7 +195,7 @@ bun test tests/domain/approval-service.test.ts -t "provider-backed decisions pre
 
 Expected: PASS. The tests demonstrate the current intended baseline for command approval request parsing and decision rendering.
 
-- [ ] **Step 5: Write the command approval section and commit**
+- [x] **Step 5: Write the command approval section and commit**
 
 Update the report with:
 
@@ -222,7 +222,7 @@ git commit -m "docs: audit command approval event"
 - Inspect: `tests/domain/approval-service.test.ts`
 - Inspect runtime artifact: `~/.local/share/code-helm/codehelm.sqlite`
 
-- [ ] **Step 1: Capture the real file-change request and response shape**
+- [x] **Step 1: Capture the real file-change request and response shape**
 
 Run:
 
@@ -233,7 +233,7 @@ sed -n '1,160p' "$tmpdir"/v2/FileChangeRequestApprovalResponse.ts
 
 Expected: PASS. The output should show that file-change approvals expose `reason` and optional `grantRoot`, while the response is a file-change decision enum.
 
-- [ ] **Step 2: Inspect real local file-change rows**
+- [x] **Step 2: Inspect real local file-change rows**
 
 Run:
 
@@ -259,7 +259,7 @@ PY
 
 Expected: PASS. If file-change approvals exist locally, the rows reveal whether retry-oriented `reason` text is being persisted as body copy and whether a decision catalog was synthesized.
 
-- [ ] **Step 3: Run the focused file-change tests**
+- [x] **Step 3: Run the focused file-change tests**
 
 Run:
 
@@ -270,7 +270,7 @@ bun test tests/domain/approval-service.test.ts -t "file-change decisions use ses
 
 Expected: PASS. The tests show the current repository behavior for synthesized file-change decisions and current wording assumptions.
 
-- [ ] **Step 4: Capture the file-change mapping and rendering path**
+- [x] **Step 4: Capture the file-change mapping and rendering path**
 
 Run:
 
@@ -280,7 +280,7 @@ rg -n "item/fileChange/requestApproval|grantRoot|grant_root|file_change|acceptFo
 
 Expected: PASS. The output identifies where CodeHelm synthesizes file-change decisions, labels path/session scope, and persists body copy.
 
-- [ ] **Step 5: Write the file-change section and commit**
+- [x] **Step 5: Write the file-change section and commit**
 
 Document:
 
@@ -308,7 +308,7 @@ git commit -m "docs: audit file change approval event"
 - Inspect: `tests/codex/jsonrpc-client.test.ts`
 - Inspect runtime artifact: `~/.local/share/code-helm/codehelm.sqlite`
 
-- [ ] **Step 1: Capture the real permissions request and response shape**
+- [x] **Step 1: Capture the real permissions request and response shape**
 
 Run:
 
@@ -319,7 +319,7 @@ sed -n '1,200p' "$tmpdir"/v2/PermissionsRequestApprovalResponse.ts
 
 Expected: PASS. The output should make clear whether permissions approvals are answered by a structured payload rather than a single scalar `decision`.
 
-- [ ] **Step 2: Trace the current generic reply path**
+- [x] **Step 2: Trace the current generic reply path**
 
 Run:
 
@@ -329,7 +329,7 @@ rg -n "replyToServerRequest\\(|decisionCatalog|providerDecision|item/permissions
 
 Expected: PASS. The output shows whether permissions approvals are routed through the same generic decision path as command and file-change approvals.
 
-- [ ] **Step 3: Inspect any real stored permissions rows**
+- [x] **Step 3: Inspect any real stored permissions rows**
 
 Run:
 
@@ -355,7 +355,7 @@ PY
 
 Expected: PASS. If no rows exist, note that the runtime has no live sample and rely on protocol plus repository evidence for the finding.
 
-- [ ] **Step 4: Run the focused permissions tests**
+- [x] **Step 4: Run the focused permissions tests**
 
 Run:
 
@@ -366,7 +366,7 @@ bun test tests/codex/jsonrpc-client.test.ts -t "routes file and permissions appr
 
 Expected: PASS. The tests should confirm that request routing exists, even if they do not yet prove response-shape correctness.
 
-- [ ] **Step 5: Write the permissions section and commit**
+- [x] **Step 5: Write the permissions section and commit**
 
 Document:
 
@@ -389,7 +389,7 @@ git commit -m "docs: audit permissions approval event"
 - Inspect: `src/codex/protocol-types.ts`
 - Inspect generated protocol files in `"$tmpdir"`
 
-- [ ] **Step 1: Capture the real `applyPatchApproval` and `execCommandApproval` shapes**
+- [x] **Step 1: Capture the real `applyPatchApproval` and `execCommandApproval` shapes**
 
 Run:
 
@@ -400,7 +400,7 @@ sed -n '1,200p' "$tmpdir"/ExecCommandApprovalParams.ts
 
 Expected: PASS. The output shows whether these APIs carry structured file changes, array-based commands, explicit `approvalId`, or other fields that the current generic approval model cannot represent faithfully.
 
-- [ ] **Step 2: Verify whether CodeHelm consumes either API today**
+- [x] **Step 2: Verify whether CodeHelm consumes either API today**
 
 Run:
 
@@ -410,7 +410,7 @@ rg -n "applyPatchApproval|execCommandApproval" src tests
 
 Expected: PASS. The output should clearly show whether these APIs are consumed, ignored, or only present in protocol-generation artifacts.
 
-- [ ] **Step 3: Compare each shape against the current approval abstraction**
+- [x] **Step 3: Compare each shape against the current approval abstraction**
 
 Run:
 
@@ -420,7 +420,7 @@ rg -n "readApprovalEventString|normalizeApprovalCommandPreview|buildApprovalKey|
 
 Expected: PASS. The output identifies where the current abstraction assumes string-based request fields or the Discord-wired approval event model.
 
-- [ ] **Step 4: Write the unintegrated-API sections**
+- [x] **Step 4: Write the unintegrated-API sections**
 
 In the report, classify each API as one of:
 
@@ -434,7 +434,7 @@ Call out specific mismatches such as:
 - array-based commands and `parsedCmd` not fitting current preview extraction
 - explicit `approvalId` semantics not matching current request-key assumptions
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add docs/superpowers/specs/2026-04-21-approval-event-audit-report.md
@@ -452,7 +452,7 @@ git commit -m "docs: audit unintegrated approval APIs"
 - Inspect: `tests/db/approval-repo.test.ts`
 - Inspect: `tests/discord/approval-ui.test.ts`
 
-- [ ] **Step 1: Trace the shared resolved-event path**
+- [x] **Step 1: Trace the shared resolved-event path**
 
 Run:
 
@@ -462,7 +462,7 @@ rg -n "serverRequest/resolved|resolvedProviderDecision|resolvedBySurface|resolve
 
 Expected: PASS. The output shows how pending approvals become terminal, how remote resolution is tracked, and how resume/recovery rehydrates approval state.
 
-- [ ] **Step 2: Run the focused resolution and recovery tests**
+- [x] **Step 2: Run the focused resolution and recovery tests**
 
 Run:
 
@@ -475,7 +475,7 @@ bun test tests/discord/approval-ui.test.ts -t "terminal approvals collapse"
 
 Expected: PASS. The tests should show the current shared lifecycle semantics that affect every integrated approval type.
 
-- [ ] **Step 3: Inspect recent resolved approval rows**
+- [x] **Step 3: Inspect recent resolved approval rows**
 
 Run:
 
@@ -498,7 +498,7 @@ PY
 
 Expected: PASS. The output reveals whether local persistence retains enough terminal metadata to explain resolutions later.
 
-- [ ] **Step 4: Write the shared lifecycle section**
+- [x] **Step 4: Write the shared lifecycle section**
 
 Document:
 
@@ -506,7 +506,7 @@ Document:
 - gaps that affect more than one approval type
 - whether any event type loses meaning specifically during terminal or recovery handling
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add docs/superpowers/specs/2026-04-21-approval-event-audit-report.md
@@ -519,7 +519,7 @@ git commit -m "docs: audit approval resolution and recovery chain"
 - Modify: `docs/superpowers/specs/2026-04-21-approval-event-audit-report.md`
 - Modify: `docs/superpowers/plans/2026-04-21-approval-event-audit-implementation.md`
 
-- [ ] **Step 1: Write the executive summary and cross-cutting root causes**
+- [x] **Step 1: Write the executive summary and cross-cutting root causes**
 
 Summarize:
 
@@ -528,7 +528,7 @@ Summarize:
 - which are structurally mismatched or only support gaps
 - which root causes repeat across events
 
-- [ ] **Step 2: Verify the report cites real evidence for every event**
+- [x] **Step 2: Verify the report cites real evidence for every event**
 
 Run:
 
@@ -538,7 +538,7 @@ rg -n "Severity:|Evidence:|Protocol:|Current behavior:|Recommendation:" docs/sup
 
 Expected: PASS. Every event section should include protocol evidence, current behavior evidence, a classification, and a recommendation.
 
-- [ ] **Step 3: Re-run the focused audit commands one final time**
+- [x] **Step 3: Re-run the focused audit commands one final time**
 
 Run:
 
@@ -548,14 +548,14 @@ bun test tests/index.test.ts tests/domain/approval-service.test.ts tests/db/appr
 
 Expected: PASS. The report's claims remain aligned with the current repository behavior.
 
-- [ ] **Step 4: Commit the finished audit report**
+- [x] **Step 4: Commit the finished audit report**
 
 ```bash
 git add docs/superpowers/specs/2026-04-21-approval-event-audit-report.md docs/superpowers/plans/2026-04-21-approval-event-audit-implementation.md
 git commit -m "docs: finish approval event audit report"
 ```
 
-- [ ] **Step 5: Present the result and stop before code fixes**
+- [x] **Step 5: Present the result and stop before code fixes**
 
 Prepare a concise handoff that includes:
 

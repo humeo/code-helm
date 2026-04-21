@@ -27,8 +27,10 @@ const {
   renderApprovalResultLine: (input: {
     status: ApprovalState["status"];
     commandPreview: string | null;
+    displayTitle?: string | null;
     resolvedProviderDecision?: string | null;
     resolvedElsewhere?: boolean;
+    resolvedBySurface?: string | null;
   }) => string;
   renderApprovalStaleStatusText: (input: {
     approval: ApprovalState;
@@ -186,6 +188,32 @@ test("terminal approvals collapse into result lines and include codex-remote ori
   );
   expect(rendered.content).not.toContain("Request ID:");
   expect(rendered.buttons).toEqual([]);
+});
+
+test("remote terminal lines preserve saved-command and network-rule approval semantics", () => {
+  expect(
+    renderApprovalResultLine({
+      status: "approved",
+      commandPreview: "bun test",
+      resolvedProviderDecision: "acceptWithExecpolicyAmendment",
+      resolvedElsewhere: true,
+      resolvedBySurface: "codex_remote",
+    }),
+  ).toBe(
+    "Handled in codex-remote: approved and saved for future matching commands bun test",
+  );
+
+  expect(
+    renderApprovalResultLine({
+      status: "approved",
+      commandPreview: "curl https://example.test",
+      resolvedProviderDecision: "applyNetworkPolicyAmendment",
+      resolvedElsewhere: true,
+      resolvedBySurface: "codex_remote",
+    }),
+  ).toBe(
+    "Handled in codex-remote: approved and applied the network rule curl https://example.test",
+  );
 });
 
 test("session-scoped approvals render an explicit terminal result line", () => {

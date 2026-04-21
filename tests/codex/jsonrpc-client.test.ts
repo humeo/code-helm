@@ -188,7 +188,7 @@ test("initialize sends initialize request before initialized notification", asyn
   });
 });
 
-test("replies to server requests with the original request id", async () => {
+test("replies to server requests with the original request id and arbitrary result payloads", async () => {
   const stub = createTransportStub();
   const client = new JsonRpcClient("ws://example.test", {
     transport: stub.transport,
@@ -205,12 +205,25 @@ test("replies to server requests with the original request id", async () => {
     id: 9,
     params: { threadId: "t1", turnId: "turn1", itemId: "call1" },
   });
-  await client.replyToServerRequest({ requestId: 9, decision: "approved" });
+  await client.replyToServerRequest({
+    requestId: 9,
+    result: {
+      permissions: {
+        network: { enabled: true },
+      },
+      scope: "session",
+    },
+  });
 
   expect(JSON.parse(stub.sent[2])).toEqual({
     jsonrpc: "2.0",
     id: 9,
-    result: { decision: "approved" },
+    result: {
+      permissions: {
+        network: { enabled: true },
+      },
+      scope: "session",
+    },
   });
 });
 

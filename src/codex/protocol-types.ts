@@ -74,7 +74,7 @@ export type StartTurnParams = {
 
 export type ReplyToServerRequestParams = {
   requestId: JsonRpcId;
-  decision: unknown;
+  result: unknown;
 };
 
 export type NotificationPayload = Record<string, unknown> | undefined;
@@ -93,7 +93,19 @@ export type ApprovalRequestDecisionPayload = {
   decision: string;
   label?: string | null;
   consequence?: string | null;
+  replyPayload?: unknown;
 } & Record<string, unknown>;
+
+const approvalDecisionMetadataKeys = new Set([
+  "decision",
+  "providerDecision",
+  "key",
+  "label",
+  "title",
+  "consequence",
+  "description",
+  "replyPayload",
+]);
 
 const asApprovalDecisionPayload = (
   value: unknown,
@@ -113,9 +125,35 @@ const asApprovalDecisionPayload = (
     candidate.decision
     ?? candidate.providerDecision
     ?? candidate.key;
+  const replyPayloadCandidate = candidate.replyPayload;
 
-  if (typeof providerDecisionCandidate !== "string" || providerDecisionCandidate.length === 0) {
-    return null;
+  let decision = typeof providerDecisionCandidate === "string" && providerDecisionCandidate.length > 0
+    ? providerDecisionCandidate
+    : null;
+  let replyPayload =
+    replyPayloadCandidate !== undefined ? replyPayloadCandidate : undefined;
+
+  if (decision === null) {
+    const decisionVariantEntries = Object.entries(candidate).filter(([key]) =>
+      !approvalDecisionMetadataKeys.has(key)
+    );
+
+    if (decisionVariantEntries.length !== 1) {
+      return null;
+    }
+
+    const [variantKey, variantValue] = decisionVariantEntries[0] ?? [];
+
+    if (typeof variantKey !== "string" || variantKey.length === 0) {
+      return null;
+    }
+
+    decision = variantKey;
+    replyPayload = {
+      decision: {
+        [variantKey]: variantValue,
+      },
+    };
   }
 
   const label =
@@ -135,9 +173,10 @@ const asApprovalDecisionPayload = (
 
   return {
     ...candidate,
-    decision: providerDecisionCandidate,
+    decision,
     label,
     consequence,
+    replyPayload,
   };
 };
 

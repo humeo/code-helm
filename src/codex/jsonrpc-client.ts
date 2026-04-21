@@ -268,18 +268,18 @@ export class JsonRpcClient {
 
   async replyToServerRequest({
     requestId,
-    decision,
+    result,
   }: ReplyToServerRequestParams) {
     await this.initialize();
     logger.debug("Sending server request reply", {
       requestId,
       requestIdType: typeof requestId,
-      decision,
+      result,
     });
     this.sendMessage({
       jsonrpc: "2.0",
       id: requestId,
-      result: { decision },
+      result,
     });
   }
 
