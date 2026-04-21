@@ -548,14 +548,14 @@ bun test tests/index.test.ts tests/domain/approval-service.test.ts tests/db/appr
 
 Expected: PASS. The report's claims remain aligned with the current repository behavior.
 
-- [ ] **Step 4: Commit the finished audit report**
+- [x] **Step 4: Commit the finished audit report**
 
 ```bash
 git add docs/superpowers/specs/2026-04-21-approval-event-audit-report.md docs/superpowers/plans/2026-04-21-approval-event-audit-implementation.md
 git commit -m "docs: finish approval event audit report"
 ```
 
-- [ ] **Step 5: Present the result and stop before code fixes**
+- [x] **Step 5: Present the result and stop before code fixes**
 
 Prepare a concise handoff that includes:
 

@@ -5,6 +5,7 @@ Date: 2026-04-21
 Protocol snapshot:
 
 - Generated with `codex app-server generate-ts --experimental --out /var/folders/py/j9ws8lpn57g_syngj3b58b6h0000gn/T/tmp.unWPIZW1AO`
+- Runtime evidence artifact: `~/.local/share/code-helm/codehelm.sqlite`
 - Audit-reference files:
   - `/var/folders/py/j9ws8lpn57g_syngj3b58b6h0000gn/T/tmp.unWPIZW1AO/v2/CommandExecutionRequestApprovalParams.ts`
   - `/var/folders/py/j9ws8lpn57g_syngj3b58b6h0000gn/T/tmp.unWPIZW1AO/v2/CommandExecutionRequestApprovalResponse.ts`
@@ -20,7 +21,8 @@ Protocol snapshot:
 
 Repository coverage snapshot:
 
-- Wired request methods found in `src/` and `tests/`: `item/commandExecution/requestApproval`, `item/fileChange/requestApproval`, `item/permissions/requestApproval`, and `serverRequest/resolved`
+- Wired approval request methods found in `src/` and `tests/`: `item/commandExecution/requestApproval`, `item/fileChange/requestApproval`, and `item/permissions/requestApproval`
+- Routed shared lifecycle notification found in `src/` and `tests/`: `serverRequest/resolved`
 - `applyPatchApproval` and `execCommandApproval` are not yet consumed by the current repository search surface and will be audited as protocol-exposed integration risks
 
 ## Executive Summary
@@ -94,7 +96,7 @@ Evidence:
   - `decision_catalog = NULL`
   - `resolved_provider_decision = 'decline'`
 - `bun test tests/index.test.ts -t "live file-change approvals"` passed, but the planned targeted test name for `grantRoot` matched zero tests, confirming a coverage gap around the real session-scope variant.
-- Independent subagent audit confirmed the same two model-level gaps: missing persisted decision catalog and ignored `grantRoot`.
+- Local code inspection confirmed the same two model-level gaps: missing persisted decision catalog and ignored `grantRoot`.
 
 Severity:
 
@@ -120,7 +122,7 @@ Current behavior:
 - The snapshot path stores only generic text fields and ignores the authoritative `permissions` payload entirely. Because the real protocol does not provide `availableDecisions`, the stored `decisionCatalog` is also `null`.
 - The Discord UI therefore falls back to legacy generic decisions in [`src/discord/approval-ui.ts`](/Users/koltenluca/code-github/code-helm/.worktrees/approval-event-audit/src/discord/approval-ui.ts#L67), even though the upstream reply model is not a string decision at all.
 - Approval interactions resolve only string provider decisions from the hard-coded supported set in [`src/index.ts`](/Users/koltenluca/code-github/code-helm/.worktrees/approval-event-audit/src/index.ts#L1315) and [`src/index.ts`](/Users/koltenluca/code-github/code-helm/.worktrees/approval-event-audit/src/index.ts#L2386).
-- `replyToServerRequest()` always serializes `{ decision }` in [`src/codex/jsonrpc-client.ts`](/Users/koltenluca/code-github/code-helm/.worktrees/approval-event-audit/src/codex/jsonrpc-client.ts#L269), so the current reply path cannot produce the required `{ permissions, scope }` shape for a real permissions approval.
+- `replyToServerRequest()` always serializes a JSON-RPC success envelope with `result: { decision }` in [`src/codex/jsonrpc-client.ts`](/Users/koltenluca/code-github/code-helm/.worktrees/approval-event-audit/src/codex/jsonrpc-client.ts#L269), and the current Discord interaction layer only ever produces supported string provider decisions in [`src/index.ts`](/Users/koltenluca/code-github/code-helm/.worktrees/approval-event-audit/src/index.ts#L2386). Together, that means the current reply path cannot produce the required `{ permissions, scope }` shape for a real permissions approval.
 - The focused persistence test uses `justification` and `cwd` fields that do not exist in the authoritative protocol payload and does not assert anything about the required `permissions` object or structured reply in [`tests/index.test.ts`](/Users/koltenluca/code-github/code-helm/.worktrees/approval-event-audit/tests/index.test.ts#L5196).
 
 Evidence:
@@ -174,7 +176,7 @@ Recommendation:
 
 Protocol:
 
-- `/var/folders/py/j9ws8lpn57g_syngj3b58b6h0000gn/T/tmp.unWPIZW1AO/ExecCommandApprovalParams.ts` carries `conversationId`, `callId`, optional `approvalId`, `command` as a string array, `cwd`, `reason`, and structured `parsedCmd`.
+- `/var/folders/py/j9ws8lpn57g_syngj3b58b6h0000gn/T/tmp.unWPIZW1AO/ExecCommandApprovalParams.ts` carries `conversationId`, `callId`, required-nullable `approvalId`, `command` as a string array, `cwd`, `reason`, and structured `parsedCmd`.
 - `/var/folders/py/j9ws8lpn57g_syngj3b58b6h0000gn/T/tmp.unWPIZW1AO/ExecCommandApprovalResponse.ts` also returns `{ decision: ReviewDecision }`, including object-valued review outcomes.
 
 Current behavior:
@@ -186,7 +188,7 @@ Current behavior:
 Evidence:
 
 - `rg -n "applyPatchApproval|execCommandApproval" src tests` returned no matches for `execCommandApproval`.
-- The current `replyToServerRequest()` path emits only `{ decision }` with a scalar value, while `ReviewDecision` can carry structured amendments.
+- The current transport helper emits `result: { decision }`, but the current Discord interaction path only supplies string provider decisions, while `ReviewDecision` can carry structured amendments.
 
 Severity:
 
