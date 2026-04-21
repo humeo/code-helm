@@ -29,7 +29,7 @@
   Evidence: `README.md`, `src/discord/commands.ts`, `src/index.ts`, `tests/discord/commands.test.ts`, `tests/index.test.ts`
 - `BL-CMD-003` `/session-new` requires no options, creates a Codex session in the stored current workdir, and opens a managed Discord thread bound to it. It fails when no current workdir is set or when the stored workdir is no longer available.
   Evidence: `README.md`, `src/discord/commands.ts`, `src/index.ts`, `tests/discord/commands.test.ts`, `tests/index.test.ts`
-- `BL-CMD-004` `/session-resume` requires only `session`. If no current workdir is set or the stored workdir is unavailable, `session` autocomplete returns no choices. When current workdir is available, session choices come from live Codex `thread/list` scoped to that workdir and use relative times derived from normalized provider timestamps.
+- `BL-CMD-004` `/session-resume` requires only `session`. If no current workdir is set or the stored workdir is unavailable, `session` autocomplete returns no choices. When current workdir is available, autocomplete shows one top hint row with the active current workdir and a `/workdir` switch reminder, then real session choices from live Codex `thread/list` scoped to that workdir and using relative times derived from normalized provider timestamps.
   Evidence: `README.md`, `src/discord/commands.ts`, `src/index.ts`, `tests/discord/commands.test.ts`, `tests/index.test.ts`
 - `BL-CMD-005` `/session-resume` only attaches when the selected Codex thread cwd matches the current workdir. It can reuse an active attachment, reopen an archived one, create a new Discord thread for an unmanaged session, or create a replacement thread when the old Discord container is deleted or unusable.
   Evidence: `README.md`, `src/index.ts`, `tests/index.test.ts`
@@ -211,7 +211,7 @@ Expected:
 Coverage:
 - `BL-CTRL-005`, `BL-CMD-005`
 
-#### `P0-07` `/session-resume` autocomplete stays empty without a current workdir and scopes live sessions to the current workdir
+#### `P0-07` `/session-resume` autocomplete stays empty without a current workdir and shows a top workdir hint row before scoped sessions
 
 Preconditions:
 - The control channel is open in Discord.
@@ -223,10 +223,12 @@ Steps:
 3. Run `/workdir` and set the target directory.
 4. Run `/session-resume` again.
 5. Open the `session` autocomplete list.
+6. Select the top hint row instead of a real session.
 
 Expected:
 - Before `/workdir`, Discord shows no `session` suggestions.
-- After `/workdir`, Discord shows `session` suggestions for the current workdir and uses relative times derived from normalized provider timestamps.
+- After `/workdir`, Discord shows one top hint row that includes the current workdir text and a `/workdir` reminder, followed by `session` suggestions for the current workdir using relative times derived from normalized provider timestamps.
+- Selecting the top hint row does not attach a session and returns the corrective prompt telling the user that the row is only a hint and to use `/workdir` to switch directories before choosing a session below.
 - `/session-resume` does not require a `path` option.
 - The command uses real slash-command options rather than raw text.
 
