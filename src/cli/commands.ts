@@ -15,7 +15,11 @@ import {
   type AutostartResult,
 } from "./autostart";
 import { loadConfigStore, type LoadedConfigStore } from "./config-store";
-import { readRuntimeSummary, type RuntimeSummary } from "./runtime-state";
+import {
+  readRuntimeSummary,
+  resolveRuntimeStatePath,
+  type RuntimeSummary,
+} from "./runtime-state";
 import { CodexSupervisorError } from "../codex/supervisor";
 import { loadAppConfig, type AppConfig } from "../config";
 import { resolveLegacyWorkspaceBootstrap, startCodeHelm } from "../index";
@@ -294,6 +298,7 @@ const renderRuntimeStatusOutput = (
   runtime: RuntimeSummary | undefined,
   options: {
     env: Record<string, string | undefined>;
+    stateDir: string;
     timeZone?: string;
     headline?: string;
     isCurrentForegroundInvocation?: boolean;
@@ -311,12 +316,11 @@ const renderRuntimeStatusOutput = (
           title: "Process",
           rows: [
             { key: "Mode", value: "not running" },
-            { key: "Time Zone", value: displayTimeZone ?? "system default" },
           ],
         },
         {
           kind: "steps",
-          title: "Next steps",
+          title: "Quick actions",
           items: ["code-helm start", "code-helm onboard"],
         },
       ],
@@ -378,13 +382,15 @@ const renderRuntimeStatusOutput = (
         kind: "key-value",
         title: "Configuration",
         rows: [
-          { key: "Time Zone", value: displayTimeZone ?? "system default" },
-          { key: "Runtime State", value: "local state file" },
+          {
+            key: "State Source",
+            value: resolveRuntimeStatePath({ stateDir: options.stateDir }),
+          },
         ],
       },
       {
         kind: "steps",
-        title: "Next steps",
+        title: "Quick actions",
         items: nextSteps,
       },
     ],
@@ -955,6 +961,7 @@ export const runCliCommand = async (
         return {
           output: renderRuntimeStatusOutput(runtime, {
             env: services.env,
+            stateDir: store.paths.stateDir,
             timeZone: services.env.TZ,
             headline: "A CodeHelm runtime is already active.",
           }),
@@ -969,6 +976,7 @@ export const runCliCommand = async (
         return {
           output: renderRuntimeStatusOutput(backgroundRuntime, {
             env: services.env,
+            stateDir: configuredStore.paths.stateDir,
             timeZone: services.env.TZ,
           }),
           runtime: backgroundRuntime,
@@ -1017,6 +1025,7 @@ export const runCliCommand = async (
       return {
         output: renderRuntimeStatusOutput(foregroundRuntime, {
           env: services.env,
+          stateDir: configuredStore.paths.stateDir,
           timeZone: services.env.TZ,
           isCurrentForegroundInvocation: true,
         }),
@@ -1027,6 +1036,7 @@ export const runCliCommand = async (
       return {
         output: renderRuntimeStatusOutput(runtime, {
           env: services.env,
+          stateDir: store.paths.stateDir,
           timeZone: services.env.TZ,
         }),
         runtime,

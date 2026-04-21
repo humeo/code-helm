@@ -57,7 +57,7 @@ const getLockPath = (stateDir: string) => {
   return join(stateDir, "instance.lock");
 };
 
-const getRuntimePath = (stateDir: string) => {
+export const resolveRuntimeStatePath = ({ stateDir }: RuntimeStateOptions) => {
   return join(stateDir, "runtime.json");
 };
 
@@ -120,7 +120,7 @@ export const releaseInstanceLock = ({ stateDir }: RuntimeStateOptions) => {
 };
 
 export const clearRuntimeState = ({ stateDir }: RuntimeStateOptions) => {
-  removeFileIfExists(getRuntimePath(stateDir));
+  removeFileIfExists(resolveRuntimeStatePath({ stateDir }));
   removeFileIfExists(getLockPath(stateDir));
 };
 
@@ -131,13 +131,13 @@ export const writeRuntimeSummary = (
 ) => {
   ensureStateDir(options.stateDir);
   writeJsonFileAtomically(
-    getRuntimePath(options.stateDir),
+    resolveRuntimeStatePath({ stateDir: options.stateDir }),
     runtimeSummarySchema.parse(options.summary),
   );
 };
 
 export const readRuntimeSummary = ({ stateDir, isPidAlive }: ReadRuntimeSummaryOptions) => {
-  const runtimePath = getRuntimePath(stateDir);
+  const runtimePath = resolveRuntimeStatePath({ stateDir });
 
   if (!existsSync(runtimePath)) {
     return undefined;
@@ -223,7 +223,7 @@ export const acquireInstanceLock = ({
     }
 
     try {
-      removeFileIfExists(getRuntimePath(stateDir));
+      removeFileIfExists(resolveRuntimeStatePath({ stateDir }));
 
       try {
         writeJsonFile(lockPath, lockFileSchema.parse({ pid }), { flag: "wx" });

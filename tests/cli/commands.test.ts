@@ -343,6 +343,7 @@ describe("runCliCommand", () => {
   test("start returns current status instead of launching a second instance", async () => {
     const services = createBaseServices();
     let started = false;
+    const expectedStatePath = join(services.loadConfigStore().paths.stateDir, "runtime.json");
 
     services.readRuntimeSummary = () => ({
       pid: 2222,
@@ -373,7 +374,11 @@ describe("runCliCommand", () => {
     expect(result.output).toContain("Runtime");
     expect(result.output).toContain("Process");
     expect(result.output).toContain("Connections");
-    expect(result.output).toContain("Next steps");
+    expect(result.output).toContain("Quick actions");
+    expect(result.output).toContain("State Source");
+    expect(result.output).toContain(expectedStatePath);
+    expect(result.output).not.toContain("Time Zone");
+    expect(result.output).not.toContain("Runtime State");
     expect(result.output).toContain("codex --remote ws://127.0.0.1:4200");
     expect(result.output).toContain("already active");
     expect(result.output).not.toContain("CodeHelm running\nMode:");
@@ -415,6 +420,7 @@ describe("runCliCommand", () => {
 
   test("start with invalid TZ falls back to system-default timezone display in runtime panel", async () => {
     const services = createBaseServices();
+    const expectedStatePath = join(services.loadConfigStore().paths.stateDir, "runtime.json");
     services.env = {
       ...services.env,
       TZ: "Mars/Phobos",
@@ -437,12 +443,17 @@ describe("runCliCommand", () => {
 
     const result = await runCliCommand({ kind: "start", daemon: false }, services);
 
-    expect(result.output).toMatch(/Time Zone\s+system default/);
+    expect(result.output).toContain("Quick actions");
+    expect(result.output).toContain("State Source");
+    expect(result.output).toContain(expectedStatePath);
+    expect(result.output).not.toContain("Time Zone");
+    expect(result.output).not.toContain("Runtime State");
     expect(result.output).not.toContain("Mars/Phobos");
   });
 
   test("start foreground success renders runtime panel output", async () => {
     const services = createBaseServices();
+    const expectedStatePath = join(services.loadConfigStore().paths.stateDir, "runtime.json");
 
     const result = await runCliCommand({ kind: "start", daemon: false }, services);
 
@@ -450,7 +461,11 @@ describe("runCliCommand", () => {
     expect(result.output).toContain("Process");
     expect(result.output).toContain("Connections");
     expect(result.output).toContain("Configuration");
-    expect(result.output).toContain("Next steps");
+    expect(result.output).toContain("Quick actions");
+    expect(result.output).toContain("State Source");
+    expect(result.output).toContain(expectedStatePath);
+    expect(result.output).not.toContain("Time Zone");
+    expect(result.output).not.toContain("Runtime State");
     expect(result.output).toMatch(/Mode\s+foreground/);
     expect(result.output).toMatch(/Started\s+/);
     expect(result.output).toMatch(/PID\s+\d+/);
@@ -610,11 +625,13 @@ describe("runCliCommand", () => {
   test("start --daemon records background runtime state", async () => {
     const services = createBaseServices();
     let spawnedEnv: Record<string, string | undefined> | undefined;
+    const paths = createPaths();
 
     services.loadConfigStore = () => ({
       ...createBaseServices().loadConfigStore(),
-      paths: createPaths(),
+      paths,
     });
+    const expectedStatePath = join(paths.stateDir, "runtime.json");
     services.spawnBackgroundProcess = ({ env }) => {
       spawnedEnv = env;
       return {
@@ -628,7 +645,11 @@ describe("runCliCommand", () => {
     expect(result.output).toContain("Runtime");
     expect(result.output).toContain("Process");
     expect(result.output).toContain("Connections");
-    expect(result.output).toContain("Next steps");
+    expect(result.output).toContain("Quick actions");
+    expect(result.output).toContain("State Source");
+    expect(result.output).toContain(expectedStatePath);
+    expect(result.output).not.toContain("Time Zone");
+    expect(result.output).not.toContain("Runtime State");
     expect(result.output).toMatch(/Mode\s+background/);
     expect(result.output).toMatch(/Started\s+/);
     expect(result.output).toMatch(/PID\s+\d+/);
@@ -721,6 +742,7 @@ describe("runCliCommand", () => {
 
   test("status renders the runtime panel including app-server address and codex remote command", async () => {
     const services = createBaseServices();
+    const expectedStatePath = join(services.loadConfigStore().paths.stateDir, "runtime.json");
 
     services.readRuntimeSummary = () => ({
       pid: 2222,
@@ -743,7 +765,11 @@ describe("runCliCommand", () => {
     expect(result.output).toContain("Runtime");
     expect(result.output).toContain("Process");
     expect(result.output).toContain("Connections");
-    expect(result.output).toContain("Next steps");
+    expect(result.output).toContain("Quick actions");
+    expect(result.output).toContain("State Source");
+    expect(result.output).toContain(expectedStatePath);
+    expect(result.output).not.toContain("Time Zone");
+    expect(result.output).not.toContain("Runtime State");
     expect(result.output).toMatch(/Mode\s+foreground/);
     expect(result.output).toMatch(/Started\s+/);
     expect(result.output).toMatch(/PID\s+2222/);
@@ -762,7 +788,8 @@ describe("runCliCommand", () => {
 
     expect(result.output).toContain("Runtime");
     expect(result.output).toContain("Process");
-    expect(result.output).toContain("Next steps");
+    expect(result.output).toContain("Quick actions");
+    expect(result.output).not.toContain("Time Zone");
     expect(result.output).toContain("not running");
     expect(result.output).toMatch(/Mode\s+not running/);
     expect(result.output).not.toContain("Started  n/a");
