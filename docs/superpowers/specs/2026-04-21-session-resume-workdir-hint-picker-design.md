@@ -90,7 +90,12 @@ The synthetic hint row should render like:
 
 - `Current workdir: ~/code-github/…/code-agent-helm-example · Use /workdir to switch directories`
 
-The exact displayed path should reuse the existing `~/...` formatting conventions and then truncate as needed to fit Discord's 100-character label limit.
+The exact displayed path should reuse the existing `formatSessionPathForDisplay(...)` helper and then truncate as needed to fit Discord's 100-character label limit.
+When truncation is necessary, CodeHelm should preserve:
+
+- the `Current workdir:` prefix
+- the `/workdir` switch hint
+- as much of the display path as will fit between them
 
 ### Sentinel Choice
 
@@ -113,6 +118,7 @@ If current workdir is available:
 - prepend the synthetic workdir-hint choice
 - fetch, sort, and format real session choices exactly as today
 - return at most 24 real sessions after the hint row
+- keep the hint row visible even when the user has typed a search query; it is exempt from query filtering by design
 
 If current workdir is missing or unavailable:
 
@@ -132,11 +138,15 @@ If the submitted `session` value is the sentinel hint value:
 - do not attempt to attach, resume, sync, or rebind anything
 - return an ephemeral corrective message
 
-Corrective message text:
+Corrective message text when at least one real session exists:
 
 - `Current workdir: \`~/...\`. This row is only a hint and does not select a session. Run /workdir to switch directories, then choose a session below.`
 
-This message should use the actual current workdir display path for the invoking user and channel context.
+Corrective message text when no real sessions exist in the current workdir:
+
+- `Current workdir: \`~/...\`. This row is only a hint and does not select a session. No sessions are available in this directory. Run /workdir to switch directories or use /session-new to create one here.`
+
+These messages should use the actual current workdir display path for the invoking user and channel context.
 
 If the submitted `session` value is a real thread id:
 
@@ -180,9 +190,13 @@ Copy goals:
 
 ### Submission intercept message
 
-The intercept reply should follow this structure:
+When real sessions exist, the intercept reply should follow this structure:
 
 - `Current workdir: \`<display-path>\`. This row is only a hint and does not select a session. Run /workdir to switch directories, then choose a session below.`
+
+When no real sessions exist in the current workdir, the intercept reply should follow this structure:
+
+- `Current workdir: \`<display-path>\`. This row is only a hint and does not select a session. No sessions are available in this directory. Run /workdir to switch directories or use /session-new to create one here.`
 
 This longer copy belongs in the command reply, not in the picker row.
 
@@ -213,8 +227,10 @@ Required cases:
 - the hint row uses the expected combined copy with current workdir and `/workdir`
 - autocomplete still returns at most 25 total choices
 - autocomplete returns one hint row plus at most 24 real sessions
+- the hint row remains visible even when a search query is present
 - long workdir display text is truncated to Discord-safe length
-- selecting the sentinel value in `/session-resume` returns the targeted ephemeral corrective message
+- selecting the sentinel value in `/session-resume` returns the targeted ephemeral corrective message when real sessions exist
+- selecting the sentinel value in `/session-resume` returns the empty-directory corrective message when no real sessions exist
 - selecting the sentinel value does not trigger thread read or attach behavior
 - existing no-current-workdir and unavailable-current-workdir behavior remains unchanged
 
