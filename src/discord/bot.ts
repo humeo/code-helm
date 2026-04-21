@@ -20,6 +20,7 @@ import { buildDiscordRestOptions } from "./rest";
 
 export type DiscordBotLogger = {
   info(...args: unknown[]): void;
+  warn?(...args: unknown[]): void;
   error(...args: unknown[]): void;
 };
 
@@ -61,6 +62,30 @@ const isIgnorableInteractionResponseError = (error: unknown) => {
     || error.code === DiscordjsErrorCodes.InteractionAlreadyReplied;
 };
 
+const logAutocompleteInteractionError = (
+  logger: DiscordBotLogger,
+  interaction: AutocompleteInteraction,
+  error: unknown,
+) => {
+  if (
+    typeof error === "object"
+    && error !== null
+    && "code" in error
+    && error.code === 10062
+  ) {
+    const log = logger.warn ?? logger.info;
+    log("Discord autocomplete expired before response", {
+      channelId: interaction.channelId,
+      commandName: interaction.commandName,
+      guildId: interaction.guildId,
+      userId: interaction.user.id,
+    }, error);
+    return;
+  }
+
+  logger.error("Discord autocomplete failed", error);
+};
+
 const safelyRespondToAutocompleteInteraction = async (
   interaction: AutocompleteInteraction,
   choices: Array<{ name: string; value: string }>,
@@ -98,7 +123,7 @@ export const createDiscordBot = ({
       try {
         await handleControlChannelAutocomplete(interaction, services);
       } catch (error) {
-        logger.error("Discord autocomplete failed", error);
+        logAutocompleteInteractionError(logger, interaction, error);
         await safelyRespondToAutocompleteInteraction(interaction, []);
       }
       return;
