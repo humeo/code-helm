@@ -5,15 +5,20 @@ import {
   renderErrorPanel,
   renderKeyValueRows,
   renderSuccessPanel,
+  renderWarningPanel,
 } from "../../src/cli/output";
 
 describe("cli output renderer", () => {
+  const ansiPattern = /\u001B\[[0-9;]*m/gu;
+
   const expectNoFrameCharacters = (output: string) => {
     expect(output).not.toContain("┌");
     expect(output).not.toContain("┐");
     expect(output).not.toContain("└");
     expect(output).not.toContain("┘");
   };
+
+  const stripAnsi = (output: string) => output.replace(ansiPattern, "");
 
   test("uses frame-free output by default", () => {
     const output = renderSuccessPanel({
@@ -26,6 +31,30 @@ describe("cli output renderer", () => {
     expect(output).toContain("Result");
     expect(output).toContain("The runtime is no longer active.");
     expectNoFrameCharacters(output);
+  });
+
+  test("adds semantic ansi color in interactive terminals", () => {
+    const successOutput = renderSuccessPanel({
+      title: "Runtime stopped",
+      headline: "The runtime is no longer active.",
+      sections: [{ title: "Next steps", lines: ["code-helm start"] }],
+      env: { CODE_HELM_CLI_IS_TTY: "1" },
+    });
+    const warningOutput = renderWarningPanel({
+      title: "Startup delayed",
+      headline: "Managed Codex App Server startup is taking longer than expected.",
+      env: { CODE_HELM_CLI_IS_TTY: "1" },
+    });
+    const errorOutput = renderCliCaughtError(
+      new Error("boom"),
+      { CODE_HELM_CLI_IS_TTY: "1" },
+    );
+
+    expect(successOutput).toContain("\u001B[1;92mRuntime stopped\u001B[0m");
+    expect(warningOutput).toContain("\u001B[1;93mStartup delayed\u001B[0m");
+    expect(errorOutput).toContain("\u001B[1;91mCommand Failed\u001B[0m");
+    expect(stripAnsi(successOutput)).toContain("Runtime stopped");
+    expect(stripAnsi(errorOutput)).toContain("Command Failed");
   });
 
   test("keeps frame-free structure when TERM is dumb", () => {
@@ -81,14 +110,14 @@ describe("cli output renderer", () => {
           ],
         },
       ],
-      env: {},
+      env: { CODE_HELM_CLI_IS_TTY: "1" },
     });
 
-    expect(output).toContain("CodeHelm");
+    expect(output).toMatch(/\u001B\[[0-9;]*mCodeHelm\u001B\[0m/u);
     expect(output).toContain("Control Codex from Discord");
-    expect(output).toContain("Runtime");
-    expect(output).toContain("start   Start CodeHelm in foreground");
-    expect(output).toContain("status  Show runtime state");
+    expect(output).toContain("\u001B[36mRuntime\u001B[0m");
+    expect(output).toMatch(/\u001B\[[0-9;]*mstart\s*\u001B\[0m\s+Start CodeHelm in foreground/u);
+    expect(output).toMatch(/\u001B\[[0-9;]*mstatus\u001B\[0m\s+Show runtime state/u);
     expectNoFrameCharacters(output);
   });
 
@@ -263,12 +292,34 @@ describe("cli output renderer", () => {
       title: "CodeHelm Stopped",
       sections: [{ title: "Result", lines: ["The runtime is no longer active."] }],
       commandHints: ["code-helm start", "code-helm status"],
-      env: {},
+      env: { CODE_HELM_CLI_IS_TTY: "1" },
     });
 
-    expect(output).toContain("Command Hints");
-    expect(output).toContain("$ code-helm start");
-    expect(output).toContain("$ code-helm status");
+    expect(output).toContain("\u001B[36mCommand Hints\u001B[0m");
+    expect(output).toMatch(/\$ \u001B\[[0-9;]*mcode-helm start\u001B\[0m/u);
+    expect(output).toMatch(/\$ \u001B\[[0-9;]*mcode-helm status\u001B\[0m/u);
+  });
+
+  test("disables ansi color when NO_COLOR is set", () => {
+    const output = renderSuccessPanel({
+      title: "CodeHelm",
+      sections: [{ title: "Next steps", lines: ["code-helm start"] }],
+      env: { CODE_HELM_CLI_IS_TTY: "1", NO_COLOR: "1" },
+    });
+
+    expect(output).not.toMatch(ansiPattern);
+    expect(output).toContain("CodeHelm");
+  });
+
+  test("disables ansi color for non-tty output", () => {
+    const output = renderErrorPanel({
+      title: "Command Failed",
+      headline: "Unhandled CLI error.",
+      env: { CODE_HELM_CLI_IS_TTY: "0" },
+    });
+
+    expect(output).not.toMatch(ansiPattern);
+    expect(output).toContain("Command Failed");
   });
 
   test("keeps unicode when explicit utf-8 locale is set", () => {

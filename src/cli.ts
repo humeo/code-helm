@@ -2,9 +2,16 @@ import { parseCliArgs } from "./cli/args";
 import { runCliCommand } from "./cli/commands";
 import { renderCliCaughtError } from "./cli/output";
 
+const createRenderEnv = (isTTY: boolean | undefined) => {
+  return {
+    ...(process.env as Record<string, string | undefined>),
+    CODE_HELM_CLI_IS_TTY: isTTY ? "1" : "0",
+  };
+};
+
 const runCommand = async (command: ReturnType<typeof parseCliArgs>) => {
   const result = await runCliCommand(command, {
-    env: process.env as Record<string, string | undefined>,
+    env: createRenderEnv(process.stdout.isTTY),
   });
 
   if (result.output.trim().length > 0) {
@@ -19,7 +26,7 @@ const main = async () => {
 
 void main().catch((error: unknown) => {
   console.error(
-    renderCliCaughtError(error, process.env as Record<string, string | undefined>),
+    renderCliCaughtError(error, createRenderEnv(process.stderr.isTTY)),
   );
   process.exitCode = 1;
 });

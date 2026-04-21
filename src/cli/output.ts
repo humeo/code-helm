@@ -52,6 +52,8 @@ export type RenderSemanticPanelOptions = {
   env: Record<string, string | undefined>;
 };
 
+type CliScreenTone = "neutral" | "success" | "warning" | "error";
+
 const localeVariables = ["LC_ALL", "LC_CTYPE", "LANG"] as const;
 const ansiEscapePattern = /\u001B(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007]*(?:\u0007|\u001B\\))/gu;
 const tabReplacement = "  ";
@@ -88,6 +90,93 @@ const toRenderableLines = (value: string) => {
   return value
     .split(/\r\n|\n|\r/u)
     .map((line) => sanitizeRenderableText(line));
+};
+
+const hasTruthyValue = (value: string | undefined) => {
+  if (value === undefined) {
+    return false;
+  }
+
+  const normalized = value.trim().toLowerCase();
+
+  return normalized.length > 0 && normalized !== "0" && normalized !== "false";
+};
+
+const isCliColorEnabled = (env: Record<string, string | undefined>) => {
+  if (env.NO_COLOR !== undefined) {
+    return false;
+  }
+
+  if (detectCliCharset(env) === "ascii") {
+    return false;
+  }
+
+  if (env.CLICOLOR === "0") {
+    return false;
+  }
+
+  if (hasTruthyValue(env.FORCE_COLOR)) {
+    return true;
+  }
+
+  return env.CODE_HELM_CLI_IS_TTY === "1";
+};
+
+const styleText = (
+  value: string,
+  env: Record<string, string | undefined>,
+  sequence: string,
+) => {
+  if (!isCliColorEnabled(env) || value.length === 0) {
+    return value;
+  }
+
+  return `\u001B[${sequence}m${value}\u001B[0m`;
+};
+
+const styleTitleLine = (
+  value: string,
+  tone: CliScreenTone,
+  env: Record<string, string | undefined>,
+) => {
+  const sequence = (() => {
+    switch (tone) {
+      case "success":
+        return "1;92";
+      case "warning":
+        return "1;93";
+      case "error":
+        return "1;91";
+      case "neutral":
+        return "1;96";
+    }
+  })();
+
+  return styleText(value, env, sequence);
+};
+
+const styleHeadlineLine = (value: string, env: Record<string, string | undefined>) => {
+  return styleText(value, env, "97");
+};
+
+const styleSectionTitleLine = (value: string, env: Record<string, string | undefined>) => {
+  return styleText(value, env, "36");
+};
+
+const styleCommandToken = (value: string, env: Record<string, string | undefined>) => {
+  return styleText(value, env, "96");
+};
+
+const styleCommandHintLine = (value: string, env: Record<string, string | undefined>) => {
+  if (!isCliColorEnabled(env)) {
+    return value;
+  }
+
+  if (value.startsWith("$ ")) {
+    return `$ ${styleCommandToken(value.slice(2), env)}`;
+  }
+
+  return styleCommandToken(value, env);
 };
 
 const normalizeCharsetToken = (value: string) => {
@@ -235,12 +324,15 @@ const renderIndentedItems = (items: string[]) => {
   });
 };
 
-const renderSectionLines = (section: PanelSection) => {
+const renderSectionLines = (
+  section: PanelSection,
+  env: Record<string, string | undefined>,
+) => {
   switch (section.kind) {
     case "key-value":
       return renderKeyValueRows(section.rows);
     case "command-list":
-      return renderCommandList(section.items);
+      return renderCommandList(section.items, env);
     case "steps":
       return renderStepList(section.items);
     case "paths":
@@ -254,12 +346,13 @@ const renderSectionLines = (section: PanelSection) => {
 const appendSectionLines = (
   lines: string[],
   section: PanelSection | undefined,
+  env: Record<string, string | undefined>,
 ) => {
   if (!section) {
     return;
   }
 
-  const sectionLines = renderSectionLines(section);
+  const sectionLines = renderSectionLines(section, env);
 
   if (sectionLines.length === 0) {
     return;
@@ -269,30 +362,38 @@ const appendSectionLines = (
     lines.push("");
   }
 
+  const renderedSectionLines = section.title === "Command Hints"
+    ? sectionLines.map((line) => styleCommandHintLine(line, env))
+    : sectionLines;
+
   lines.push(
-    ...toRenderableLines(section.title),
-    ...sectionLines,
+    ...toRenderableLines(section.title).map((line) => styleSectionTitleLine(line, env)),
+    ...renderedSectionLines,
   );
 };
 
-const renderCliScreen = (options: RenderSemanticPanelOptions) => {
-  const lines = toRenderableLines(options.title);
+const renderCliScreen = (
+  options: RenderSemanticPanelOptions,
+  tone: CliScreenTone,
+) => {
+  const lines = toRenderableLines(options.title)
+    .map((line) => styleTitleLine(line, tone, options.env));
 
   if (options.headline) {
-    lines.push(...toRenderableLines(options.headline));
+    lines.push(...toRenderableLines(options.headline).map((line) => styleHeadlineLine(line, options.env)));
   }
 
   for (const section of options.sections ?? []) {
-    appendSectionLines(lines, section);
+    appendSectionLines(lines, section, options.env);
   }
 
-  appendSectionLines(lines, renderDiagnosticsSection(options.diagnostics));
+  appendSectionLines(lines, renderDiagnosticsSection(options.diagnostics), options.env);
 
   if (options.commandHints && options.commandHints.length > 0) {
     appendSectionLines(lines, {
       title: "Command Hints",
-      lines: options.commandHints.map((command) => renderCommandHint(command)),
-    });
+      lines: options.commandHints.map((command) => renderCommandHint(command, options.env)),
+    }, options.env);
   }
 
   return lines.join("\n");
@@ -348,6 +449,7 @@ export const renderKeyValueRows = (rows: Array<{ key: string; value: string }>) 
 
 export const renderCommandList = (
   items: Array<{ command: string; description: string }>,
+  env?: Record<string, string | undefined>,
 ) => {
   const normalizedItems = items.map((item) => ({
     command: sanitizeRenderableText(item.command),
@@ -358,7 +460,9 @@ export const renderCommandList = (
   }, 0);
 
   return normalizedItems.map((item) => {
-    return `${padLine(item.command, commandWidth)}  ${item.description}`;
+    const paddedCommand = padLine(item.command, commandWidth);
+
+    return `${env ? styleCommandToken(paddedCommand, env) : paddedCommand}  ${item.description}`;
   });
 };
 
@@ -381,7 +485,10 @@ export const renderDiagnosticsSection = (details?: string): PanelSection | undef
   };
 };
 
-export const renderCommandHint = (command: string) => {
+export const renderCommandHint = (
+  command: string,
+  env?: Record<string, string | undefined>,
+) => {
   const commandLines = toRenderableLines(command.trim());
   const [firstLine, ...extraLines] = commandLines;
 
@@ -389,23 +496,26 @@ export const renderCommandHint = (command: string) => {
     return "$";
   }
 
-  return [`$ ${firstLine}`, ...extraLines].join("\n");
+  const renderedCommand = env ? styleCommandToken(firstLine, env) : firstLine;
+  const renderedExtraLines = extraLines.map((line) => env ? styleCommandToken(line, env) : line);
+
+  return [`$ ${renderedCommand}`, ...renderedExtraLines].join("\n");
 };
 
 export const renderRuntimePanel = (options: RenderSemanticPanelOptions) => {
-  return renderCliScreen(options);
+  return renderCliScreen(options, "neutral");
 };
 
 export const renderSuccessPanel = (options: RenderSemanticPanelOptions) => {
-  return renderCliScreen(options);
+  return renderCliScreen(options, "success");
 };
 
 export const renderWarningPanel = (options: RenderSemanticPanelOptions) => {
-  return renderCliScreen(options);
+  return renderCliScreen(options, "warning");
 };
 
 export const renderErrorPanel = (options: RenderSemanticPanelOptions) => {
-  return renderCliScreen(options);
+  return renderCliScreen(options, "error");
 };
 
 const looksLikeRenderedScreen = (message: string) => {
@@ -416,9 +526,9 @@ const looksLikeRenderedScreen = (message: string) => {
   }
 
   const hasBlankSeparator = lines.some((line, index) => {
-    return line.trim().length === 0 && index > 0 && index < lines.length - 1;
+    return sanitizeRenderableText(line).trim().length === 0 && index > 0 && index < lines.length - 1;
   });
-  const hasSectionTitle = lines.some((line) => renderedSectionTitles.has(line.trim()));
+  const hasSectionTitle = lines.some((line) => renderedSectionTitles.has(sanitizeRenderableText(line).trim()));
 
   return hasBlankSeparator && hasSectionTitle;
 };
