@@ -433,6 +433,10 @@ const createControlChannelServicesFixture = ({
   updateStatusCardError,
   syncOutcome = createResumeOutcome("ready"),
   resumeOutcome = createResumeOutcome("ready"),
+  listThreadsData = {
+    active: [] as CodexThread[],
+    archived: [] as CodexThread[],
+  },
 }: {
   existingSession?: SessionRecord | null;
   homeDir?: string;
@@ -446,6 +450,10 @@ const createControlChannelServicesFixture = ({
   updateStatusCardError?: Error;
   syncOutcome?: SessionResumeState;
   resumeOutcome?: SessionResumeState;
+  listThreadsData?: {
+    active: CodexThread[];
+    archived: CodexThread[];
+  };
 } = {}) => {
   const config = createAppConfig();
   const db = createDatabaseClient(":memory:");
@@ -525,7 +533,7 @@ const createControlChannelServicesFixture = ({
       async listThreads(params: ThreadListParams) {
         calls.listThreads.push(params);
         return {
-          data: [],
+          data: params.archived ? listThreadsData.archived : listThreadsData.active,
           nextCursor: null,
         };
       },
@@ -1417,6 +1425,51 @@ test("/session-resume autocomplete scopes Codex threads by the stored current wo
   }
 });
 
+test("/session-resume autocomplete keeps home-relative workdir hint formatting through the service layer", async () => {
+  const homeRoot = createTestHomeRoot();
+  const cwd = join(homeRoot, "code-github/code-helm");
+  const { services } = createControlChannelServicesFixture({
+    homeDir: homeRoot,
+    listThreadsData: {
+      active: [
+        createResumePickerThread({
+          id: "codex-thread-service-1",
+          cwd,
+        }),
+      ],
+      archived: [],
+    },
+  });
+
+  try {
+    await services.setCurrentWorkdir({
+      actorId: "owner-1",
+      guildId: "guild-1",
+      channelId: "control-1",
+      path: "~/code-github/code-helm",
+    });
+
+    const choices = await services.autocompleteResumeSessions({
+      actorId: "owner-1",
+      guildId: "guild-1",
+      channelId: "control-1",
+      query: "codex",
+    });
+
+    expect(choices[0]).toEqual({
+      name: "Current workdir: ~/code-github/code-helm · Use /workdir to switch directories",
+      value: RESUME_WORKDIR_HINT_VALUE,
+    });
+    expect(choices[1]).toEqual({
+      name: expect.stringContaining("codex-thread-service-1"),
+      value: "codex-thread-service-1",
+    });
+    expect(choices).toHaveLength(2);
+  } finally {
+    rmSync(homeRoot, { recursive: true, force: true });
+  }
+});
+
 test("resume attachment resolution distinguishes reuse, reopen, rebind, and create", () => {
   expect(
     resolveResumeAttachmentKind({
@@ -1663,6 +1716,103 @@ test("/session-resume fails with No current workdir. Run /workdir first. when un
   expect(result).toEqual({
     reply: {
       content: "No current workdir. Run /workdir first.",
+      ephemeral: true,
+    },
+  });
+});
+
+test("selecting the resume workdir hint explains how to switch directories when sessions exist", async () => {
+  const { services, calls } = createControlChannelServicesFixture({
+    listThreadsData: {
+      active: [createResumePickerThread()],
+      archived: [],
+    },
+  });
+
+  await services.setCurrentWorkdir({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
+    path: defaultSessionPath,
+  });
+
+  const result = await services.resumeSession({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
+    codexThreadId: RESUME_WORKDIR_HINT_VALUE,
+  });
+
+  expect(calls.readThreadIds).toEqual([]);
+  expect(calls.createVisibleSessionThread).toEqual([]);
+  expect(calls.syncedThreads).toEqual([]);
+  expect(calls.resumedThreads).toEqual([]);
+  expect(calls.listThreads).toEqual([
+    {
+      cwd: defaultSessionPath,
+      searchTerm: null,
+      limit: 1,
+      sortKey: "updated_at",
+      archived: false,
+    },
+    {
+      cwd: defaultSessionPath,
+      searchTerm: null,
+      limit: 1,
+      sortKey: "updated_at",
+      archived: true,
+    },
+  ]);
+  expect(result).toEqual({
+    reply: {
+      content:
+        "Current workdir: `/tmp/workspace/api`. This row is only a hint and does not select a session. Run /workdir to switch directories, then choose a session below.",
+      ephemeral: true,
+    },
+  });
+});
+
+test("selecting the resume workdir hint explains when no sessions exist in the current directory", async () => {
+  const { services, calls } = createControlChannelServicesFixture();
+
+  await services.setCurrentWorkdir({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
+    path: defaultSessionPath,
+  });
+
+  const result = await services.resumeSession({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
+    codexThreadId: RESUME_WORKDIR_HINT_VALUE,
+  });
+
+  expect(calls.readThreadIds).toEqual([]);
+  expect(calls.createVisibleSessionThread).toEqual([]);
+  expect(calls.syncedThreads).toEqual([]);
+  expect(calls.resumedThreads).toEqual([]);
+  expect(calls.listThreads).toEqual([
+    {
+      cwd: defaultSessionPath,
+      searchTerm: null,
+      limit: 1,
+      sortKey: "updated_at",
+      archived: false,
+    },
+    {
+      cwd: defaultSessionPath,
+      searchTerm: null,
+      limit: 1,
+      sortKey: "updated_at",
+      archived: true,
+    },
+  ]);
+  expect(result).toEqual({
+    reply: {
+      content:
+        "Current workdir: `/tmp/workspace/api`. This row is only a hint and does not select a session. No sessions are available in this directory. Run /workdir to switch directories or use /session-new to create one here.",
       ephemeral: true,
     },
   });

@@ -3406,6 +3406,10 @@ export const formatResumeWorkdirHintChoice = ({
   };
 };
 
+const isResumeWorkdirHintValue = (value: string) => {
+  return value === RESUME_WORKDIR_HINT_VALUE;
+};
+
 const formatBootstrapThreadTitleCandidate = (value: string) => {
   const normalized = normalizeBootstrapThreadTitle(value);
 
@@ -4053,6 +4057,37 @@ export const createControlChannelServices = ({
 
       const currentWorkdir = currentWorkdirResult.cwd;
       const displayPath = formatSessionPathForDisplay(currentWorkdir, homeDir);
+
+      if (isResumeWorkdirHintValue(codexThreadId)) {
+        const listParams = {
+          cwd: currentWorkdir,
+          searchTerm: null,
+          limit: 1,
+          sortKey: "updated_at" as const,
+        };
+        const [activeThreads, archivedThreads] = await Promise.all([
+          codexClient.listThreads({
+            ...listParams,
+            archived: false,
+          }),
+          codexClient.listThreads({
+            ...listParams,
+            archived: true,
+          }),
+        ]);
+        const hasSessionsInCurrentWorkdir =
+          activeThreads.data.length > 0 || archivedThreads.data.length > 0;
+
+        return {
+          reply: {
+            content: hasSessionsInCurrentWorkdir
+              ? `Current workdir: \`${displayPath}\`. This row is only a hint and does not select a session. Run /workdir to switch directories, then choose a session below.`
+              : `Current workdir: \`${displayPath}\`. This row is only a hint and does not select a session. No sessions are available in this directory. Run /workdir to switch directories or use /session-new to create one here.`,
+            ephemeral: true,
+          },
+        };
+      }
+
       let snapshot: ThreadReadResult;
 
       try {
