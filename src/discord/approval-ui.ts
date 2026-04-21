@@ -321,6 +321,7 @@ export const renderApprovalResultLine = ({
   status,
   commandPreview,
   displayTitle = null,
+  requestKind = null,
   resolvedProviderDecision = null,
   resolvedElsewhere = false,
   resolvedBySurface = null,
@@ -328,6 +329,7 @@ export const renderApprovalResultLine = ({
   status: ApprovalState["status"];
   commandPreview: string | null;
   displayTitle?: string | null;
+  requestKind?: string | null;
   resolvedProviderDecision?: string | null;
   resolvedElsewhere?: boolean;
   resolvedBySurface?: string | null;
@@ -363,6 +365,10 @@ export const renderApprovalResultLine = ({
   }
 
   if (status === "declined") {
+    if (requestKind === "file_change" && !commandPreview) {
+      return "Declined and continuing without applying these changes.";
+    }
+
     return `Declined and continuing without it: ${summary}`;
   }
 
@@ -415,6 +421,7 @@ export const renderApprovalLifecyclePayload = ({
         status: approval.status,
         commandPreview: snapshot.commandPreview,
         displayTitle: snapshot.displayTitle,
+        requestKind: snapshot.requestKind,
         resolvedProviderDecision: snapshot.resolvedProviderDecision,
         resolvedElsewhere: snapshot.resolvedElsewhere,
         resolvedBySurface: snapshot.resolvedBySurface,

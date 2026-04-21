@@ -207,6 +207,53 @@ test("provider-backed decisions preserve structured reply payloads for object-va
   ] satisfies PersistedApprovalDecision[]);
 });
 
+test("file-change decisions use session-scope write copy when grantRoot is present", () => {
+  expect(
+    createPersistedApprovalDecisions({
+      availableDecisions: ["accept", "acceptForSession", "decline", "cancel"],
+      requestMethod: "item/fileChange/requestApproval",
+      grantRoot: "/tmp/ws1/app",
+    }),
+  ).toEqual([
+    {
+      key: "accept",
+      providerDecision: "accept",
+      label: "Yes, proceed",
+      consequence: null,
+      replyPayload: {
+        decision: "accept",
+      },
+    },
+    {
+      key: "acceptForSession",
+      providerDecision: "acceptForSession",
+      label: "Yes, allow this path for the rest of the session",
+      consequence: null,
+      replyPayload: {
+        decision: "acceptForSession",
+      },
+    },
+    {
+      key: "decline",
+      providerDecision: "decline",
+      label: "No, continue without applying these changes",
+      consequence: null,
+      replyPayload: {
+        decision: "decline",
+      },
+    },
+    {
+      key: "cancel",
+      providerDecision: "cancel",
+      label: "No, and tell Codex what to do differently",
+      consequence: null,
+      replyPayload: {
+        decision: "cancel",
+      },
+    },
+  ] satisfies PersistedApprovalDecision[]);
+});
+
 test("serverRequest/resolved signal closes the active approval UI immediately", () => {
   const approval = {
     requestId: "9",

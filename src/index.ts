@@ -145,6 +145,21 @@ import { logger } from "./logger";
 const approvalButtonPrefix = "approval";
 const approvalComponentRowLimit = 5;
 const approvalButtonLabelCharacterLimit = 80;
+const approvalDecisionCustomIdTokenByKey: Record<string, string> = {
+  accept: "a",
+  acceptForSession: "as",
+  acceptWithExecpolicyAmendment: "ae",
+  applyNetworkPolicyAmendment: "an",
+  decline: "d",
+  cancel: "c",
+};
+const approvalDecisionKeyByCustomIdToken = Object.fromEntries(
+  Object.entries(approvalDecisionCustomIdTokenByKey).map(([decisionKey, token]) => [
+    token,
+    decisionKey,
+  ]),
+) as Record<string, string>;
+
 type WorkdirConfig = {
   id: string;
   label: string;
@@ -2298,15 +2313,11 @@ const synthesizeApprovalDecisionPayloads = ({
         decision: "accept",
         replyPayload: { decision: "accept" },
       },
-    ];
-    const grantRoot = readApprovalEventStringFromCandidates(event, "grantRoot", "grant_root");
-
-    if (grantRoot) {
-      decisions.push({
+      {
         decision: "acceptForSession",
         replyPayload: { decision: "acceptForSession" },
-      });
-    }
+      },
+    ];
 
     decisions.push(
       {
@@ -2412,6 +2423,7 @@ const extractApprovalDecisionCatalogFromRequest = ({
   return JSON.stringify(createPersistedApprovalDecisions({
     availableDecisions: decisionPayloads,
     requestMethod: method,
+    grantRoot: readApprovalEventStringFromCandidates(event, "grantRoot", "grant_root"),
   }));
 };
 
@@ -2588,7 +2600,10 @@ export const persistApprovalRequestSnapshot = ({
 };
 
 const buildApprovalCustomId = (approvalKey: string, decisionKey: string) => {
-  return `${approvalButtonPrefix}|${encodeURIComponent(approvalKey)}|${encodeURIComponent(decisionKey)}`;
+  const decisionToken = approvalDecisionCustomIdTokenByKey[decisionKey]
+    ?? encodeURIComponent(decisionKey);
+
+  return `${approvalButtonPrefix}|${encodeURIComponent(approvalKey)}|${decisionToken}`;
 };
 
 const parseApprovalCustomId = (customId: string) => {
@@ -2602,7 +2617,8 @@ const parseApprovalCustomId = (customId: string) => {
     return null;
   }
 
-  const decodedDecisionKey = decodeURIComponent(encodedDecisionKey);
+  const decodedDecisionKey = approvalDecisionKeyByCustomIdToken[encodedDecisionKey]
+    ?? decodeURIComponent(encodedDecisionKey);
 
   return {
     approvalKey: decodeURIComponent(encodedApprovalKey),
@@ -6568,6 +6584,7 @@ const startCodeHelmRuntime = async (
         justification: approval.justification,
         cwd: approval.cwd,
         requestKind: approval.requestKind,
+        decisionCatalog: approval.decisionCatalog,
       });
 
       if (!shouldHandlePersistedApprovalRequestAtRuntime(approval)) {

@@ -165,10 +165,10 @@ const commandDecisionLabels: Record<string, string> = {
   cancel: "No, and tell Codex what to do differently",
 };
 
-const fileChangeDecisionLabels: Record<string, string> = {
+const defaultFileChangeDecisionLabels: Record<string, string> = {
   accept: "Yes, proceed",
-  acceptForSession: "Yes, and don't ask again for these files",
-  decline: "No, continue without applying it",
+  acceptForSession: "Yes, allow file changes for the rest of the session",
+  decline: "No, continue without applying these changes",
   cancel: "No, and tell Codex what to do differently",
 };
 
@@ -179,14 +179,24 @@ const permissionsDecisionLabels: Record<string, string> = {
 };
 
 const toDecisionLabelsByMethod = (
-  requestMethod: ApprovalRequestMethod,
+  input: {
+    requestMethod: ApprovalRequestMethod;
+    grantRoot?: string | null;
+  },
 ): Record<string, string> => {
+  const { requestMethod, grantRoot } = input;
+
   if (requestMethod === "item/commandExecution/requestApproval") {
     return commandDecisionLabels;
   }
 
   if (requestMethod === "item/fileChange/requestApproval") {
-    return fileChangeDecisionLabels;
+    return {
+      ...defaultFileChangeDecisionLabels,
+      acceptForSession: grantRoot
+        ? "Yes, allow this path for the rest of the session"
+        : defaultFileChangeDecisionLabels.acceptForSession,
+    };
   }
 
   if (requestMethod === "item/permissions/requestApproval") {
@@ -206,11 +216,16 @@ const humanizeProviderDecision = (providerDecision: string) => {
 export const createPersistedApprovalDecisions = ({
   availableDecisions,
   requestMethod,
+  grantRoot,
 }: {
   availableDecisions: ReadonlyArray<ApprovalRequestDecisionPayload | string>;
   requestMethod: ApprovalRequestMethod;
+  grantRoot?: string | null;
 }) => {
-  const labelsByDecision = toDecisionLabelsByMethod(requestMethod);
+  const labelsByDecision = toDecisionLabelsByMethod({
+    requestMethod,
+    grantRoot,
+  });
   const seen = new Set<string>();
   const decisions: PersistedApprovalDecision[] = [];
 

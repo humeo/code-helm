@@ -4221,7 +4221,7 @@ test("approval interaction replays structured command approval results from the 
 
   const handled = await handleApprovalInteraction({
     interaction: {
-      customId: "approval|turn-1%3Aitem-1|acceptWithExecpolicyAmendment",
+      customId: "approval|turn-1%3Aitem-1|ae",
       user: { id: "owner-1" },
       deferUpdate: async () => {},
       reply: async () => {},
@@ -5595,6 +5595,126 @@ test("live file-change approvals synthesize real decisions and grant-root copy f
   db.close();
 });
 
+test("live file-change approvals synthesize protocol-backed decision buttons when the provider omits them", () => {
+  const db = createDatabaseClient(":memory:");
+  applyMigrations(db);
+  const sessionRepo = createSessionRepo(db);
+  const approvalRepo = createApprovalRepo(db);
+
+  sessionRepo.insert({
+    discordThreadId: "discord-thread-1",
+    codexThreadId: "codex-1",
+    ownerDiscordUserId: "owner-1",
+    cwd: "/tmp/ws1/app",
+    state: "waiting-approval",
+  });
+
+  const approval = persistApprovalRequestSnapshot({
+    approvalRepo,
+    session: createSessionRecord({
+      codexThreadId: "codex-1",
+      discordThreadId: "discord-thread-1",
+    }),
+    method: "item/fileChange/requestApproval",
+    event: {
+      requestId: "req-8b",
+      threadId: "codex-1",
+      turnId: "turn-1",
+      itemId: "call-2b",
+      reason: "command failed; retry without sandbox?",
+      grantRoot: "/tmp/ws1/app",
+      cwd: "/tmp/ws1/app",
+    },
+  });
+
+  expect(approvalRepo.getByApprovalKey("turn-1:call-2b")).toMatchObject({
+    approvalKey: "turn-1:call-2b",
+    requestId: "req-8b",
+    status: "pending",
+    justification: expect.stringContaining("command failed; retry without sandbox?"),
+    cwd: "/tmp/ws1/app",
+    requestKind: "file_change",
+    decisionCatalog: expect.stringContaining("\"acceptForSession\""),
+  });
+  const payload = renderApprovalLifecyclePayload({
+    approvalKey: approval.approvalKey,
+    approval,
+  });
+  const labels = (payload.components ?? []).flatMap((row) =>
+    row.components.map((component) =>
+      (component as { data?: { label?: string } }).data?.label ?? ""
+    ),
+  );
+
+  expect(labels).toEqual([
+    "Yes, proceed",
+    "Yes, allow this path for the rest of the session",
+    "No, continue without applying these changes",
+    "No, and tell Codex what to do differently",
+  ]);
+
+  db.close();
+});
+
+test("live file-change approvals still offer a session-scope decision when grantRoot is missing", () => {
+  const db = createDatabaseClient(":memory:");
+  applyMigrations(db);
+  const sessionRepo = createSessionRepo(db);
+  const approvalRepo = createApprovalRepo(db);
+
+  sessionRepo.insert({
+    discordThreadId: "discord-thread-1",
+    codexThreadId: "codex-1",
+    ownerDiscordUserId: "owner-1",
+    cwd: "/tmp/ws1/app",
+    state: "waiting-approval",
+  });
+
+  const approval = persistApprovalRequestSnapshot({
+    approvalRepo,
+    session: createSessionRecord({
+      codexThreadId: "codex-1",
+      discordThreadId: "discord-thread-1",
+    }),
+    method: "item/fileChange/requestApproval",
+    event: {
+      requestId: "req-8c",
+      threadId: "codex-1",
+      turnId: "turn-1",
+      itemId: "call-2c",
+      reason: "command failed; retry without sandbox?",
+    },
+  });
+
+  expect(approvalRepo.getByApprovalKey("turn-1:call-2c")).toMatchObject({
+    approvalKey: "turn-1:call-2c",
+    requestId: "req-8c",
+    status: "pending",
+    justification: "command failed; retry without sandbox?",
+    cwd: null,
+    requestKind: "file_change",
+    decisionCatalog: expect.stringContaining("\"acceptForSession\""),
+  });
+  const payload = renderApprovalLifecyclePayload({
+    approvalKey: approval.approvalKey,
+    approval,
+  });
+  const labels = (payload.components ?? []).flatMap((row) =>
+    row.components.map((component) =>
+      (component as { data?: { label?: string } }).data?.label ?? ""
+    ),
+  );
+
+  expect(labels).toEqual([
+    "Yes, proceed",
+    "Yes, allow file changes for the rest of the session",
+    "No, continue without applying these changes",
+    "No, and tell Codex what to do differently",
+  ]);
+
+  db.close();
+});
+
 test("live permissions approvals synthesize structured grant decisions from protocol-shaped events", () => {
   const db = createDatabaseClient(":memory:");
   applyMigrations(db);
@@ -5925,12 +6045,12 @@ test("approval lifecycle payload renders provider-driven thread components safel
     "Yes, and allow this host in the future",
   ]);
   expect(customIds).toEqual([
-    "approval|turn-1%3Acall-1|accept",
-    "approval|turn-1%3Acall-1|cancel",
-    "approval|turn-1%3Acall-1|acceptForSession",
-    "approval|turn-1%3Acall-1|decline",
-    "approval|turn-1%3Acall-1|acceptWithExecpolicyAmendment",
-    "approval|turn-1%3Acall-1|applyNetworkPolicyAmendment",
+    "approval|turn-1%3Acall-1|a",
+    "approval|turn-1%3Acall-1|c",
+    "approval|turn-1%3Acall-1|as",
+    "approval|turn-1%3Acall-1|d",
+    "approval|turn-1%3Acall-1|ae",
+    "approval|turn-1%3Acall-1|an",
   ]);
 });
 

@@ -28,6 +28,7 @@ const {
     status: ApprovalState["status"];
     commandPreview: string | null;
     displayTitle?: string | null;
+    requestKind?: string | null;
     resolvedProviderDecision?: string | null;
     resolvedElsewhere?: boolean;
     resolvedBySurface?: string | null;
@@ -169,6 +170,18 @@ test("decline and cancel have different terminal result copy", () => {
       resolvedElsewhere: false,
     }),
   ).toBe("Canceled. The current turn was interrupted: touch i.txt");
+});
+
+test("file-change declines without a concrete preview use file-change-specific copy", () => {
+  expect(
+    renderApprovalResultLine({
+      status: "declined",
+      commandPreview: null,
+      displayTitle: "File change approval",
+      requestKind: "file_change",
+      resolvedElsewhere: false,
+    }),
+  ).toBe("Declined and continuing without applying these changes.");
 });
 
 test("terminal approvals collapse into result lines and include codex-remote origin", () => {
