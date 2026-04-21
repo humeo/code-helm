@@ -294,9 +294,12 @@ const resolveDisplayTimeZone = (timeZone?: string) => {
   }
 };
 
+type RuntimePanelContext = "start" | "status";
+
 const renderRuntimeStatusOutput = (
   runtime: RuntimeSummary | undefined,
   options: {
+    context: RuntimePanelContext;
     env: Record<string, string | undefined>;
     stateDir: string;
     timeZone?: string;
@@ -328,10 +331,11 @@ const renderRuntimeStatusOutput = (
     });
   }
 
-  const nextSteps = [
-    `codex --remote ${runtime.codex.appServerAddress}`,
-    "code-helm status",
-  ];
+  const nextSteps = [`codex --remote ${runtime.codex.appServerAddress}`];
+
+  if (options.context !== "status") {
+    nextSteps.push("code-helm status");
+  }
 
   if (runtime.mode === "background") {
     nextSteps.push("code-helm stop");
@@ -960,6 +964,7 @@ export const runCliCommand = async (
       if (runtime) {
         return {
           output: renderRuntimeStatusOutput(runtime, {
+            context: "start",
             env: services.env,
             stateDir: store.paths.stateDir,
             timeZone: services.env.TZ,
@@ -975,6 +980,7 @@ export const runCliCommand = async (
         const backgroundRuntime = await startInBackground(configuredStore, services);
         return {
           output: renderRuntimeStatusOutput(backgroundRuntime, {
+            context: "start",
             env: services.env,
             stateDir: configuredStore.paths.stateDir,
             timeZone: services.env.TZ,
@@ -1024,6 +1030,7 @@ export const runCliCommand = async (
 
       return {
         output: renderRuntimeStatusOutput(foregroundRuntime, {
+          context: "start",
           env: services.env,
           stateDir: configuredStore.paths.stateDir,
           timeZone: services.env.TZ,
@@ -1035,6 +1042,7 @@ export const runCliCommand = async (
     case "status":
       return {
         output: renderRuntimeStatusOutput(runtime, {
+          context: "status",
           env: services.env,
           stateDir: store.paths.stateDir,
           timeZone: services.env.TZ,

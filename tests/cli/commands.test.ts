@@ -380,6 +380,7 @@ describe("runCliCommand", () => {
     expect(result.output).not.toContain("Time Zone");
     expect(result.output).not.toContain("Runtime State");
     expect(result.output).toContain("codex --remote ws://127.0.0.1:4200");
+    expect(result.output).toContain("code-helm status");
     expect(result.output).toContain("already active");
     expect(result.output).not.toContain("CodeHelm running\nMode:");
   });
@@ -470,6 +471,7 @@ describe("runCliCommand", () => {
     expect(result.output).toMatch(/Started\s+/);
     expect(result.output).toMatch(/PID\s+\d+/);
     expect(result.output).toContain("codex --remote ws://127.0.0.1:4100");
+    expect(result.output).toContain("code-helm status");
     expect(result.output).not.toContain("code-helm stop");
     expect(result.output).toContain("Ctrl+C");
     expect(result.output).not.toContain("CodeHelm running\nMode:");
@@ -654,6 +656,7 @@ describe("runCliCommand", () => {
     expect(result.output).toMatch(/Started\s+/);
     expect(result.output).toMatch(/PID\s+\d+/);
     expect(result.output).toContain("codex --remote ws://127.0.0.1:4100");
+    expect(result.output).toContain("code-helm status");
     expect(result.output).toContain("code-helm stop");
     expect(result.output).not.toContain("CodeHelm running\nMode:");
     expect(spawnedEnv?.CODE_HELM_CONFIG).toBeTruthy();
@@ -775,6 +778,7 @@ describe("runCliCommand", () => {
     expect(result.output).toMatch(/PID\s+2222/);
     expect(result.output).toContain("ws://127.0.0.1:4400");
     expect(result.output).toContain("codex --remote ws://127.0.0.1:4400");
+    expect(result.output).not.toContain("code-helm status");
     expect(result.output).not.toContain("code-helm stop");
     expect(result.output).not.toContain("Ctrl+C");
     expect(result.output).toContain("Use the terminal running this foreground process to stop it.");
