@@ -433,6 +433,7 @@ const createControlChannelServicesFixture = ({
   updateStatusCardError,
   syncOutcome = createResumeOutcome("ready"),
   resumeOutcome = createResumeOutcome("ready"),
+  listThreadsError,
   listThreadsData = {
     active: [] as CodexThread[],
     archived: [] as CodexThread[],
@@ -450,6 +451,7 @@ const createControlChannelServicesFixture = ({
   updateStatusCardError?: Error;
   syncOutcome?: SessionResumeState;
   resumeOutcome?: SessionResumeState;
+  listThreadsError?: Error;
   listThreadsData?: {
     active: CodexThread[];
     archived: CodexThread[];
@@ -532,6 +534,9 @@ const createControlChannelServicesFixture = ({
       },
       async listThreads(params: ThreadListParams) {
         calls.listThreads.push(params);
+        if (listThreadsError) {
+          throw listThreadsError;
+        }
         return {
           data: params.archived ? listThreadsData.archived : listThreadsData.active,
           nextCursor: null,
@@ -1813,6 +1818,54 @@ test("selecting the resume workdir hint explains when no sessions exist in the c
     reply: {
       content:
         "Current workdir: `/tmp/workspace/api`. This row is only a hint and does not select a session. No sessions are available in this directory. Run /workdir to switch directories or use /session-new to create one here.",
+      ephemeral: true,
+    },
+  });
+});
+
+test("selecting the resume workdir hint returns a controlled error when session probing fails", async () => {
+  const { services, calls } = createControlChannelServicesFixture({
+    listThreadsError: new Error("thread/list failed"),
+  });
+
+  await services.setCurrentWorkdir({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
+    path: defaultSessionPath,
+  });
+
+  const result = await services.resumeSession({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
+    codexThreadId: RESUME_WORKDIR_HINT_VALUE,
+  });
+
+  expect(calls.readThreadIds).toEqual([]);
+  expect(calls.createVisibleSessionThread).toEqual([]);
+  expect(calls.syncedThreads).toEqual([]);
+  expect(calls.resumedThreads).toEqual([]);
+  expect(calls.listThreads).toEqual([
+    {
+      cwd: defaultSessionPath,
+      searchTerm: null,
+      limit: 1,
+      sortKey: "updated_at",
+      archived: false,
+    },
+    {
+      cwd: defaultSessionPath,
+      searchTerm: null,
+      limit: 1,
+      sortKey: "updated_at",
+      archived: true,
+    },
+  ]);
+  expect(result).toEqual({
+    reply: {
+      content:
+        "Current workdir: `/tmp/workspace/api`. This hint row could not verify available sessions right now. Try /session-resume again or run /workdir to confirm the directory.",
       ephemeral: true,
     },
   });

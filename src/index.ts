@@ -4059,24 +4059,37 @@ export const createControlChannelServices = ({
       const displayPath = formatSessionPathForDisplay(currentWorkdir, homeDir);
 
       if (isResumeWorkdirHintValue(codexThreadId)) {
-        const listParams = {
-          cwd: currentWorkdir,
-          searchTerm: null,
-          limit: 1,
-          sortKey: "updated_at" as const,
-        };
-        const [activeThreads, archivedThreads] = await Promise.all([
-          codexClient.listThreads({
-            ...listParams,
-            archived: false,
-          }),
-          codexClient.listThreads({
-            ...listParams,
-            archived: true,
-          }),
-        ]);
-        const hasSessionsInCurrentWorkdir =
-          activeThreads.data.length > 0 || archivedThreads.data.length > 0;
+        let hasSessionsInCurrentWorkdir: boolean;
+
+        try {
+          const listParams = {
+            cwd: currentWorkdir,
+            searchTerm: null,
+            limit: 1,
+            sortKey: "updated_at" as const,
+          };
+          const [activeThreads, archivedThreads] = await Promise.all([
+            codexClient.listThreads({
+              ...listParams,
+              archived: false,
+            }),
+            codexClient.listThreads({
+              ...listParams,
+              archived: true,
+            }),
+          ]);
+          hasSessionsInCurrentWorkdir =
+            activeThreads.data.length > 0 || archivedThreads.data.length > 0;
+        } catch {
+          return {
+            reply: {
+              content:
+                `Current workdir: \`${displayPath}\`. This hint row could not verify ` +
+                "available sessions right now. Try /session-resume again or run /workdir to confirm the directory.",
+              ephemeral: true,
+            },
+          };
+        }
 
         return {
           reply: {
