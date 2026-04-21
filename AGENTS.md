@@ -9,17 +9,18 @@ Core runtime code lives in [`src/`](/Users/koltenluca/code-github/code-helm/src)
 - `src/db/` holds migrations, SQLite client setup, and repos.
 - `src/domain/` contains product rules such as session ownership and approval semantics.
 
-Tests mirror runtime areas under [`tests/`](/Users/koltenluca/code-github/code-helm/tests). Design docs and plans live in [`docs/superpowers/specs/`](/Users/koltenluca/code-github/code-helm/docs/superpowers/specs) and [`docs/superpowers/plans/`](/Users/koltenluca/code-github/code-helm/docs/superpowers/plans).
+Tests mirror runtime areas under [`tests/`](/Users/koltenluca/code-github/code-helm/tests). User-facing docs live under [`docs/`](/Users/koltenluca/code-github/code-helm/docs), including setup and demo-support guides such as [`docs/discord-bot-setup.md`](/Users/koltenluca/code-github/code-helm/docs/discord-bot-setup.md) and [`docs/demo-storyboard.md`](/Users/koltenluca/code-github/code-helm/docs/demo-storyboard.md). Design docs and plans live in [`docs/superpowers/specs/`](/Users/koltenluca/code-github/code-helm/docs/superpowers/specs) and [`docs/superpowers/plans/`](/Users/koltenluca/code-github/code-helm/docs/superpowers/plans).
 
 ## Build, Test, and Development Commands
 
+- `bun install` installs dependencies and is the only supported lockfile workflow for this repo.
 - `bun run dev` starts the local daemon from `src/index.ts`.
-- `bun run migrate` applies SQLite migrations using the current `.env`.
+- `bun run migrate` applies SQLite migrations using the current environment/config overrides.
 - `bun test` runs the full Bun test suite.
 - `bun test tests/index.test.ts` runs a focused test file during iteration.
 - `bun run typecheck` runs `tsc --noEmit`.
 
-Use Bun for all TypeScript and JavaScript work in this repository.
+Use Bun for all TypeScript and JavaScript work in this repository. Do not add or regenerate `package-lock.json`; dependency lock state lives in [`bun.lock`](/Users/koltenluca/code-github/code-helm/bun.lock).
 
 ## Coding Style & Naming Conventions
 
@@ -54,7 +55,7 @@ PRs should include:
 
 ## Security & Configuration Tips
 
-Never commit real bot tokens or `.env` secrets. `WORKDIRS_JSON` paths must stay under `WORKSPACE_ROOT`; keep test data in isolated directories such as `code-agent-helm-example/.codehelm/`.
+Never commit real bot tokens or `.env` secrets. Normal user setup should go through `code-helm onboard`; handwritten env overrides are for development, troubleshooting, and legacy compatibility only. `WORKDIRS_JSON` paths must stay under `WORKSPACE_ROOT`; keep test data in isolated directories such as `code-agent-helm-example/.codehelm/`.
 
 When restarting an independent `agent-browser` session, keep all browser state rooted under `/Users/koltenluca/code-github/code-agent-helm-example`. That includes `HOME`, `XDG_CACHE_HOME`, the persistent `--profile` directory, and screenshot/artifact paths (for example `.agent-browser-home`, `.agent-browser-home/.cache`, `.agent-browser-profile`, and `.agent-browser-artifacts`). Reuse the same `--session` and `--session-name` when you need Discord login state to persist; `HOME` and cache alone are not sufficient.
 
