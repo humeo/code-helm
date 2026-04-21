@@ -65,6 +65,8 @@ import {
   upsertStreamingTranscriptMessage,
   buildResumeSessionAutocompleteChoices,
   describeCodexThreadStatus,
+  formatResumeWorkdirHintChoice,
+  RESUME_WORKDIR_HINT_VALUE,
   resolveLegacyWorkspaceBootstrap,
   type EditableStatusCardMessage,
   findReusableStatusCardMessage,
@@ -431,6 +433,11 @@ const createControlChannelServicesFixture = ({
   updateStatusCardError,
   syncOutcome = createResumeOutcome("ready"),
   resumeOutcome = createResumeOutcome("ready"),
+  listThreadsError,
+  listThreadsData = {
+    active: [] as CodexThread[],
+    archived: [] as CodexThread[],
+  },
 }: {
   existingSession?: SessionRecord | null;
   homeDir?: string;
@@ -444,6 +451,11 @@ const createControlChannelServicesFixture = ({
   updateStatusCardError?: Error;
   syncOutcome?: SessionResumeState;
   resumeOutcome?: SessionResumeState;
+  listThreadsError?: Error;
+  listThreadsData?: {
+    active: CodexThread[];
+    archived: CodexThread[];
+  };
 } = {}) => {
   const config = createAppConfig();
   const db = createDatabaseClient(":memory:");
@@ -522,8 +534,11 @@ const createControlChannelServicesFixture = ({
       },
       async listThreads(params: ThreadListParams) {
         calls.listThreads.push(params);
+        if (listThreadsError) {
+          throw listThreadsError;
+        }
         return {
-          data: [],
+          data: params.archived ? listThreadsData.archived : listThreadsData.active,
           nextCursor: null,
         };
       },
@@ -758,7 +773,29 @@ test("resume picker threads sort by normalized provider timestamps", () => {
   ]);
 });
 
-test("resume session autocomplete pipeline scopes threads, sorts them, formats labels, and truncates to 25", async () => {
+test("resume workdir hint choice uses the sentinel value and fixed copy", () => {
+  expect(formatResumeWorkdirHintChoice({
+    cwd: "/Users/tester/code-github/code-helm",
+    homeDir: "/Users/tester",
+  })).toEqual({
+    name: "Current workdir: ~/code-github/code-helm · Use /workdir to switch directories",
+    value: RESUME_WORKDIR_HINT_VALUE,
+  });
+});
+
+test("resume workdir hint choice truncates only the path segment to fit Discord limits", () => {
+  const choice = formatResumeWorkdirHintChoice({
+    cwd: "/Users/tester/code-github/projects/clients/acme/platforms/code-agent-helm-example",
+    homeDir: "/Users/tester",
+  });
+
+  expect(choice.value).toBe(RESUME_WORKDIR_HINT_VALUE);
+  expect(choice.name.length).toBeLessThanOrEqual(100);
+  expect(choice.name.startsWith("Current workdir: ")).toBe(true);
+  expect(choice.name.endsWith(" · Use /workdir to switch directories")).toBe(true);
+});
+
+test("resume session autocomplete pipeline prepends the workdir hint row and caps real sessions at 24", async () => {
   const baseTimestamp = 1_700_000_000_000;
   const calls: Array<Record<string, unknown>> = [];
   const activeThreads = Array.from({ length: 13 }, (_, index) =>
@@ -804,6 +841,7 @@ test("resume session autocomplete pipeline scopes threads, sorts them, formats l
     } as never,
     query: "  plan  ",
     cwd: defaultSessionPath,
+    homeDir: "/Users/tester",
     now: baseTimestamp + 7_200_000,
   });
 
@@ -824,10 +862,37 @@ test("resume session autocomplete pipeline scopes threads, sorts them, formats l
     },
   ]);
   expect(choices).toHaveLength(25);
-  expect(choices[0]?.value).toBe("codex-thread-12345678901");
-  expect(choices[0]?.name.length).toBeLessThanOrEqual(100);
-  expect(choices[0]?.name.endsWith(" · codex-thread-12345678901")).toBe(true);
-  expect(choices.at(-1)?.value).toBe("codex-thread-02");
+  expect(choices[0]).toEqual({
+    name: "Current workdir: /tmp/workspace/api · Use /workdir to switch directories",
+    value: RESUME_WORKDIR_HINT_VALUE,
+  });
+  expect(choices[1]?.value).toBe("codex-thread-12345678901");
+  expect(choices[1]?.name.length).toBeLessThanOrEqual(100);
+  expect(choices[1]?.name.endsWith(" · codex-thread-12345678901")).toBe(true);
+  expect(choices.at(-1)?.value).toBe("codex-thread-03");
+});
+
+test("resume session autocomplete keeps the workdir hint row even when no sessions match", async () => {
+  const choices = await buildResumeSessionAutocompleteChoices({
+    codexClient: {
+      async listThreads() {
+        return {
+          data: [],
+          nextCursor: null,
+        };
+      },
+    } as never,
+    query: "focused search",
+    cwd: defaultSessionPath,
+    homeDir: "/Users/tester",
+  });
+
+  expect(choices).toEqual([
+    {
+      name: "Current workdir: /tmp/workspace/api · Use /workdir to switch directories",
+      value: RESUME_WORKDIR_HINT_VALUE,
+    },
+  ]);
 });
 
 test("resume session autocomplete labels include updated time, preview or name, and the full thread id when it fits", () => {
@@ -1365,6 +1430,51 @@ test("/session-resume autocomplete scopes Codex threads by the stored current wo
   }
 });
 
+test("/session-resume autocomplete keeps home-relative workdir hint formatting through the service layer", async () => {
+  const homeRoot = createTestHomeRoot();
+  const cwd = join(homeRoot, "code-github/code-helm");
+  const { services } = createControlChannelServicesFixture({
+    homeDir: homeRoot,
+    listThreadsData: {
+      active: [
+        createResumePickerThread({
+          id: "codex-thread-service-1",
+          cwd,
+        }),
+      ],
+      archived: [],
+    },
+  });
+
+  try {
+    await services.setCurrentWorkdir({
+      actorId: "owner-1",
+      guildId: "guild-1",
+      channelId: "control-1",
+      path: "~/code-github/code-helm",
+    });
+
+    const choices = await services.autocompleteResumeSessions({
+      actorId: "owner-1",
+      guildId: "guild-1",
+      channelId: "control-1",
+      query: "codex",
+    });
+
+    expect(choices[0]).toEqual({
+      name: "Current workdir: ~/code-github/code-helm · Use /workdir to switch directories",
+      value: RESUME_WORKDIR_HINT_VALUE,
+    });
+    expect(choices[1]).toEqual({
+      name: expect.stringContaining("codex-thread-service-1"),
+      value: "codex-thread-service-1",
+    });
+    expect(choices).toHaveLength(2);
+  } finally {
+    rmSync(homeRoot, { recursive: true, force: true });
+  }
+});
+
 test("resume attachment resolution distinguishes reuse, reopen, rebind, and create", () => {
   expect(
     resolveResumeAttachmentKind({
@@ -1611,6 +1721,151 @@ test("/session-resume fails with No current workdir. Run /workdir first. when un
   expect(result).toEqual({
     reply: {
       content: "No current workdir. Run /workdir first.",
+      ephemeral: true,
+    },
+  });
+});
+
+test("selecting the resume workdir hint explains how to switch directories when sessions exist", async () => {
+  const { services, calls } = createControlChannelServicesFixture({
+    listThreadsData: {
+      active: [createResumePickerThread()],
+      archived: [],
+    },
+  });
+
+  await services.setCurrentWorkdir({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
+    path: defaultSessionPath,
+  });
+
+  const result = await services.resumeSession({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
+    codexThreadId: RESUME_WORKDIR_HINT_VALUE,
+  });
+
+  expect(calls.readThreadIds).toEqual([]);
+  expect(calls.createVisibleSessionThread).toEqual([]);
+  expect(calls.syncedThreads).toEqual([]);
+  expect(calls.resumedThreads).toEqual([]);
+  expect(calls.listThreads).toEqual([
+    {
+      cwd: defaultSessionPath,
+      searchTerm: null,
+      limit: 1,
+      sortKey: "updated_at",
+      archived: false,
+    },
+    {
+      cwd: defaultSessionPath,
+      searchTerm: null,
+      limit: 1,
+      sortKey: "updated_at",
+      archived: true,
+    },
+  ]);
+  expect(result).toEqual({
+    reply: {
+      content:
+        "Current workdir: `/tmp/workspace/api`. This row is only a hint and does not select a session. Run /workdir to switch directories, then choose a session below.",
+      ephemeral: true,
+    },
+  });
+});
+
+test("selecting the resume workdir hint explains when no sessions exist in the current directory", async () => {
+  const { services, calls } = createControlChannelServicesFixture();
+
+  await services.setCurrentWorkdir({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
+    path: defaultSessionPath,
+  });
+
+  const result = await services.resumeSession({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
+    codexThreadId: RESUME_WORKDIR_HINT_VALUE,
+  });
+
+  expect(calls.readThreadIds).toEqual([]);
+  expect(calls.createVisibleSessionThread).toEqual([]);
+  expect(calls.syncedThreads).toEqual([]);
+  expect(calls.resumedThreads).toEqual([]);
+  expect(calls.listThreads).toEqual([
+    {
+      cwd: defaultSessionPath,
+      searchTerm: null,
+      limit: 1,
+      sortKey: "updated_at",
+      archived: false,
+    },
+    {
+      cwd: defaultSessionPath,
+      searchTerm: null,
+      limit: 1,
+      sortKey: "updated_at",
+      archived: true,
+    },
+  ]);
+  expect(result).toEqual({
+    reply: {
+      content:
+        "Current workdir: `/tmp/workspace/api`. This row is only a hint and does not select a session. No sessions are available in this directory. Run /workdir to switch directories or use /session-new to create one here.",
+      ephemeral: true,
+    },
+  });
+});
+
+test("selecting the resume workdir hint returns a controlled error when session probing fails", async () => {
+  const { services, calls } = createControlChannelServicesFixture({
+    listThreadsError: new Error("thread/list failed"),
+  });
+
+  await services.setCurrentWorkdir({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
+    path: defaultSessionPath,
+  });
+
+  const result = await services.resumeSession({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
+    codexThreadId: RESUME_WORKDIR_HINT_VALUE,
+  });
+
+  expect(calls.readThreadIds).toEqual([]);
+  expect(calls.createVisibleSessionThread).toEqual([]);
+  expect(calls.syncedThreads).toEqual([]);
+  expect(calls.resumedThreads).toEqual([]);
+  expect(calls.listThreads).toEqual([
+    {
+      cwd: defaultSessionPath,
+      searchTerm: null,
+      limit: 1,
+      sortKey: "updated_at",
+      archived: false,
+    },
+    {
+      cwd: defaultSessionPath,
+      searchTerm: null,
+      limit: 1,
+      sortKey: "updated_at",
+      archived: true,
+    },
+  ]);
+  expect(result).toEqual({
+    reply: {
+      content:
+        "Current workdir: `/tmp/workspace/api`. This hint row could not verify available sessions right now. Try /session-resume again or run /workdir to confirm the directory.",
       ephemeral: true,
     },
   });
