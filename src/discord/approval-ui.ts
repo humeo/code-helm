@@ -205,6 +205,14 @@ const toRemoteDecisionText = ({
       return "approved for this session";
     }
 
+    if (resolvedProviderDecision === "acceptWithExecpolicyAmendment") {
+      return "approved and saved for future matching commands";
+    }
+
+    if (resolvedProviderDecision === "applyNetworkPolicyAmendment") {
+      return "approved and applied the network rule";
+    }
+
     return "approved";
   }
 

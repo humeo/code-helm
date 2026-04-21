@@ -33,6 +33,7 @@ import {
 import {
   approvalRequestMethods,
   getApprovalRequestDecisionPayloads,
+  type ApprovalRequestDecisionPayload,
   type ApprovalRequestMethod,
 } from "./codex/protocol-types";
 import type {
@@ -1260,6 +1261,8 @@ const parseStoredApprovalDecisions = (
           || candidate.consequence === null
             ? candidate.consequence
             : null,
+        replyPayload:
+          candidate.replyPayload !== undefined ? candidate.replyPayload : undefined,
       } satisfies PersistedApprovalDecision];
     });
   } catch {
@@ -2132,6 +2135,240 @@ const normalizeApprovalCommandPreview = (value: string | null) => {
   return unwrapQuotedShellCommand(remainder) ?? value;
 };
 
+const readApprovalEventRecord = (
+  event: ApprovalRequestEvent,
+  key: string,
+) => {
+  const value = event[key];
+
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+};
+
+const formatApprovalInlineCodeList = (values: string[]) => {
+  return values.map((value) => `\`${value}\``).join(", ");
+};
+
+const readStringArray = (value: unknown) => {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
+    : [];
+};
+
+const collectPermissionSummaryLines = (profile: unknown) => {
+  const permissionProfile =
+    profile && typeof profile === "object" && !Array.isArray(profile)
+      ? profile as Record<string, unknown>
+      : null;
+
+  if (!permissionProfile) {
+    return [];
+  }
+
+  const lines: string[] = [];
+  const network = permissionProfile.network;
+
+  if (network && typeof network === "object" && !Array.isArray(network)) {
+    const enabled = (network as Record<string, unknown>).enabled;
+
+    if (enabled === true) {
+      lines.push("Network access");
+    }
+  }
+
+  const fileSystem = permissionProfile.fileSystem;
+
+  if (fileSystem && typeof fileSystem === "object" && !Array.isArray(fileSystem)) {
+    const readPaths = readStringArray((fileSystem as Record<string, unknown>).read);
+    const writePaths = readStringArray((fileSystem as Record<string, unknown>).write);
+
+    if (readPaths.length > 0) {
+      lines.push(`Read: ${formatApprovalInlineCodeList(readPaths)}`);
+    }
+
+    if (writePaths.length > 0) {
+      lines.push(`Write: ${formatApprovalInlineCodeList(writePaths)}`);
+    }
+  }
+
+  return lines;
+};
+
+const toGrantedPermissionProfile = (profile: unknown) => {
+  const permissionProfile =
+    profile && typeof profile === "object" && !Array.isArray(profile)
+      ? profile as Record<string, unknown>
+      : null;
+
+  if (!permissionProfile) {
+    return {};
+  }
+
+  const granted: Record<string, unknown> = {};
+  const network = permissionProfile.network;
+
+  if (network && typeof network === "object" && !Array.isArray(network)) {
+    const enabled = (network as Record<string, unknown>).enabled;
+
+    if (enabled === true) {
+      granted.network = { enabled: true };
+    }
+  }
+
+  const fileSystem = permissionProfile.fileSystem;
+
+  if (fileSystem && typeof fileSystem === "object" && !Array.isArray(fileSystem)) {
+    const readPaths = readStringArray((fileSystem as Record<string, unknown>).read);
+    const writePaths = readStringArray((fileSystem as Record<string, unknown>).write);
+    const nextFileSystem: Record<string, unknown> = {};
+
+    if (readPaths.length > 0) {
+      nextFileSystem.read = readPaths;
+    }
+
+    if (writePaths.length > 0) {
+      nextFileSystem.write = writePaths;
+    }
+
+    if (Object.keys(nextFileSystem).length > 0) {
+      granted.fileSystem = nextFileSystem;
+    }
+  }
+
+  return granted;
+};
+
+const buildApprovalJustificationFromRequest = ({
+  method,
+  event,
+}: {
+  method: ApprovalRequestMethod;
+  event: ApprovalRequestEvent;
+}) => {
+  const lines: string[] = [];
+  const reason = readApprovalEventStringFromCandidates(event, "justification", "reason");
+
+  if (reason) {
+    lines.push(reason);
+  }
+
+  if (method === "item/commandExecution/requestApproval") {
+    const networkApprovalContext = readApprovalEventRecord(event, "networkApprovalContext");
+    const host =
+      typeof networkApprovalContext?.host === "string" ? networkApprovalContext.host : null;
+    const protocol =
+      typeof networkApprovalContext?.protocol === "string"
+        ? networkApprovalContext.protocol
+        : null;
+
+    if (host && protocol) {
+      lines.push(`Network target: \`${host}\` (${protocol})`);
+    }
+
+    lines.push(...collectPermissionSummaryLines(readApprovalEventRecord(event, "additionalPermissions")));
+  }
+
+  if (method === "item/fileChange/requestApproval") {
+    const grantRoot = readApprovalEventStringFromCandidates(event, "grantRoot", "grant_root");
+
+    if (grantRoot) {
+      lines.push(`Session write scope: \`${grantRoot}\``);
+    }
+  }
+
+  if (method === "item/permissions/requestApproval") {
+    lines.push(...collectPermissionSummaryLines(readApprovalEventRecord(event, "permissions")));
+  }
+
+  return lines.length > 0 ? lines.join("\n") : null;
+};
+
+const synthesizeApprovalDecisionPayloads = ({
+  method,
+  event,
+}: {
+  method: ApprovalRequestMethod;
+  event: ApprovalRequestEvent;
+}) => {
+  if (method === "item/fileChange/requestApproval") {
+    const decisions: ApprovalRequestDecisionPayload[] = [
+      {
+        decision: "accept",
+        replyPayload: { decision: "accept" },
+      },
+    ];
+    const grantRoot = readApprovalEventStringFromCandidates(event, "grantRoot", "grant_root");
+
+    if (grantRoot) {
+      decisions.push({
+        decision: "acceptForSession",
+        replyPayload: { decision: "acceptForSession" },
+      });
+    }
+
+    decisions.push(
+      {
+        decision: "decline",
+        replyPayload: { decision: "decline" },
+      },
+      {
+        decision: "cancel",
+        replyPayload: { decision: "cancel" },
+      },
+    );
+    return decisions;
+  }
+
+  if (method === "item/permissions/requestApproval") {
+    const grantedPermissions = toGrantedPermissionProfile(
+      readApprovalEventRecord(event, "permissions"),
+    );
+
+    return [
+      {
+        decision: "accept",
+        replyPayload: {
+          permissions: grantedPermissions,
+          scope: "turn",
+        },
+      },
+      {
+        decision: "acceptForSession",
+        replyPayload: {
+          permissions: grantedPermissions,
+          scope: "session",
+        },
+      },
+      {
+        decision: "decline",
+        replyPayload: {
+          permissions: {},
+          scope: "turn",
+        },
+      },
+    ] satisfies ApprovalRequestDecisionPayload[];
+  }
+
+  return null;
+};
+
+const getApprovalDecisionPayloadsForRequest = ({
+  method,
+  event,
+}: {
+  method: ApprovalRequestMethod;
+  event: ApprovalRequestEvent;
+}) => {
+  const offeredDecisionPayloads = getApprovalRequestDecisionPayloads(event);
+
+  if (offeredDecisionPayloads !== null) {
+    return offeredDecisionPayloads;
+  }
+
+  return synthesizeApprovalDecisionPayloads({ method, event });
+};
+
 const extractApprovalSnapshotFromRequest = ({
   method,
   event,
@@ -2149,7 +2386,7 @@ const extractApprovalSnapshotFromRequest = ({
           readApprovalEventStringFromCandidates(event, "command", "cmd"),
         )
         : null,
-    justification: readApprovalEventStringFromCandidates(event, "justification", "reason"),
+    justification: buildApprovalJustificationFromRequest({ method, event }),
     cwd: readApprovalEventString(event, "cwd"),
     requestKind,
   };
@@ -2162,7 +2399,10 @@ const extractApprovalDecisionCatalogFromRequest = ({
   method: ApprovalRequestMethod;
   event: ApprovalRequestEvent;
 }) => {
-  const decisionPayloads = getApprovalRequestDecisionPayloads(event);
+  const decisionPayloads = getApprovalDecisionPayloadsForRequest({
+    method,
+    event,
+  });
 
   if (decisionPayloads === null) {
     return null;
@@ -2392,6 +2632,7 @@ const resolveApprovalInteractionDecision = ({
 }): {
   providerDecision: string;
   status: ApprovalStatus;
+  replyPayload: unknown;
 } | null => {
   const persistedDecisions = parseStoredApprovalDecisions(approval.decisionCatalog);
   const persistedDecision = persistedDecisions?.find(
@@ -2412,6 +2653,7 @@ const resolveApprovalInteractionDecision = ({
   return {
     providerDecision,
     status: approvalDecisionStatus(providerDecision),
+    replyPayload: persistedDecision?.replyPayload ?? { decision: providerDecision },
   };
 };
 
@@ -4766,7 +5008,7 @@ export const handleApprovalInteraction = async ({
     });
     await client.replyToServerRequest({
       requestId: providerRequestId,
-      decision: nextDecision.providerDecision,
+      result: nextDecision.replyPayload,
     });
     approvalRepo.insert({
       approvalKey: approvalRecord.approvalKey,

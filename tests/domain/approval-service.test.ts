@@ -152,12 +152,57 @@ test("provider-backed decisions preserve offered order and labels", () => {
       providerDecision: "accept",
       label: "Yes, proceed",
       consequence: null,
+      replyPayload: {
+        decision: "accept",
+      },
     },
     {
       key: "cancel",
       providerDecision: "cancel",
       label: "No, and tell Codex what to do differently",
       consequence: null,
+      replyPayload: {
+        decision: "cancel",
+      },
+    },
+  ] satisfies PersistedApprovalDecision[]);
+});
+
+test("provider-backed decisions preserve structured reply payloads for object-valued command decisions", () => {
+  expect(
+    createPersistedApprovalDecisions({
+      availableDecisions: [
+        {
+          decision: "acceptWithExecpolicyAmendment",
+          label: "Yes, proceed and save this decision for this command policy",
+          replyPayload: {
+            decision: {
+              acceptWithExecpolicyAmendment: {
+                execpolicy_amendment: {
+                  commandPattern: "^bun test$",
+                },
+              },
+            },
+          },
+        },
+      ],
+      requestMethod: "item/commandExecution/requestApproval",
+    }),
+  ).toEqual([
+    {
+      key: "acceptWithExecpolicyAmendment",
+      providerDecision: "acceptWithExecpolicyAmendment",
+      label: "Yes, proceed and save this decision for this command policy",
+      consequence: null,
+      replyPayload: {
+        decision: {
+          acceptWithExecpolicyAmendment: {
+            execpolicy_amendment: {
+              commandPattern: "^bun test$",
+            },
+          },
+        },
+      },
     },
   ] satisfies PersistedApprovalDecision[]);
 });
