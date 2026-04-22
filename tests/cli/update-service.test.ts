@@ -2,8 +2,6 @@ import { afterEach, describe, expect, test } from "bun:test";
 import {
   mkdirSync,
   mkdtempSync,
-  realpathSync,
-  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -128,31 +126,28 @@ describe("resolveInstalledPackageManager", () => {
     });
   });
 
-  test("detects bun installs from the global bun executable path by resolving back to the package root", () => {
-    const tempRoot = createTempDir();
-    const packageRoot = join(
-      tempRoot,
-      ".bun",
-      "install",
-      "global",
-      "node_modules",
-      "code-helm",
-    );
-    const executableTarget = join(packageRoot, "bin", "code-helm");
-    const executablePath = join(tempRoot, ".bun", "bin", "code-helm");
+  test("returns unknown for bun-shaped near-miss package roots", () => {
+    const packageRoot =
+      "/tmp/not-global/.bun/install/global/node_modules/code-helm";
 
-    writeJson(join(packageRoot, "package.json"), {
-      name: "code-helm",
-      version: "0.2.0",
+    const result = resolveInstalledPackageManager({ packageRoot });
+
+    expect(result).toEqual({
+      kind: "unknown",
+      command: undefined,
+      packageRoot,
     });
-    mkdirSync(dirname(executableTarget), { recursive: true });
-    writeFileSync(executableTarget, "#!/usr/bin/env node\n");
-    mkdirSync(dirname(executablePath), { recursive: true });
-    symlinkSync(executableTarget, executablePath);
+  });
+
+  test("detects bun installs from the global bun executable path when the resolved realpath is canonical", () => {
+    const executablePath = "/Users/example/.bun/bin/code-helm";
+    const resolvedPackageRoot =
+      "/Users/example/.bun/install/global/node_modules/code-helm";
+    const resolvedExecutablePath = `${resolvedPackageRoot}/bin/code-helm`;
 
     const result = resolveInstalledPackageManager({
       executablePath,
-      resolveRealPath: realpathSync,
+      resolveRealPath: () => resolvedExecutablePath,
     });
 
     expect(result).toEqual({
@@ -160,7 +155,7 @@ describe("resolveInstalledPackageManager", () => {
       command: ["bun", "add", "-g", "code-helm@latest"],
       executableName: "bun",
       executablePath,
-      packageRoot: realpathSync(packageRoot),
+      packageRoot: resolvedPackageRoot,
     });
   });
 

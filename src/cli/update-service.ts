@@ -69,15 +69,19 @@ const buildInstallCommand = (
 const resolvePackageManagerFromPackageRoot = (
   packageRoot: string,
 ): PackageManagerResolution => {
+  const canonicalBunGlobalPackagePathPattern =
+    /^\/Users\/[^/]+\/\.bun\/install\/global\/node_modules\/code-helm$/u;
   const isCanonicalNvmGlobalPackagePath =
     /^\/Users\/[^/]+\/\.nvm\/versions\/node\/[^/]+\/lib\/node_modules\/code-helm$/u
       .test(packageRoot);
+  const isCanonicalBunGlobalPackagePath =
+    canonicalBunGlobalPackagePathPattern.test(packageRoot);
   const isCanonicalHomebrewGlobalPackagePath =
     packageRoot === `/opt/homebrew/lib/node_modules/${PACKAGE_NAME}`;
   const isCanonicalUsrLocalGlobalPackagePath =
     packageRoot === `/usr/local/lib/node_modules/${PACKAGE_NAME}`;
 
-  if (packageRoot.endsWith(`/.bun/install/global/node_modules/${PACKAGE_NAME}`)) {
+  if (isCanonicalBunGlobalPackagePath) {
     return {
       kind: "bun",
       command: buildInstallCommand("bun"),
@@ -110,14 +114,12 @@ const resolvePackageManagerFromPackageRoot = (
 };
 
 const resolveBunPackageRootFromExecutablePath = (resolvedPath: string) => {
-  const marker = `/.bun/install/global/node_modules/${PACKAGE_NAME}`;
-  const markerIndex = resolvedPath.indexOf(marker);
+  const match =
+    resolvedPath.match(
+      /^((?:\/Users\/[^/]+\/\.bun\/install\/global\/node_modules\/code-helm))(?:\/.*)?$/u,
+    );
 
-  if (markerIndex === -1) {
-    return undefined;
-  }
-
-  return resolvedPath.slice(0, markerIndex + marker.length);
+  return match?.[1];
 };
 
 export const readInstalledPackageMetadataFromPath = (packageRoot: string) => {
