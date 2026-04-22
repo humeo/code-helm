@@ -356,4 +356,83 @@ describe("checkForUpdates", () => {
       updateAvailable: false,
     });
   });
+
+  test("treats prerelease versions as older than the matching stable release", async () => {
+    const packageRoot =
+      "/Users/example/.bun/install/global/node_modules/code-helm";
+
+    const result = await checkForUpdates({
+      packageRoot,
+      fetch: async () =>
+        new Response(
+          JSON.stringify({
+            "dist-tags": {
+              latest: "1.2.3",
+            },
+          }),
+        ),
+      readPackageMetadataFromPath: () => ({
+        name: "code-helm",
+        version: "1.2.3-beta.1",
+      }),
+    });
+
+    expect(result).toEqual({
+      installedVersion: "1.2.3-beta.1",
+      latestVersion: "1.2.3",
+      packageManager: {
+        kind: "bun",
+        command: ["bun", "add", "-g", "code-helm@latest"],
+        executableName: "bun",
+        packageRoot,
+      },
+      updateAvailable: true,
+    });
+  });
+
+  test("rejects when the installed version is not valid semver", async () => {
+    const packageRoot =
+      "/Users/example/.bun/install/global/node_modules/code-helm";
+
+    await expect(
+      checkForUpdates({
+        packageRoot,
+        fetch: async () =>
+          new Response(
+            JSON.stringify({
+              "dist-tags": {
+                latest: "1.2.3",
+              },
+            }),
+          ),
+        readPackageMetadataFromPath: () => ({
+          name: "code-helm",
+          version: "wat",
+        }),
+      }),
+    ).rejects.toThrow("Invalid semantic version: wat");
+  });
+
+  test("rejects when the latest registry version is not valid semver", async () => {
+    const packageRoot =
+      "/Users/example/.bun/install/global/node_modules/code-helm";
+
+    await expect(
+      checkForUpdates({
+        packageRoot,
+        fetch: async () =>
+          new Response(
+            JSON.stringify({
+              "dist-tags": {
+                latest: "nope",
+              },
+            }),
+          ),
+        readPackageMetadataFromPath: () => ({
+          name: "code-helm",
+          version: "1.2.3",
+        }),
+      }),
+    ).rejects.toThrow("Invalid semantic version: nope");
+  });
 });

@@ -122,26 +122,100 @@ const resolveBunPackageRootFromExecutablePath = (resolvedPath: string) => {
   return match?.[1];
 };
 
-const compareSemanticVersions = (left: string, right: string) => {
-  const parseVersion = (value: string) => {
-    const [core] = value.split("-", 1);
-    return core.split(".").map((part) => Number.parseInt(part, 10));
-  };
+type ParsedSemanticVersion = {
+  major: number;
+  minor: number;
+  patch: number;
+  prerelease: string[];
+};
 
-  const leftParts = parseVersion(left);
-  const rightParts = parseVersion(right);
-  const maxLength = Math.max(leftParts.length, rightParts.length);
+const parseSemanticVersion = (value: string): ParsedSemanticVersion => {
+  const match =
+    value.match(
+      /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9A-Za-z-][0-9A-Za-z-]*))*))?$/u,
+    );
+
+  if (!match) {
+    throw new Error(`Invalid semantic version: ${value}`);
+  }
+
+  return {
+    major: Number.parseInt(match[1], 10),
+    minor: Number.parseInt(match[2], 10),
+    patch: Number.parseInt(match[3], 10),
+    prerelease: match[4]?.split(".") ?? [],
+  };
+};
+
+const comparePrereleaseIdentifiers = (left: string, right: string) => {
+  const numericPattern = /^(0|[1-9]\d*)$/u;
+  const leftIsNumeric = numericPattern.test(left);
+  const rightIsNumeric = numericPattern.test(right);
+
+  if (leftIsNumeric && rightIsNumeric) {
+    return Number.parseInt(left, 10) - Number.parseInt(right, 10);
+  }
+
+  if (leftIsNumeric) {
+    return -1;
+  }
+
+  if (rightIsNumeric) {
+    return 1;
+  }
+
+  return left.localeCompare(right);
+};
+
+const compareSemanticVersions = (left: string, right: string) => {
+  const leftVersion = parseSemanticVersion(left);
+  const rightVersion = parseSemanticVersion(right);
+
+  if (leftVersion.major !== rightVersion.major) {
+    return leftVersion.major - rightVersion.major;
+  }
+
+  if (leftVersion.minor !== rightVersion.minor) {
+    return leftVersion.minor - rightVersion.minor;
+  }
+
+  if (leftVersion.patch !== rightVersion.patch) {
+    return leftVersion.patch - rightVersion.patch;
+  }
+
+  if (leftVersion.prerelease.length === 0 && rightVersion.prerelease.length === 0) {
+    return 0;
+  }
+
+  if (leftVersion.prerelease.length === 0) {
+    return 1;
+  }
+
+  if (rightVersion.prerelease.length === 0) {
+    return -1;
+  }
+
+  const maxLength = Math.max(
+    leftVersion.prerelease.length,
+    rightVersion.prerelease.length,
+  );
 
   for (let index = 0; index < maxLength; index += 1) {
-    const leftPart = Number.isFinite(leftParts[index]) ? leftParts[index] : 0;
-    const rightPart = Number.isFinite(rightParts[index]) ? rightParts[index] : 0;
+    const leftIdentifier = leftVersion.prerelease[index];
+    const rightIdentifier = rightVersion.prerelease[index];
 
-    if (leftPart > rightPart) {
+    if (leftIdentifier === undefined) {
+      return -1;
+    }
+
+    if (rightIdentifier === undefined) {
       return 1;
     }
 
-    if (leftPart < rightPart) {
-      return -1;
+    const comparison = comparePrereleaseIdentifiers(leftIdentifier, rightIdentifier);
+
+    if (comparison !== 0) {
+      return comparison;
     }
   }
 
