@@ -222,8 +222,7 @@ describe("runCliCommand", () => {
 
     expect(loadConfigStoreCalls).toBe(0);
     expect(readRuntimeSummaryCalls).toBe(0);
-    expect(result.output).toContain(`CodeHelm ${expectedMetadata.version}`);
-    expect(result.output).toContain(expectedMetadata.name);
+    expect(result.output.trim().split("\n")).toEqual([`CodeHelm ${expectedMetadata.version}`]);
     expect(result.output).not.toContain("CodeHelm Version");
   });
 

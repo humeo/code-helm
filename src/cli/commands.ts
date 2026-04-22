@@ -848,7 +848,6 @@ const renderVersionOutput = (env: Record<string, string | undefined>) => {
 
   return renderSuccessPanel({
     title: `CodeHelm ${packageMetadata.version}`,
-    headline: packageMetadata.name,
     env,
   });
 };
