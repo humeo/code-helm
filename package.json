@@ -1,6 +1,6 @@
 {
   "name": "code-helm",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Run Codex as a local daemon you control from Discord.",
   "bin": {
     "code-helm": "bin/code-helm"
