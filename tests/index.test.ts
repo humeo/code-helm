@@ -7177,6 +7177,35 @@ test("start-turn can materialize the thread before the first attempt", async () 
   ]);
 });
 
+test("start-turn ignores pre-start resume failures for unmaterialized fresh threads", async () => {
+  const calls: string[] = [];
+
+  const result = await startTurnWithThreadResumeRetry({
+    request: {
+      threadId: "codex-thread-1",
+      input: { kind: "discord-message", content: "有哪些文件" },
+    },
+    resumeBeforeStart: true,
+    startTurn: async (request) => {
+      calls.push(`start:${request.threadId}`);
+      return { ok: true, threadId: request.threadId };
+    },
+    resumeThread: async ({ threadId }) => {
+      calls.push(`resume:${threadId}`);
+      throw new Error(`no rollout found for thread id ${threadId}`);
+    },
+  });
+
+  expect(result).toEqual({
+    ok: true,
+    threadId: "codex-thread-1",
+  });
+  expect(calls).toEqual([
+    "resume:codex-thread-1",
+    "start:codex-thread-1",
+  ]);
+});
+
 test("start-turn recovery resumes thread-not-found failures and retries once", async () => {
   const calls: string[] = [];
   let attempts = 0;

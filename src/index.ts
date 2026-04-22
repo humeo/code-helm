@@ -593,6 +593,14 @@ const shouldRetryCodexThreadOperationAfterResume = (error: unknown) => {
   return isNotLoadedCodexThreadError(error) || isMissingCodexThreadError(error);
 };
 
+const isPreMaterializationResumeError = (error: unknown) => {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  return error.message.toLowerCase().includes("no rollout found for thread id");
+};
+
 const retryCodexThreadOperationAfterResume = async <TResult>({
   threadId,
   operation,
@@ -629,9 +637,18 @@ export const startTurnWithThreadResumeRetry = async <TResult>({
   resumeBeforeStart?: boolean;
 }) => {
   if (resumeBeforeStart) {
-    await resumeThread({
-      threadId: request.threadId,
-    });
+    try {
+      await resumeThread({
+        threadId: request.threadId,
+      });
+    } catch (error) {
+      // codex-rs keeps a fresh thread live before the first user turn
+      // materializes rollout storage, so thread/resume can fail even though
+      // turn/start is still valid for the in-memory session.
+      if (!isPreMaterializationResumeError(error)) {
+        throw error;
+      }
+    }
   }
 
   return retryCodexThreadOperationAfterResume({
