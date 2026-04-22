@@ -69,6 +69,10 @@ const buildInstallCommand = (
 const resolvePackageManagerFromPackageRoot = (
   packageRoot: string,
 ): PackageManagerResolution => {
+  const isCanonicalNvmGlobalPackagePath =
+    /^\/Users\/[^/]+\/\.nvm\/versions\/node\/[^/]+\/lib\/node_modules\/code-helm$/u
+      .test(packageRoot);
+
   if (packageRoot.endsWith(`/.bun/install/global/node_modules/${PACKAGE_NAME}`)) {
     return {
       kind: "bun",
@@ -81,7 +85,7 @@ const resolvePackageManagerFromPackageRoot = (
   if (
     packageRoot.endsWith(`/node_modules/${PACKAGE_NAME}`) &&
     (
-      packageRoot.includes("/.nvm/versions/node/") ||
+      isCanonicalNvmGlobalPackagePath ||
       packageRoot.startsWith("/opt/homebrew/lib/node_modules/") ||
       packageRoot.startsWith("/usr/local/lib/node_modules/")
     )

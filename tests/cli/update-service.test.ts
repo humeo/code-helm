@@ -75,6 +75,19 @@ describe("resolveInstalledPackageManager", () => {
     });
   });
 
+  test("returns unknown for near-miss nvm-shaped paths that are not canonical global installs", () => {
+    const packageRoot =
+      "/tmp/not-global/.nvm/versions/node/v22.17.0/lib/node_modules/code-helm";
+
+    const result = resolveInstalledPackageManager({ packageRoot });
+
+    expect(result).toEqual({
+      kind: "unknown",
+      command: undefined,
+      packageRoot,
+    });
+  });
+
   test("detects npm installs from canonical homebrew global package paths", () => {
     const packageRoot = "/opt/homebrew/lib/node_modules/code-helm";
 
