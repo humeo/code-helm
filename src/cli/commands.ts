@@ -56,6 +56,10 @@ export type CommandExecutionResult = {
 
 export type PackageUpdateResult = PackageUpdateExecutionResult;
 
+type BackgroundRestartOutcome =
+  | { kind: "restarted"; runtime: RuntimeSummary }
+  | { kind: "failed"; reason: string };
+
 export type CommandServices = {
   backgroundRuntimeTimeoutMs: number;
   disableAutostart: () => Promise<AutostartResult>;
@@ -909,6 +913,14 @@ const formatUpdateDiagnostics = (result: PackageUpdateResult) => {
   return diagnostics.length > 0 ? diagnostics.join("\n\n") : undefined;
 };
 
+const buildUpdateStatusRows = (result: UpdateCheckResult) => {
+  return [
+    { key: "Installed version", value: result.installedVersion },
+    { key: "Latest version", value: result.latestVersion },
+    { key: "Package manager", value: result.packageManager.kind },
+  ];
+};
+
 const renderCheckStatusOutput = (
   env: Record<string, string | undefined>,
   result: UpdateCheckResult,
@@ -946,11 +958,7 @@ const renderNoOpUpdateOutput = (
       {
         kind: "key-value",
         title: "Status",
-        rows: [
-          { key: "Installed version", value: result.installedVersion },
-          { key: "Latest version", value: result.latestVersion },
-          { key: "Package manager", value: result.packageManager.kind },
-        ],
+        rows: buildUpdateStatusRows(result),
       },
     ],
     env,
@@ -991,11 +999,7 @@ const renderUpdateSuccessOutput = (
       {
         kind: "key-value",
         title: "Status",
-        rows: [
-          { key: "Installed version", value: checkResult.installedVersion },
-          { key: "Latest version", value: checkResult.latestVersion },
-          { key: "Package manager", value: checkResult.packageManager.kind },
-        ],
+        rows: buildUpdateStatusRows(checkResult),
       },
       {
         title: "Command run",
@@ -1005,6 +1009,117 @@ const renderUpdateSuccessOutput = (
         kind: "steps",
         title: "Next steps",
         items: ["code-helm version"],
+      },
+    ],
+    env,
+  });
+};
+
+const renderForegroundUpdateWarningOutput = (
+  env: Record<string, string | undefined>,
+  checkResult: UpdateCheckResult,
+  result: PackageUpdateResult,
+  runtime: RuntimeSummary,
+) => {
+  return renderWarningPanel({
+    title: "CodeHelm Updated",
+    headline: `Updated from ${checkResult.installedVersion} to ${checkResult.latestVersion}, but the foreground runtime is still running on ${checkResult.installedVersion}.`,
+    sections: [
+      {
+        kind: "key-value",
+        title: "Status",
+        rows: buildUpdateStatusRows(checkResult),
+      },
+      {
+        kind: "key-value",
+        title: "Process",
+        rows: [
+          { key: "Mode", value: runtime.mode },
+          { key: "PID", value: String(runtime.pid) },
+        ],
+      },
+      {
+        title: "Command run",
+        lines: [result.command],
+      },
+      {
+        kind: "steps",
+        title: "Next steps",
+        items: [
+          "Stop the current foreground runtime and start CodeHelm again.",
+          "code-helm start",
+          "code-helm version",
+        ],
+      },
+    ],
+    env,
+  });
+};
+
+const renderBackgroundRestartSuccessOutput = (
+  env: Record<string, string | undefined>,
+  checkResult: UpdateCheckResult,
+  result: PackageUpdateResult,
+  runtime: RuntimeSummary,
+) => {
+  return renderSuccessPanel({
+    title: "CodeHelm Updated",
+    headline: `Updated from ${checkResult.installedVersion} to ${checkResult.latestVersion}; background daemon restarted on ${checkResult.latestVersion}.`,
+    sections: [
+      {
+        kind: "key-value",
+        title: "Status",
+        rows: buildUpdateStatusRows(checkResult),
+      },
+      {
+        kind: "key-value",
+        title: "Process",
+        rows: [
+          { key: "Mode", value: runtime.mode },
+          { key: "PID", value: String(runtime.pid) },
+        ],
+      },
+      {
+        title: "Command run",
+        lines: [result.command],
+      },
+      {
+        kind: "steps",
+        title: "Next steps",
+        items: ["code-helm status", "code-helm version"],
+      },
+    ],
+    env,
+  });
+};
+
+const renderBackgroundRestartWarningOutput = (
+  env: Record<string, string | undefined>,
+  checkResult: UpdateCheckResult,
+  result: PackageUpdateResult,
+  reason: string,
+) => {
+  return renderWarningPanel({
+    title: "CodeHelm Updated With Warnings",
+    headline: `Updated from ${checkResult.installedVersion} to ${checkResult.latestVersion}, but the background daemon did not come back automatically.`,
+    sections: [
+      {
+        kind: "key-value",
+        title: "Status",
+        rows: buildUpdateStatusRows(checkResult),
+      },
+      {
+        title: "Runtime recovery",
+        lines: [reason],
+      },
+      {
+        title: "Command run",
+        lines: [result.command],
+      },
+      {
+        kind: "steps",
+        title: "Try next",
+        items: ["code-helm start --daemon", "code-helm status", "code-helm version"],
       },
     ],
     env,
@@ -1051,6 +1166,91 @@ const renderUpdateFailureOutput = (
   });
 };
 
+const renderUpdateFailureWithRecoveryOutput = (
+  env: Record<string, string | undefined>,
+  result: PackageUpdateResult,
+  recovery: BackgroundRestartOutcome,
+) => {
+  const recoveryLines = recovery.kind === "restarted"
+    ? [
+      "Rollback daemon restart succeeded.",
+      `The previous background daemon was restarted with PID ${recovery.runtime.pid}.`,
+    ]
+    : [
+      "Rollback daemon restart failed.",
+      recovery.reason,
+    ];
+  const nextSteps = recovery.kind === "restarted"
+    ? ["code-helm status", "code-helm update"]
+    : ["code-helm start --daemon", "code-helm status", "code-helm update"];
+
+  return renderErrorPanel({
+    title: "Update Failed",
+    headline: `The package update did not complete while running ${result.command}.`,
+    sections: [
+      {
+        title: "Command run",
+        lines: [result.command],
+      },
+      {
+        title: "Runtime recovery",
+        lines: recoveryLines,
+      },
+      {
+        kind: "steps",
+        title: "Try next",
+        items: [
+          "Inspect the diagnostics below, resolve the package-manager issue, then retry.",
+          ...nextSteps,
+        ],
+      },
+    ],
+    diagnostics: formatUpdateDiagnostics(result),
+    env,
+  });
+};
+
+const restartBackgroundRuntimeFromPath = async (
+  store: LoadedConfigStore,
+  services: CommandServices,
+): Promise<BackgroundRestartOutcome> => {
+  const child = services.spawnBackgroundProcess({
+    command: "code-helm",
+    args: ["start", "--daemon"],
+    env: {
+      ...process.env,
+      ...services.env,
+      CODE_HELM_CONFIG: store.paths.configPath,
+      CODE_HELM_SECRETS: store.paths.secretsPath,
+    },
+  });
+
+  if (!child.pid) {
+    return {
+      kind: "failed",
+      reason: "Background daemon restart helper did not expose a pid.",
+    };
+  }
+
+  const runtime = await services.waitForBackgroundRuntime({
+    stateDir: store.paths.stateDir,
+    isPidAlive: services.isPidAlive,
+    timeoutMs: services.backgroundRuntimeTimeoutMs,
+  });
+
+  if (!runtime) {
+    return {
+      kind: "failed",
+      reason: "Background daemon did not come back automatically.",
+    };
+  }
+
+  return {
+    kind: "restarted",
+    runtime,
+  };
+};
+
 const executeUpdateCommand = async (
   services: CommandServices,
   checkResult: UpdateCheckResult,
@@ -1085,14 +1285,77 @@ const executeUpdateCommand = async (
     );
   }
 
+  const store = services.loadConfigStore({
+    env: services.env,
+  });
+  const runtime = services.readRuntimeSummary({
+    stateDir: store.paths.stateDir,
+    isPidAlive: services.isPidAlive,
+  });
+
+  if (!runtime) {
+    const result = await services.runPackageUpdate(checkResult.packageManager.command);
+
+    if (result.exitCode !== 0) {
+      throw new Error(renderUpdateFailureOutput(services.env, result));
+    }
+
+    return {
+      output: renderUpdateSuccessOutput(services.env, checkResult, result),
+    };
+  }
+
+  if (runtime.mode === "foreground") {
+    const result = await services.runPackageUpdate(checkResult.packageManager.command);
+
+    if (result.exitCode !== 0) {
+      throw new Error(renderUpdateFailureOutput(services.env, result));
+    }
+
+    return {
+      output: renderForegroundUpdateWarningOutput(
+        services.env,
+        checkResult,
+        result,
+        runtime,
+      ),
+    };
+  }
+
+  await stopBackgroundRuntime(runtime, store, services);
   const result = await services.runPackageUpdate(checkResult.packageManager.command);
 
   if (result.exitCode !== 0) {
-    throw new Error(renderUpdateFailureOutput(services.env, result));
+    const recovery = await restartBackgroundRuntimeFromPath(store, services);
+    throw new Error(
+      renderUpdateFailureWithRecoveryOutput(
+        services.env,
+        result,
+        recovery,
+      ),
+    );
+  }
+
+  const restartOutcome = await restartBackgroundRuntimeFromPath(store, services);
+
+  if (restartOutcome.kind === "failed") {
+    return {
+      output: renderBackgroundRestartWarningOutput(
+        services.env,
+        checkResult,
+        result,
+        restartOutcome.reason,
+      ),
+    };
   }
 
   return {
-    output: renderUpdateSuccessOutput(services.env, checkResult, result),
+    output: renderBackgroundRestartSuccessOutput(
+      services.env,
+      checkResult,
+      result,
+      restartOutcome.runtime,
+    ),
   };
 };
 
@@ -1130,7 +1393,11 @@ export const runCliCommand = async (
 
     const output = renderCheckStatusOutput(services.env, checkResult);
 
-    if (!checkResult.updateAvailable || !isInteractiveTerminal(services.env)) {
+    if (
+      !checkResult.updateAvailable
+      || !isInteractiveTerminal(services.env)
+      || !checkResult.packageManager.command
+    ) {
       return {
         output,
       };
