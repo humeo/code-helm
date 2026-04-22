@@ -435,4 +435,37 @@ describe("checkForUpdates", () => {
       }),
     ).rejects.toThrow("Invalid semantic version: nope");
   });
+
+  test("accepts build metadata and ignores it for precedence", async () => {
+    const packageRoot =
+      "/Users/example/.bun/install/global/node_modules/code-helm";
+
+    const result = await checkForUpdates({
+      packageRoot,
+      fetch: async () =>
+        new Response(
+          JSON.stringify({
+            "dist-tags": {
+              latest: "1.2.3",
+            },
+          }),
+        ),
+      readPackageMetadataFromPath: () => ({
+        name: "code-helm",
+        version: "1.2.3+build.1",
+      }),
+    });
+
+    expect(result).toEqual({
+      installedVersion: "1.2.3+build.1",
+      latestVersion: "1.2.3",
+      packageManager: {
+        kind: "bun",
+        command: ["bun", "add", "-g", "code-helm@latest"],
+        executableName: "bun",
+        packageRoot,
+      },
+      updateAvailable: false,
+    });
+  });
 });
