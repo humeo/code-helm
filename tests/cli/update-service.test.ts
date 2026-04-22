@@ -324,6 +324,49 @@ describe("checkForUpdates", () => {
     });
   });
 
+  test("reads installed metadata from the resolved canonical install root when provenance is more authoritative", async () => {
+    const packageRoot = "/srv/custom/code-helm";
+    const executablePath = "/Users/example/.bun/bin/code-helm";
+    const resolvedPackageRoot =
+      "/Users/example/.bun/install/global/node_modules/code-helm";
+    const readCalls: string[] = [];
+
+    const result = await checkForUpdates({
+      packageRoot,
+      executablePath,
+      fetch: async () =>
+        new Response(
+          JSON.stringify({
+            "dist-tags": {
+              latest: "0.2.1",
+            },
+          }),
+        ),
+      readPackageMetadataFromPath: (targetPath) => {
+        readCalls.push(targetPath);
+        return {
+          name: "code-helm",
+          version: "0.2.0",
+        };
+      },
+      resolveRealPath: () => `${resolvedPackageRoot}/bin/code-helm`,
+    });
+
+    expect(readCalls).toEqual([resolvedPackageRoot]);
+    expect(result).toEqual({
+      installedVersion: "0.2.0",
+      latestVersion: "0.2.1",
+      packageManager: {
+        kind: "bun",
+        command: ["bun", "add", "-g", "code-helm@latest"],
+        executableName: "bun",
+        executablePath,
+        packageRoot: resolvedPackageRoot,
+      },
+      updateAvailable: true,
+    });
+  });
+
   test("does not mark an update available when installed is newer than latest", async () => {
     const packageRoot =
       "/Users/example/.bun/install/global/node_modules/code-helm";

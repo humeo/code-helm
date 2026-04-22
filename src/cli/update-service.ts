@@ -54,6 +54,7 @@ type CheckForUpdatesOptions = {
   executablePath?: string;
   fetch?: FetchLike;
   readPackageMetadataFromPath?: (packageRoot: string) => PackageMetadata;
+  resolveRealPath?: (targetPath: string) => string;
 };
 
 const buildInstallCommand = (
@@ -164,7 +165,11 @@ const comparePrereleaseIdentifiers = (left: string, right: string) => {
     return 1;
   }
 
-  return left.localeCompare(right);
+  if (left === right) {
+    return 0;
+  }
+
+  return left < right ? -1 : 1;
 };
 
 const compareSemanticVersions = (left: string, right: string) => {
@@ -315,13 +320,16 @@ export const checkForUpdates = async ({
   executablePath,
   fetch: fetchImpl,
   readPackageMetadataFromPath = readInstalledPackageMetadataFromPath,
+  resolveRealPath,
 }: CheckForUpdatesOptions): Promise<UpdateCheckResult> => {
-  const installedMetadata = readPackageMetadataFromPath(packageRoot);
-  const latestVersion = await readLatestPublishedVersion({ fetch: fetchImpl });
   const packageManager = resolveInstalledPackageManager({
     packageRoot,
     executablePath,
+    resolveRealPath,
   });
+  const resolvedPackageRoot = packageManager.packageRoot ?? packageRoot;
+  const installedMetadata = readPackageMetadataFromPath(resolvedPackageRoot);
+  const latestVersion = await readLatestPublishedVersion({ fetch: fetchImpl });
 
   return {
     installedVersion: installedMetadata.version,
