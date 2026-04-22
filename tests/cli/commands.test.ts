@@ -4,12 +4,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CliCommand } from "../../src/cli/args";
 import {
-  buildDefaultPackageUpdateCommand,
   runCliCommand,
   type CommandServices,
 } from "../../src/cli/commands";
+import type {
+  PackageManagerResolution,
+  PackageUpdateExecutionResult,
+  UpdateCheckResult,
+} from "../../src/cli/update-service";
 import { CodexSupervisorError } from "../../src/codex/supervisor";
 import type { AppConfig } from "../../src/config";
+import type { RuntimeSummary } from "../../src/cli/runtime-state";
 import { readPackageMetadata } from "../../src/package-metadata";
 
 const tempDirs: string[] = [];
@@ -53,6 +58,12 @@ const createConfig = (appServerUrl = "ws://127.0.0.1:4100"): AppConfig => ({
 const createBaseServices = (): CommandServices => {
   const paths = createPaths();
   const config = createConfig();
+  const defaultPackageManager: PackageManagerResolution = {
+    kind: "npm",
+    command: ["npm", "install", "-g", "code-helm@latest"],
+    executableName: "npm",
+    packageRoot: "/usr/local/lib/node_modules/code-helm",
+  };
 
   return {
     backgroundRuntimeTimeoutMs: 15_000,
@@ -91,21 +102,7 @@ const createBaseServices = (): CommandServices => {
     }),
     signalProcess: () => true,
     waitForRuntimeExit: async () => true,
-    waitForBackgroundRuntime: async () => ({
-      pid: 4321,
-      mode: "background",
-      discord: {
-        guildId: "guild-1",
-        controlChannelId: "channel-1",
-        connected: true,
-      },
-      codex: {
-        appServerAddress: "ws://127.0.0.1:4100",
-        pid: 8765,
-        running: true,
-      },
-      startedAt: "2026-04-16T08:30:00.000Z",
-    }),
+    waitForBackgroundRuntime: async () => createRuntimeSummary(),
     enableAutostart: async () => ({
       kind: "enabled",
       label: "dev.codehelm.code-helm",
@@ -117,13 +114,84 @@ const createBaseServices = (): CommandServices => {
       launchAgentPath: "/tmp/code-helm.plist",
       removed: true,
     }),
+    readUpdateCheck: async () => ({
+      installedVersion: "0.2.0",
+      latestVersion: "0.2.1",
+      packageManager: defaultPackageManager,
+      updateAvailable: true,
+    }),
+    emitOutput: () => {},
+    confirmUpdate: async () => false,
+    onExecuteUpdateCommand: () => {},
+    ensurePackageManagerExecutable: async () => {},
     runPackageUpdate: async () => ({
-      command: buildDefaultPackageUpdateCommand().join(" "),
+      command: "npm install -g code-helm@latest",
       exitCode: 0,
       stdout: "changed 1 package",
       stderr: "",
     }),
     removePath: () => {},
+  };
+};
+
+const createUpdateCheckResult = (
+  overrides: Partial<UpdateCheckResult> = {},
+): UpdateCheckResult => {
+  const packageManager = overrides.packageManager ?? {
+    kind: "npm",
+    command: ["npm", "install", "-g", "code-helm@latest"],
+    executableName: "npm",
+    packageRoot: "/usr/local/lib/node_modules/code-helm",
+  } satisfies PackageManagerResolution;
+
+  return {
+    installedVersion: "0.2.0",
+    latestVersion: "0.2.1",
+    packageManager,
+    updateAvailable: true,
+    ...overrides,
+  };
+};
+
+const createPackageUpdateResult = (
+  overrides: Partial<PackageUpdateExecutionResult> = {},
+): PackageUpdateExecutionResult => {
+  return {
+    command: "npm install -g code-helm@latest",
+    exitCode: 0,
+    stdout: "changed 1 package",
+    stderr: "",
+    ...overrides,
+  };
+};
+
+const createRuntimeSummary = (
+  overrides: Partial<RuntimeSummary> = {},
+): RuntimeSummary => {
+  const defaultDiscord = {
+    guildId: "guild-1",
+    controlChannelId: "channel-1",
+    connected: true,
+  };
+  const defaultCodex = {
+    appServerAddress: "ws://127.0.0.1:4100",
+    pid: 8765,
+    running: true,
+  };
+
+  return {
+    pid: 4321,
+    mode: "background",
+    discord: {
+      ...defaultDiscord,
+      ...overrides.discord,
+    },
+    codex: {
+      ...defaultCodex,
+      ...overrides.codex,
+    },
+    startedAt: "2026-04-16T08:30:00.000Z",
+    ...overrides,
   };
 };
 
@@ -160,15 +228,6 @@ afterEach(() => {
 });
 
 describe("runCliCommand", () => {
-  test("default package update command targets npm global latest install", () => {
-    expect(buildDefaultPackageUpdateCommand()).toEqual([
-      "npm",
-      "install",
-      "-g",
-      "code-helm@latest",
-    ]);
-  });
-
   test("help renders the full operator-facing command surface without touching config or runtime", async () => {
     const services = createBaseServices();
     let loadConfigStoreCalls = 0;
@@ -199,6 +258,11 @@ describe("runCliCommand", () => {
     expect(result.output).toContain("Start CodeHelm in background");
     expect(result.output).toContain("autostart enable");
     expect(result.output).toContain("Enable automatic startup");
+    expect(result.output).toContain("check");
+    expect(result.output).toContain("Check whether a newer version is available");
+    expect(result.output).toContain("update");
+    expect(result.output).toContain("Install the latest published package");
+    expect(result.output.indexOf("check")).toBeLessThan(result.output.indexOf("update"));
     expect(result.output).toContain("uninstall");
     expect(result.output).toContain("Remove local CodeHelm data");
     expect(result.output).not.toContain("Overview");
@@ -227,16 +291,29 @@ describe("runCliCommand", () => {
     expect(result.output).not.toContain("CodeHelm Version");
   });
 
-  test("update renders a success panel without touching config or runtime", async () => {
-    const services = createBaseServices() as CommandServices & {
-      runPackageUpdate: () => Promise<{
-        command: string;
-        exitCode: number;
-        stdout: string;
-        stderr: string;
-        error?: string;
-      }>;
+  test("unsupported internal commands stop before touching config or runtime loaders", async () => {
+    const services = createBaseServices();
+    let loadConfigStoreCalls = 0;
+    let readRuntimeSummaryCalls = 0;
+
+    services.loadConfigStore = () => {
+      loadConfigStoreCalls += 1;
+      throw new Error("unsupported command should not load config");
     };
+    services.readRuntimeSummary = () => {
+      readRuntimeSummaryCalls += 1;
+      throw new Error("unsupported command should not read runtime");
+    };
+
+    await expect(
+      runCliCommand({ kind: "bogus" } as unknown as CliCommand, services),
+    ).rejects.toThrow(/Internal error: unsupported CLI command bogus/);
+    expect(loadConfigStoreCalls).toBe(0);
+    expect(readRuntimeSummaryCalls).toBe(0);
+  });
+
+  test("check shows up-to-date status in non-interactive mode without touching config or runtime", async () => {
+    const services = createBaseServices();
     let loadConfigStoreCalls = 0;
     let readRuntimeSummaryCalls = 0;
 
@@ -248,69 +325,605 @@ describe("runCliCommand", () => {
       readRuntimeSummaryCalls += 1;
       throw new Error("update should not read runtime");
     };
-    services.runPackageUpdate = async () => ({
-      command: buildDefaultPackageUpdateCommand().join(" "),
-      exitCode: 0,
-      stdout: "changed 1 package",
-      stderr: "",
+    services.readUpdateCheck = async () => createUpdateCheckResult({
+      installedVersion: "0.2.1",
+      latestVersion: "0.2.1",
+      updateAvailable: false,
     });
 
-    const result = await runCliCommand({ kind: "update" }, services);
+    const result = await runCliCommand({ kind: "check", yes: false }, services);
 
     expect(loadConfigStoreCalls).toBe(0);
     expect(readRuntimeSummaryCalls).toBe(0);
-    expect(result.output).toContain("CodeHelm Updated");
-    expect(result.output).toContain("Command run");
+    expect(result.output).toContain("Installed version");
+    expect(result.output).toContain("Latest version");
+    expect(result.output).toContain("Up to date");
+    expect(result.output).toContain("Package manager");
     expect(result.output).toContain("npm install -g code-helm@latest");
-    expect(result.output).toContain("Next steps");
-    expect(result.output).toContain("code-helm version");
   });
 
-  test("update surfaces a failed npm exit as an error panel", async () => {
-    const services = createBaseServices() as CommandServices & {
-      runPackageUpdate: () => Promise<{
-        command: string;
-        exitCode: number;
-        stdout: string;
-        stderr: string;
-        error?: string;
-      }>;
+  test("check shows update availability in non-tty mode without touching config or runtime", async () => {
+    const services = createBaseServices();
+    let loadConfigStoreCalls = 0;
+    let readRuntimeSummaryCalls = 0;
+
+    services.loadConfigStore = () => {
+      loadConfigStoreCalls += 1;
+      throw new Error("check should not load config");
+    };
+    services.readRuntimeSummary = () => {
+      readRuntimeSummaryCalls += 1;
+      throw new Error("check should not read runtime");
+    };
+    services.readUpdateCheck = async () => createUpdateCheckResult({
+      installedVersion: "0.2.0",
+      latestVersion: "0.2.1",
+      updateAvailable: true,
+    });
+
+    const result = await runCliCommand({ kind: "check", yes: false }, services);
+
+    expect(loadConfigStoreCalls).toBe(0);
+    expect(readRuntimeSummaryCalls).toBe(0);
+    expect(result.output).toContain("Installed version");
+    expect(result.output).toContain("Latest version");
+    expect(result.output).toContain("Update available");
+    expect(result.output).toContain("Package manager");
+    expect(result.output).toContain("Update command");
+    expect(result.output).toContain("npm install -g code-helm@latest");
+  });
+
+  test("tty check with update available prompts once", async () => {
+    const emittedOutputs: string[] = [];
+    const services = createBaseServices();
+    let confirmCalls = 0;
+
+    services.env = { CODE_HELM_CLI_IS_TTY: "1", CODE_HELM_CLI_STDIN_IS_TTY: "1" };
+    services.emitOutput = (output) => {
+      emittedOutputs.push(output);
+    };
+    services.confirmUpdate = async () => {
+      confirmCalls += 1;
+      return false;
+    };
+    services.readUpdateCheck = async () => createUpdateCheckResult({
+      installedVersion: "0.2.0",
+      latestVersion: "0.2.1",
+      updateAvailable: true,
+    });
+
+    const result = await runCliCommand({ kind: "check", yes: false }, services);
+
+    expect(confirmCalls).toBe(1);
+    expect(emittedOutputs).toHaveLength(1);
+    expect(emittedOutputs[0]).toContain("Installed version");
+    expect(result.output).toContain("Update canceled");
+  });
+
+  test("tty check acceptance emits the check status first, then returns the update result", async () => {
+    const emittedOutputs: string[] = [];
+    const services = createBaseServices();
+    let confirmCalls = 0;
+
+    services.env = { CODE_HELM_CLI_IS_TTY: "1", CODE_HELM_CLI_STDIN_IS_TTY: "1" };
+    services.emitOutput = (output) => {
+      emittedOutputs.push(output);
+    };
+    services.confirmUpdate = async () => {
+      confirmCalls += 1;
+      return true;
+    };
+    services.readUpdateCheck = async () => createUpdateCheckResult({
+      installedVersion: "0.2.0",
+      latestVersion: "0.2.1",
+      updateAvailable: true,
+    });
+
+    const result = await runCliCommand({ kind: "check", yes: false }, services);
+
+    expect(confirmCalls).toBe(1);
+    expect(emittedOutputs).toHaveLength(1);
+    expect(emittedOutputs[0]).toContain("Installed version");
+    expect(emittedOutputs[0]).toContain("Update available");
+    expect(result.output).toContain("Updated from 0.2.0 to 0.2.1");
+    expect(result.output).not.toEqual(emittedOutputs[0]);
+  });
+
+  test("tty check decline keeps the original check output visible and returns a clear no-op result", async () => {
+    const emittedOutputs: string[] = [];
+    const services = createBaseServices();
+    let confirmCalls = 0;
+    let updateCalls = 0;
+
+    services.env = { CODE_HELM_CLI_IS_TTY: "1", CODE_HELM_CLI_STDIN_IS_TTY: "1" };
+    services.emitOutput = (output) => {
+      emittedOutputs.push(output);
+    };
+    services.confirmUpdate = async () => {
+      confirmCalls += 1;
+      return false;
+    };
+    services.runPackageUpdate = async () => {
+      updateCalls += 1;
+      return createPackageUpdateResult();
     };
 
-    services.runPackageUpdate = async () => ({
-      command: buildDefaultPackageUpdateCommand().join(" "),
+    const result = await runCliCommand({ kind: "check", yes: false }, services);
+
+    expect(confirmCalls).toBe(1);
+    expect(updateCalls).toBe(0);
+    expect(emittedOutputs).toHaveLength(1);
+    expect(emittedOutputs[0]).toContain("Installed version");
+    expect(emittedOutputs[0]).toContain("Update available");
+    expect(result.output).toContain("Update canceled");
+    expect(result.output).toContain("Installed version remains 0.2.0");
+  });
+
+  test("non-tty check never prompts", async () => {
+    const emittedOutputs: string[] = [];
+    const services = createBaseServices();
+    let confirmCalls = 0;
+
+    services.env = { CODE_HELM_CLI_IS_TTY: "0" };
+    services.emitOutput = (output) => {
+      emittedOutputs.push(output);
+    };
+    services.confirmUpdate = async () => {
+      confirmCalls += 1;
+      return true;
+    };
+
+    const result = await runCliCommand({ kind: "check", yes: false }, services);
+
+    expect(confirmCalls).toBe(0);
+    expect(emittedOutputs).toHaveLength(0);
+    expect(result.output).toContain("Update available");
+  });
+
+  test("check --yes never prompts even in tty mode", async () => {
+    const emittedOutputs: string[] = [];
+    const services = createBaseServices();
+    let confirmCalls = 0;
+
+    services.env = { CODE_HELM_CLI_IS_TTY: "1", CODE_HELM_CLI_STDIN_IS_TTY: "1" };
+    services.emitOutput = (output) => {
+      emittedOutputs.push(output);
+    };
+    services.confirmUpdate = async () => {
+      confirmCalls += 1;
+      return true;
+    };
+
+    const result = await runCliCommand({ kind: "check", yes: true }, services);
+
+    expect(confirmCalls).toBe(0);
+    expect(emittedOutputs).toHaveLength(0);
+    expect(result.output).toContain("Updated from 0.2.0 to 0.2.1");
+  });
+
+  test("interactive check with unknown install source does not prompt and shows the unavailable update command", async () => {
+    const emittedOutputs: string[] = [];
+    const services = createBaseServices();
+    let confirmCalls = 0;
+
+    services.env = { CODE_HELM_CLI_IS_TTY: "1" };
+    services.emitOutput = (output) => {
+      emittedOutputs.push(output);
+    };
+    services.confirmUpdate = async () => {
+      confirmCalls += 1;
+      return true;
+    };
+    services.readUpdateCheck = async () => createUpdateCheckResult({
+      packageManager: {
+        kind: "unknown",
+        command: undefined,
+        packageRoot: "/tmp/custom-install",
+      },
+      updateAvailable: true,
+    });
+
+    const result = await runCliCommand({ kind: "check", yes: false }, services);
+
+    expect(confirmCalls).toBe(0);
+    expect(emittedOutputs).toHaveLength(0);
+    expect(result.output).toContain("Update available");
+    expect(result.output).toContain("Package manager");
+    expect(result.output).toContain("unknown");
+    expect(result.output).toContain("Update command");
+    expect(result.output).toContain("Unavailable");
+  });
+
+  test("check --yes delegates into the update execution path", async () => {
+    const services = createBaseServices();
+    let ensureCalls = 0;
+    let updateCalls = 0;
+    let executeCalls = 0;
+
+    services.readUpdateCheck = async () => createUpdateCheckResult({
+      installedVersion: "0.2.0",
+      latestVersion: "0.2.1",
+      updateAvailable: true,
+    });
+    services.onExecuteUpdateCommand = () => {
+      executeCalls += 1;
+    };
+    services.ensurePackageManagerExecutable = async (input) => {
+      ensureCalls += 1;
+      expect(input.executableName).toBe("npm");
+    };
+    services.runPackageUpdate = async (command) => {
+      updateCalls += 1;
+      expect(command).toEqual(["npm", "install", "-g", "code-helm@latest"]);
+      return createPackageUpdateResult();
+    };
+
+    const result = await runCliCommand({ kind: "check", yes: true }, services);
+
+    expect(executeCalls).toBe(1);
+    expect(ensureCalls).toBe(1);
+    expect(updateCalls).toBe(1);
+    expect(result.output).toContain("Updated from 0.2.0 to 0.2.1");
+    expect(result.output).toContain("Package manager");
+  });
+
+  test("check --yes on the latest version still enters the shared update execution path", async () => {
+    const services = createBaseServices();
+    let executeCalls = 0;
+    let ensureCalls = 0;
+    let updateCalls = 0;
+
+    services.readUpdateCheck = async () => createUpdateCheckResult({
+      installedVersion: "0.2.1",
+      latestVersion: "0.2.1",
+      updateAvailable: false,
+    });
+    services.onExecuteUpdateCommand = () => {
+      executeCalls += 1;
+    };
+    services.ensurePackageManagerExecutable = async () => {
+      ensureCalls += 1;
+    };
+    services.runPackageUpdate = async () => {
+      updateCalls += 1;
+      return createPackageUpdateResult();
+    };
+
+    const result = await runCliCommand({ kind: "check", yes: true }, services);
+
+    expect(executeCalls).toBe(1);
+    expect(ensureCalls).toBe(0);
+    expect(updateCalls).toBe(0);
+    expect(result.output).toContain("Already on the latest version");
+    expect(result.output).toContain("Installed version");
+    expect(result.output).toContain("Latest version");
+  });
+
+  test("update reports when already on the latest version", async () => {
+    const services = createBaseServices();
+
+    services.readUpdateCheck = async () => createUpdateCheckResult({
+      installedVersion: "0.2.1",
+      latestVersion: "0.2.1",
+      updateAvailable: false,
+    });
+    services.runPackageUpdate = async () => {
+      throw new Error("update should not run install when already current");
+    };
+
+    const result = await runCliCommand({ kind: "update" }, services);
+
+    expect(result.output).toContain("Already on the latest version");
+    expect(result.output).toContain("Installed version");
+    expect(result.output).toContain("Latest version");
+  });
+
+  test("update reports the version transition and package manager after a successful install", async () => {
+    const services = createBaseServices();
+
+    services.readUpdateCheck = async () => createUpdateCheckResult({
+      installedVersion: "0.2.0",
+      latestVersion: "0.2.1",
+      updateAvailable: true,
+    });
+    services.runPackageUpdate = async (command) => {
+      expect(command).toEqual(["npm", "install", "-g", "code-helm@latest"]);
+      return createPackageUpdateResult();
+    };
+
+    const result = await runCliCommand({ kind: "update" }, services);
+
+    expect(result.output).toContain("Updated from 0.2.0 to 0.2.1");
+    expect(result.output).toContain("Package manager");
+    expect(result.output).toContain("npm");
+  });
+
+  test("update fails before install when the install source is unknown", async () => {
+    const services = createBaseServices();
+
+    services.readUpdateCheck = async () => createUpdateCheckResult({
+      packageManager: {
+        kind: "unknown",
+        command: undefined,
+        packageRoot: "/tmp/custom-install",
+      },
+    });
+    services.runPackageUpdate = async () => {
+      throw new Error("install command should not run for unknown source");
+    };
+
+    await expect(
+      runCliCommand({ kind: "update" }, services),
+    ).rejects.toThrow(/could not determine/i);
+    await expect(
+      runCliCommand({ kind: "update" }, services),
+    ).rejects.toThrow(/npm or Bun/i);
+  });
+
+  test("check surfaces registry check failures without touching config or runtime", async () => {
+    const services = createBaseServices();
+    let loadConfigStoreCalls = 0;
+    let readRuntimeSummaryCalls = 0;
+
+    services.loadConfigStore = () => {
+      loadConfigStoreCalls += 1;
+      throw new Error("check should not load config");
+    };
+    services.readRuntimeSummary = () => {
+      readRuntimeSummaryCalls += 1;
+      throw new Error("check should not read runtime");
+    };
+    services.readUpdateCheck = async () => {
+      throw new Error("Could not determine the latest published version for code-helm from the npm registry response.");
+    };
+
+    await expect(
+      runCliCommand({ kind: "check", yes: false }, services),
+    ).rejects.toThrow(/npm registry response/i);
+    expect(loadConfigStoreCalls).toBe(0);
+    expect(readRuntimeSummaryCalls).toBe(0);
+  });
+
+  test("tty check with update available and unknown install source skips prompting", async () => {
+    const services = createBaseServices();
+    let confirmCalls = 0;
+
+    services.env = { CODE_HELM_CLI_IS_TTY: "1", CODE_HELM_CLI_STDIN_IS_TTY: "1" };
+    services.confirmUpdate = async () => {
+      confirmCalls += 1;
+      return true;
+    };
+    services.readUpdateCheck = async () => createUpdateCheckResult({
+      packageManager: {
+        kind: "unknown",
+        command: undefined,
+        packageRoot: "/tmp/custom-install",
+      },
+    });
+
+    const result = await runCliCommand({ kind: "check", yes: false }, services);
+
+    expect(confirmCalls).toBe(0);
+    expect(result.output).toContain("Update available");
+    expect(result.output).toContain("Package manager");
+    expect(result.output).toContain("unknown");
+    expect(result.output).toContain("Update command");
+    expect(result.output).toContain("Unavailable");
+  });
+
+  test("update warns when foreground runtime stays on the old version", async () => {
+    const services = createBaseServices();
+    let signalCalls = 0;
+    let installCalls = 0;
+    let restartCalls = 0;
+
+    services.readRuntimeSummary = () => createRuntimeSummary({
+      mode: "foreground",
+      pid: 7788,
+    });
+    services.signalProcess = () => {
+      signalCalls += 1;
+      return true;
+    };
+    services.runPackageUpdate = async () => {
+      installCalls += 1;
+      return createPackageUpdateResult();
+    };
+    services.spawnBackgroundProcess = () => {
+      restartCalls += 1;
+      return {
+        pid: 9988,
+        unref() {},
+      };
+    };
+
+    const result = await runCliCommand({ kind: "update" }, services);
+
+    expect(installCalls).toBe(1);
+    expect(signalCalls).toBe(0);
+    expect(restartCalls).toBe(0);
+    expect(result.output).toContain("CodeHelm Updated");
+    expect(result.output).toContain("foreground");
+    expect(result.output).toContain("still running on 0.2.0");
+  });
+
+  test("update stops and restarts background runtime around a successful install", async () => {
+    const services = createBaseServices();
+    const store = services.loadConfigStore();
+    const callOrder: string[] = [];
+
+    services.readRuntimeSummary = () => createRuntimeSummary({
+      mode: "background",
+      pid: 2233,
+    });
+    services.ensurePackageManagerExecutable = async () => {
+      callOrder.push("ensure");
+    };
+    services.signalProcess = () => {
+      callOrder.push("signal-stop");
+      return true;
+    };
+    services.waitForRuntimeExit = async () => {
+      callOrder.push("wait-stop");
+      return true;
+    };
+    services.runPackageUpdate = async () => {
+      callOrder.push("install");
+      return createPackageUpdateResult();
+    };
+    services.spawnBackgroundProcess = ({ command, args, env }) => {
+      callOrder.push("spawn-restart");
+      expect(command).toBe("code-helm");
+      expect(args).toEqual(["start", "--daemon"]);
+      expect(env.CODE_HELM_CONFIG).toBe(store.paths.configPath);
+      expect(env.CODE_HELM_SECRETS).toBe(store.paths.secretsPath);
+      return {
+        pid: 4567,
+        unref() {},
+      };
+    };
+    services.waitForBackgroundRuntime = async () => {
+      callOrder.push("wait-restart");
+      return createRuntimeSummary({
+        pid: 4567,
+      });
+    };
+
+    const result = await runCliCommand({ kind: "update" }, services);
+
+    expect(callOrder).toEqual([
+      "ensure",
+      "signal-stop",
+      "wait-stop",
+      "install",
+      "spawn-restart",
+      "wait-restart",
+    ]);
+    expect(result.output).toContain("CodeHelm Updated");
+    expect(result.output).toContain("background daemon restarted on 0.2.1");
+  });
+
+  test("update install failure after stopping background runtime attempts rollback restart", async () => {
+    const services = createBaseServices();
+    const callOrder: string[] = [];
+
+    services.readRuntimeSummary = () => createRuntimeSummary({
+      mode: "background",
+      pid: 3333,
+    });
+    services.ensurePackageManagerExecutable = async () => {
+      callOrder.push("ensure");
+    };
+    services.signalProcess = () => {
+      callOrder.push("signal-stop");
+      return true;
+    };
+    services.waitForRuntimeExit = async () => {
+      callOrder.push("wait-stop");
+      return true;
+    };
+    services.runPackageUpdate = async () => {
+      callOrder.push("install");
+      return createPackageUpdateResult({
+        exitCode: 1,
+        stderr: "npm ERR! code EACCES",
+      });
+    };
+    services.spawnBackgroundProcess = () => {
+      callOrder.push("spawn-rollback");
+      return {
+        pid: 7444,
+        unref() {},
+      };
+    };
+    services.waitForBackgroundRuntime = async () => {
+      callOrder.push("wait-rollback");
+      return createRuntimeSummary({
+        pid: 7444,
+      });
+    };
+
+    await expect(
+      runCliCommand({ kind: "update" }, services),
+    ).rejects.toThrow(/Rollback daemon restart succeeded/i);
+    expect(callOrder).toEqual([
+      "ensure",
+      "signal-stop",
+      "wait-stop",
+      "install",
+      "spawn-rollback",
+      "wait-rollback",
+    ]);
+  });
+
+  test("update keeps install success but warns when background restart fails", async () => {
+    const services = createBaseServices();
+
+    services.readRuntimeSummary = () => createRuntimeSummary({
+      mode: "background",
+      pid: 4433,
+    });
+    services.signalProcess = () => true;
+    services.waitForRuntimeExit = async () => true;
+    services.runPackageUpdate = async () => createPackageUpdateResult();
+    services.spawnBackgroundProcess = ({ command, args }) => {
+      expect(command).toBe("code-helm");
+      expect(args).toEqual(["start", "--daemon"]);
+      return {
+        pid: 9555,
+        unref() {},
+      };
+    };
+    services.waitForBackgroundRuntime = async () => undefined;
+
+    const result = await runCliCommand({ kind: "update" }, services);
+
+    expect(result.output).toContain("CodeHelm Updated With Warnings");
+    expect(result.output).toContain("Background daemon did not come back automatically");
+    expect(result.output).toContain("code-helm start --daemon");
+  });
+
+  test("update reports a missing package-manager executable before background stop", async () => {
+    const services = createBaseServices();
+    let signalCalls = 0;
+
+    services.readUpdateCheck = async () => createUpdateCheckResult();
+    services.readRuntimeSummary = () => createRuntimeSummary({
+      mode: "background",
+      pid: 9921,
+    });
+    services.ensurePackageManagerExecutable = async () => {
+      throw new Error("Package manager npm is not available on PATH.");
+    };
+    services.signalProcess = () => {
+      signalCalls += 1;
+      return true;
+    };
+    services.runPackageUpdate = async () => {
+      throw new Error("install command should not run when executable is missing");
+    };
+
+    await expect(
+      runCliCommand({ kind: "update" }, services),
+    ).rejects.toThrow(/Package manager npm is not available on PATH/i);
+    expect(signalCalls).toBe(0);
+  });
+
+  test("update reports install command failures with the attempted command", async () => {
+    const services = createBaseServices();
+
+    services.readUpdateCheck = async () => createUpdateCheckResult();
+    services.runPackageUpdate = async () => createPackageUpdateResult({
       exitCode: 1,
-      stdout: "",
       stderr: "npm ERR! code EACCES",
     });
 
     await expect(
       runCliCommand({ kind: "update" }, services),
-    ).rejects.toThrow(/Update Failed/);
-  });
-
-  test("update reports missing npm with explicit failure copy", async () => {
-    const services = createBaseServices() as CommandServices & {
-      runPackageUpdate: () => Promise<{
-        command: string;
-        exitCode: number;
-        stdout: string;
-        stderr: string;
-        error?: string;
-      }>;
-    };
-
-    services.runPackageUpdate = async () => ({
-      command: buildDefaultPackageUpdateCommand().join(" "),
-      exitCode: 1,
-      stdout: "",
-      stderr: "",
-      error: "spawn npm ENOENT",
-    });
-
+    ).rejects.toThrow(/Update Failed/i);
     await expect(
       runCliCommand({ kind: "update" }, services),
-    ).rejects.toThrow(/npm/i);
+    ).rejects.toThrow(/npm install -g code-helm@latest/i);
   });
 
   test("start auto-enters onboarding when config is missing", async () => {

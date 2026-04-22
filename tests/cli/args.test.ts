@@ -16,6 +16,8 @@ test("parses supported cli commands", () => {
   expect(parseCliArgs(["version"])).toEqual({ kind: "version" });
   expect(parseCliArgs(["-v"])).toEqual({ kind: "version" });
   expect(parseCliArgs(["--version"])).toEqual({ kind: "version" });
+  expect(parseCliArgs(["check"])).toEqual({ kind: "check", yes: false });
+  expect(parseCliArgs(["check", "--yes"])).toEqual({ kind: "check", yes: true });
   expect(parseCliArgs(["update"])).toEqual({ kind: "update" });
   expect(parseCliArgs(["autostart", "enable"])).toEqual({
     kind: "autostart",
@@ -30,10 +32,16 @@ test("parses supported cli commands", () => {
 
 test("rejects unknown commands with a usage error", () => {
   expect(() => parseCliArgs(["wat"])).toThrow(/Usage: code-helm/);
+  expect(() => parseCliArgs(["wat"])).toThrow(
+    /Usage: code-helm <help\|onboard\|start\|status\|stop\|version\|check\|update\|autostart\|uninstall>/,
+  );
 });
 
 test("rejects empty argv with a usage error", () => {
   expect(() => parseCliArgs([])).toThrow(/No command provided/);
+  expect(() => parseCliArgs([])).toThrow(
+    /Usage: code-helm <help\|onboard\|start\|status\|stop\|version\|check\|update\|autostart\|uninstall>/,
+  );
 });
 
 test("rejects extra args for single-word commands", () => {
@@ -54,6 +62,15 @@ test("rejects extra args for single-word commands", () => {
   );
   expect(() => parseCliArgs(["version", "extra"])).toThrow(
     /Unknown arguments for version/,
+  );
+  expect(() => parseCliArgs(["check", "extra"])).toThrow(
+    /Unknown arguments for check/,
+  );
+  expect(() => parseCliArgs(["check", "--yes", "extra"])).toThrow(
+    /Unknown arguments for check/,
+  );
+  expect(() => parseCliArgs(["check", "--bogus"])).toThrow(
+    /Unknown arguments for check/,
   );
   expect(() => parseCliArgs(["update", "extra"])).toThrow(
     /Unknown arguments for update/,

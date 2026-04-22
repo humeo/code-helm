@@ -119,6 +119,36 @@ code-helm status
 code-helm stop
 ```
 
+## Check And Update
+
+CodeHelm can check the published package version without changing your installation:
+
+```bash
+code-helm check
+```
+
+To check and immediately continue into the same update flow:
+
+```bash
+code-helm check --yes
+```
+
+To update directly:
+
+```bash
+code-helm update
+```
+
+Update behavior:
+
+- `check` shows the installed version, latest published version, detected package manager, and the update command it would use.
+- `check --yes` skips the confirmation step and runs the same update path as `code-helm update`.
+- `update` auto-detects whether this global install is managed by `npm` or `bun` and uses the matching global update command.
+- If CodeHelm is running in the foreground, the package can still update, but that already-running foreground process stays on the old version until you stop it and start CodeHelm again.
+- If CodeHelm is running as a background daemon, `update` stops it before installing and restarts it automatically when possible.
+- If the daemon does not come back automatically after update, CodeHelm tells you to recover with `code-helm start --daemon`.
+
+## Autostart
 On macOS, CodeHelm can install a LaunchAgent that starts the daemon at login:
 
 ```bash

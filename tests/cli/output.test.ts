@@ -172,6 +172,40 @@ describe("cli output renderer", () => {
     expect(output).toContain("  code-helm status");
   });
 
+  test("renders warning panels with version rows and recovery steps without frame characters", () => {
+    const output = renderWarningPanel({
+      title: "CodeHelm Updated With Warnings",
+      headline: "Background daemon did not come back automatically.",
+      sections: [
+        {
+          kind: "key-value",
+          title: "Status",
+          rows: [
+            { key: "Installed version", value: "0.2.0" },
+            { key: "Latest version", value: "0.2.1" },
+            { key: "Package manager", value: "npm" },
+          ],
+        },
+        {
+          kind: "steps",
+          title: "Try next",
+          items: ["code-helm start --daemon", "code-helm status"],
+        },
+      ],
+      env: {},
+    });
+
+    expect(output).toContain("CodeHelm Updated With Warnings");
+    expect(output).toContain("Status");
+    expect(output).toContain("Installed version  0.2.0");
+    expect(output).toContain("Latest version     0.2.1");
+    expect(output).toContain("Package manager    npm");
+    expect(output).toContain("Try next");
+    expect(output).toContain("  code-helm start --daemon");
+    expect(output).toContain("  code-helm status");
+    expectNoFrameCharacters(output);
+  });
+
   test("renders diagnostics after the headline instead of before it", () => {
     const output = renderErrorPanel({
       title: "CodeHelm Start Failed",
@@ -227,7 +261,7 @@ describe("cli output renderer", () => {
 
   test("formats usage-only errors with generic Problem and grouped Usage lines", () => {
     const output = renderCliCaughtError(
-      new Error("Usage: code-helm autostart <enable|disable>\nUsage: code-helm <help|onboard|start|status|stop|version|update|autostart|uninstall>"),
+      new Error("Usage: code-helm autostart <enable|disable>\nUsage: code-helm <help|onboard|start|status|stop|version|check|update|autostart|uninstall>"),
       {},
     );
 
@@ -236,7 +270,7 @@ describe("cli output renderer", () => {
     expect(output).toContain("Invalid command arguments.");
     expect(output).toContain("Usage");
     expect(output).toContain("Usage: code-helm autostart <enable|disable>");
-    expect(output).toContain("Usage: code-helm <help|onboard|start|status|stop|version|update|autostart|uninstall>");
+    expect(output).toContain("Usage: code-helm <help|onboard|start|status|stop|version|check|update|autostart|uninstall>");
     expect(output).not.toContain("Details");
   });
 
