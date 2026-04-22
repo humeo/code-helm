@@ -93,6 +93,7 @@ export type CommandServices = {
     timeoutMs?: number;
   }) => Promise<boolean>;
   readUpdateCheck: () => Promise<UpdateCheckResult>;
+  onExecuteUpdateCommand: (result: UpdateCheckResult) => void;
   ensurePackageManagerExecutable: (input: PackageManagerResolution) => Promise<void>;
   runPackageUpdate: (command: string[]) => Promise<PackageUpdateResult>;
   removePath: (targetPath: string) => void;
@@ -256,6 +257,7 @@ const createDefaultServices = (
     }, { readRuntimeSummary }),
   waitForRuntimeExit: defaultWaitForRuntimeExit,
   readUpdateCheck: defaultReadUpdateCheck,
+  onExecuteUpdateCommand: () => {},
   ensurePackageManagerExecutable: defaultEnsurePackageManagerExecutable,
   runPackageUpdate: async (command) => defaultRunPackageUpdate(command, env),
   removePath: defaultRemovePath,
@@ -1011,6 +1013,8 @@ const executeUpdateCommand = async (
   services: CommandServices,
   checkResult: UpdateCheckResult,
 ) => {
+  services.onExecuteUpdateCommand(checkResult);
+
   if (!checkResult.updateAvailable) {
     return {
       output: renderNoOpUpdateOutput(services.env, checkResult),
@@ -1074,11 +1078,9 @@ export const runCliCommand = async (
   if (command.kind === "check") {
     const checkResult = await services.readUpdateCheck();
 
-    if (!command.yes || !checkResult.updateAvailable) {
+    if (!command.yes) {
       return {
-        output: command.yes
-          ? renderNoOpUpdateOutput(services.env, checkResult)
-          : renderCheckStatusOutput(services.env, checkResult),
+        output: renderCheckStatusOutput(services.env, checkResult),
       };
     }
 

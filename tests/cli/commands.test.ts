@@ -132,6 +132,7 @@ const createBaseServices = (): CommandServices => {
       packageManager: defaultPackageManager,
       updateAvailable: true,
     }),
+    onExecuteUpdateCommand: () => {},
     ensurePackageManagerExecutable: async () => {},
     runPackageUpdate: async () => ({
       command: "npm install -g code-helm@latest",
@@ -356,12 +357,16 @@ describe("runCliCommand", () => {
     const services = createBaseServices();
     let ensureCalls = 0;
     let updateCalls = 0;
+    let executeCalls = 0;
 
     services.readUpdateCheck = async () => createUpdateCheckResult({
       installedVersion: "0.2.0",
       latestVersion: "0.2.1",
       updateAvailable: true,
     });
+    services.onExecuteUpdateCommand = () => {
+      executeCalls += 1;
+    };
     services.ensurePackageManagerExecutable = async (input) => {
       ensureCalls += 1;
       expect(input.executableName).toBe("npm");
@@ -374,10 +379,43 @@ describe("runCliCommand", () => {
 
     const result = await runCliCommand({ kind: "check", yes: true }, services);
 
+    expect(executeCalls).toBe(1);
     expect(ensureCalls).toBe(1);
     expect(updateCalls).toBe(1);
     expect(result.output).toContain("Updated from 0.2.0 to 0.2.1");
     expect(result.output).toContain("Package manager");
+  });
+
+  test("check --yes on the latest version still enters the shared update execution path", async () => {
+    const services = createBaseServices();
+    let executeCalls = 0;
+    let ensureCalls = 0;
+    let updateCalls = 0;
+
+    services.readUpdateCheck = async () => createUpdateCheckResult({
+      installedVersion: "0.2.1",
+      latestVersion: "0.2.1",
+      updateAvailable: false,
+    });
+    services.onExecuteUpdateCommand = () => {
+      executeCalls += 1;
+    };
+    services.ensurePackageManagerExecutable = async () => {
+      ensureCalls += 1;
+    };
+    services.runPackageUpdate = async () => {
+      updateCalls += 1;
+      return createPackageUpdateResult();
+    };
+
+    const result = await runCliCommand({ kind: "check", yes: true }, services);
+
+    expect(executeCalls).toBe(1);
+    expect(ensureCalls).toBe(0);
+    expect(updateCalls).toBe(0);
+    expect(result.output).toContain("Already on the latest version");
+    expect(result.output).toContain("Installed version");
+    expect(result.output).toContain("Latest version");
   });
 
   test("update reports when already on the latest version", async () => {
