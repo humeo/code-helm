@@ -569,7 +569,9 @@ describe("checkForUpdates", () => {
           version: "1.2.3",
         }),
       }),
-    ).rejects.toThrow("Invalid semantic version: nope");
+    ).rejects.toThrow(
+      "Could not determine the latest published version for code-helm from the npm registry response.",
+    );
   });
 
   test("accepts build metadata and ignores it for precedence", async () => {

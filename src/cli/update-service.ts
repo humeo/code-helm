@@ -377,6 +377,15 @@ export const readLatestPublishedVersion = async ({
     );
   }
 
+  try {
+    parseSemanticVersion(latestVersion);
+  } catch (error) {
+    throw new Error(
+      `Could not determine the latest published version for ${PACKAGE_NAME} from the npm registry response.`,
+      { cause: error },
+    );
+  }
+
   return latestVersion;
 };
 
