@@ -74,6 +74,20 @@ describe("resolveInstalledPackageManager", () => {
     });
   });
 
+  test("detects npm installs from canonical linux nvm global package paths", () => {
+    const packageRoot =
+      "/home/example/.nvm/versions/node/v22.17.0/lib/node_modules/code-helm";
+
+    const result = resolveInstalledPackageManager({ packageRoot });
+
+    expect(result).toEqual({
+      kind: "npm",
+      command: ["npm", "install", "-g", "code-helm@latest"],
+      executableName: "npm",
+      packageRoot,
+    });
+  });
+
   test("returns unknown for near-miss nvm-shaped paths that are not canonical global installs", () => {
     const packageRoot =
       "/tmp/not-global/.nvm/versions/node/v22.17.0/lib/node_modules/code-helm";
@@ -116,6 +130,20 @@ describe("resolveInstalledPackageManager", () => {
   test("detects bun installs from canonical global package paths", () => {
     const packageRoot =
       "/Users/example/.bun/install/global/node_modules/code-helm";
+
+    const result = resolveInstalledPackageManager({ packageRoot });
+
+    expect(result).toEqual({
+      kind: "bun",
+      command: ["bun", "add", "-g", "code-helm@latest"],
+      executableName: "bun",
+      packageRoot,
+    });
+  });
+
+  test("detects bun installs from canonical linux global package paths", () => {
+    const packageRoot =
+      "/home/example/.bun/install/global/node_modules/code-helm";
 
     const result = resolveInstalledPackageManager({ packageRoot });
 
@@ -199,6 +227,48 @@ describe("resolveInstalledPackageManager", () => {
       kind: "npm",
       command: ["npm", "install", "-g", "code-helm@latest"],
       executableName: "npm",
+      executablePath,
+      packageRoot: resolvedPackageRoot,
+    });
+  });
+
+  test("detects npm installs from canonical linux executable realpaths before falling back to packageRoot", () => {
+    const packageRoot = "/srv/custom/code-helm";
+    const executablePath = "/home/example/.nvm/versions/node/v22.17.0/bin/code-helm";
+    const resolvedPackageRoot =
+      "/home/example/.nvm/versions/node/v22.17.0/lib/node_modules/code-helm";
+    const resolvedExecutablePath = `${resolvedPackageRoot}/bin/code-helm`;
+
+    const result = resolveInstalledPackageManager({
+      packageRoot,
+      executablePath,
+      resolveRealPath: () => resolvedExecutablePath,
+    });
+
+    expect(result).toEqual({
+      kind: "npm",
+      command: ["npm", "install", "-g", "code-helm@latest"],
+      executableName: "npm",
+      executablePath,
+      packageRoot: resolvedPackageRoot,
+    });
+  });
+
+  test("detects bun installs from canonical linux executable realpaths", () => {
+    const executablePath = "/home/example/.bun/bin/code-helm";
+    const resolvedPackageRoot =
+      "/home/example/.bun/install/global/node_modules/code-helm";
+    const resolvedExecutablePath = `${resolvedPackageRoot}/bin/code-helm`;
+
+    const result = resolveInstalledPackageManager({
+      executablePath,
+      resolveRealPath: () => resolvedExecutablePath,
+    });
+
+    expect(result).toEqual({
+      kind: "bun",
+      command: ["bun", "add", "-g", "code-helm@latest"],
+      executableName: "bun",
       executablePath,
       packageRoot: resolvedPackageRoot,
     });

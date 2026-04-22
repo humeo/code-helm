@@ -87,13 +87,15 @@ const buildInstallCommand = (
   return ["npm", "install", "-g", `${PACKAGE_NAME}@latest`];
 };
 
+const USER_HOME_PREFIX_PATTERN = /(?:\/Users|\/home)\/[^/]+/u;
+
 const resolvePackageManagerFromPackageRoot = (
   packageRoot: string,
 ): PackageManagerResolution => {
   const canonicalBunGlobalPackagePathPattern =
-    /^\/Users\/[^/]+\/\.bun\/install\/global\/node_modules\/code-helm$/u;
+    new RegExp(`^${USER_HOME_PREFIX_PATTERN.source}/\\.bun/install/global/node_modules/code-helm$`, "u");
   const isCanonicalNvmGlobalPackagePath =
-    /^\/Users\/[^/]+\/\.nvm\/versions\/node\/[^/]+\/lib\/node_modules\/code-helm$/u
+    new RegExp(`^${USER_HOME_PREFIX_PATTERN.source}/\\.nvm/versions/node/[^/]+/lib/node_modules/code-helm$`, "u")
       .test(packageRoot);
   const isCanonicalBunGlobalPackagePath =
     canonicalBunGlobalPackagePathPattern.test(packageRoot);
@@ -137,7 +139,7 @@ const resolvePackageManagerFromPackageRoot = (
 const resolveBunPackageRootFromExecutablePath = (resolvedPath: string) => {
   const match =
     resolvedPath.match(
-      /^((?:\/Users\/[^/]+\/\.bun\/install\/global\/node_modules\/code-helm))(?:\/.*)?$/u,
+      new RegExp(`^((?:${USER_HOME_PREFIX_PATTERN.source}/\\.bun/install/global/node_modules/code-helm))(?:/.*)?$`, "u"),
     );
 
   return match?.[1];
@@ -146,7 +148,7 @@ const resolveBunPackageRootFromExecutablePath = (resolvedPath: string) => {
 const resolveNpmPackageRootFromExecutablePath = (resolvedPath: string) => {
   const nvmMatch =
     resolvedPath.match(
-      /^((?:\/Users\/[^/]+\/\.nvm\/versions\/node\/[^/]+\/lib\/node_modules\/code-helm))(?:\/.*)?$/u,
+      new RegExp(`^((?:${USER_HOME_PREFIX_PATTERN.source}/\\.nvm/versions/node/[^/]+/lib/node_modules/code-helm))(?:/.*)?$`, "u"),
     );
 
   if (nvmMatch?.[1]) {
