@@ -122,6 +122,32 @@ const resolveBunPackageRootFromExecutablePath = (resolvedPath: string) => {
   return match?.[1];
 };
 
+const compareSemanticVersions = (left: string, right: string) => {
+  const parseVersion = (value: string) => {
+    const [core] = value.split("-", 1);
+    return core.split(".").map((part) => Number.parseInt(part, 10));
+  };
+
+  const leftParts = parseVersion(left);
+  const rightParts = parseVersion(right);
+  const maxLength = Math.max(leftParts.length, rightParts.length);
+
+  for (let index = 0; index < maxLength; index += 1) {
+    const leftPart = Number.isFinite(leftParts[index]) ? leftParts[index] : 0;
+    const rightPart = Number.isFinite(rightParts[index]) ? rightParts[index] : 0;
+
+    if (leftPart > rightPart) {
+      return 1;
+    }
+
+    if (leftPart < rightPart) {
+      return -1;
+    }
+  }
+
+  return 0;
+};
+
 export const readInstalledPackageMetadataFromPath = (packageRoot: string) => {
   return readPackageMetadataFromFile(join(packageRoot, "package.json"));
 };
@@ -131,35 +157,30 @@ export const resolveInstalledPackageManager = ({
   executablePath,
   resolveRealPath = realpathSync,
 }: ResolveInstalledPackageManagerOptions): PackageManagerResolution => {
+  if (executablePath) {
+    let resolvedExecutablePath = executablePath;
+
+    try {
+      resolvedExecutablePath = resolveRealPath(executablePath);
+    } catch {
+      resolvedExecutablePath = executablePath;
+    }
+
+    const bunPackageRoot = resolveBunPackageRootFromExecutablePath(resolvedExecutablePath);
+
+    if (bunPackageRoot) {
+      return {
+        kind: "bun",
+        command: buildInstallCommand("bun"),
+        executableName: "bun",
+        executablePath,
+        packageRoot: bunPackageRoot,
+      };
+    }
+  }
+
   if (packageRoot) {
     return resolvePackageManagerFromPackageRoot(packageRoot);
-  }
-
-  if (!executablePath) {
-    return {
-      kind: "unknown",
-      command: undefined,
-    };
-  }
-
-  let resolvedExecutablePath = executablePath;
-
-  try {
-    resolvedExecutablePath = resolveRealPath(executablePath);
-  } catch {
-    resolvedExecutablePath = executablePath;
-  }
-
-  const bunPackageRoot = resolveBunPackageRootFromExecutablePath(resolvedExecutablePath);
-
-  if (bunPackageRoot) {
-    return {
-      kind: "bun",
-      command: buildInstallCommand("bun"),
-      executableName: "bun",
-      executablePath,
-      packageRoot: bunPackageRoot,
-    };
   }
 
   return {
@@ -232,7 +253,7 @@ export const checkForUpdates = async ({
     installedVersion: installedMetadata.version,
     latestVersion,
     packageManager,
-    updateAvailable: installedMetadata.version !== latestVersion,
+    updateAvailable: compareSemanticVersions(installedMetadata.version, latestVersion) < 0,
   };
 };
 
