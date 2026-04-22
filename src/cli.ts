@@ -12,6 +12,7 @@ const createRenderEnv = (isTTY: boolean | undefined) => {
 const runCommand = async (command: ReturnType<typeof parseCliArgs>) => {
   const result = await runCliCommand(command, {
     env: createRenderEnv(process.stdout.isTTY),
+    emitOutput: (output) => console.log(output),
   });
 
   if (result.output.trim().length > 0) {

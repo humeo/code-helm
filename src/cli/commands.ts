@@ -2,6 +2,7 @@ import { spawn, spawnSync, type SpawnOptions } from "node:child_process";
 import { existsSync, rmSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { confirm, isCancel } from "@clack/prompts";
 import type { CliCommand } from "./args";
 import {
   renderErrorPanel,
@@ -92,6 +93,8 @@ export type CommandServices = {
     isPidAlive: (pid: number) => boolean;
     timeoutMs?: number;
   }) => Promise<boolean>;
+  emitOutput: (output: string) => void;
+  confirmUpdate: (input: { installedVersion: string; latestVersion: string }) => Promise<boolean>;
   readUpdateCheck: () => Promise<UpdateCheckResult>;
   onExecuteUpdateCommand: (result: UpdateCheckResult) => void;
   ensurePackageManagerExecutable: (input: PackageManagerResolution) => Promise<void>;
@@ -231,6 +234,21 @@ const defaultRunPackageUpdate = async (
   return performPackageUpdate(command, env);
 };
 
+const defaultConfirmUpdate: CommandServices["confirmUpdate"] = async () => {
+  const confirmed = await confirm({
+    message: "Update now?",
+    active: "yes",
+    inactive: "no",
+    initialValue: true,
+  });
+
+  if (isCancel(confirmed)) {
+    return false;
+  }
+
+  return confirmed;
+};
+
 const createDefaultServices = (
   env: Record<string, string | undefined>,
 ): CommandServices => ({
@@ -256,6 +274,8 @@ const createDefaultServices = (
       timeoutMs: options.timeoutMs,
     }, { readRuntimeSummary }),
   waitForRuntimeExit: defaultWaitForRuntimeExit,
+  emitOutput: () => {},
+  confirmUpdate: defaultConfirmUpdate,
   readUpdateCheck: defaultReadUpdateCheck,
   onExecuteUpdateCommand: () => {},
   ensurePackageManagerExecutable: defaultEnsurePackageManagerExecutable,
@@ -937,6 +957,28 @@ const renderNoOpUpdateOutput = (
   });
 };
 
+const renderCancelledUpdateOutput = (
+  env: Record<string, string | undefined>,
+  result: UpdateCheckResult,
+) => {
+  return renderSuccessPanel({
+    title: "Update Cancelled",
+    headline: `Update canceled. Installed version remains ${result.installedVersion}.`,
+    sections: [
+      {
+        kind: "key-value",
+        title: "Status",
+        rows: [
+          { key: "Installed version remains", value: result.installedVersion },
+          { key: "Latest version", value: result.latestVersion },
+          { key: "Package manager", value: result.packageManager.kind },
+        ],
+      },
+    ],
+    env,
+  });
+};
+
 const renderUpdateSuccessOutput = (
   env: Record<string, string | undefined>,
   checkResult: UpdateCheckResult,
@@ -1054,6 +1096,10 @@ const executeUpdateCommand = async (
   };
 };
 
+const isInteractiveTerminal = (env: Record<string, string | undefined>) => {
+  return env.CODE_HELM_CLI_IS_TTY === "1";
+};
+
 export const runCliCommand = async (
   command: CliCommand,
   overrides?: Partial<CommandServices>,
@@ -1078,9 +1124,27 @@ export const runCliCommand = async (
   if (command.kind === "check") {
     const checkResult = await services.readUpdateCheck();
 
-    if (!command.yes) {
+    if (command.yes) {
+      return executeUpdateCommand(services, checkResult);
+    }
+
+    const output = renderCheckStatusOutput(services.env, checkResult);
+
+    if (!checkResult.updateAvailable || !isInteractiveTerminal(services.env)) {
       return {
-        output: renderCheckStatusOutput(services.env, checkResult),
+        output,
+      };
+    }
+
+    services.emitOutput(output);
+    const confirmed = await services.confirmUpdate({
+      installedVersion: checkResult.installedVersion,
+      latestVersion: checkResult.latestVersion,
+    });
+
+    if (!confirmed) {
+      return {
+        output: renderCancelledUpdateOutput(services.env, checkResult),
       };
     }
 

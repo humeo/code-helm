@@ -132,6 +132,8 @@ const createBaseServices = (): CommandServices => {
       packageManager: defaultPackageManager,
       updateAvailable: true,
     }),
+    emitOutput: () => {},
+    confirmUpdate: async () => false,
     onExecuteUpdateCommand: () => {},
     ensurePackageManagerExecutable: async () => {},
     runPackageUpdate: async () => ({
@@ -351,6 +353,134 @@ describe("runCliCommand", () => {
     expect(result.output).toContain("Package manager");
     expect(result.output).toContain("Update command");
     expect(result.output).toContain("npm install -g code-helm@latest");
+  });
+
+  test("tty check with update available prompts once", async () => {
+    const emittedOutputs: string[] = [];
+    const services = createBaseServices();
+    let confirmCalls = 0;
+
+    services.env = { CODE_HELM_CLI_IS_TTY: "1" };
+    services.emitOutput = (output) => {
+      emittedOutputs.push(output);
+    };
+    services.confirmUpdate = async () => {
+      confirmCalls += 1;
+      return false;
+    };
+    services.readUpdateCheck = async () => createUpdateCheckResult({
+      installedVersion: "0.2.0",
+      latestVersion: "0.2.1",
+      updateAvailable: true,
+    });
+
+    const result = await runCliCommand({ kind: "check", yes: false }, services);
+
+    expect(confirmCalls).toBe(1);
+    expect(emittedOutputs).toHaveLength(1);
+    expect(emittedOutputs[0]).toContain("Installed version");
+    expect(result.output).toContain("Update canceled");
+  });
+
+  test("tty check acceptance emits the check status first, then returns the update result", async () => {
+    const emittedOutputs: string[] = [];
+    const services = createBaseServices();
+    let confirmCalls = 0;
+
+    services.env = { CODE_HELM_CLI_IS_TTY: "1" };
+    services.emitOutput = (output) => {
+      emittedOutputs.push(output);
+    };
+    services.confirmUpdate = async () => {
+      confirmCalls += 1;
+      return true;
+    };
+    services.readUpdateCheck = async () => createUpdateCheckResult({
+      installedVersion: "0.2.0",
+      latestVersion: "0.2.1",
+      updateAvailable: true,
+    });
+
+    const result = await runCliCommand({ kind: "check", yes: false }, services);
+
+    expect(confirmCalls).toBe(1);
+    expect(emittedOutputs).toHaveLength(1);
+    expect(emittedOutputs[0]).toContain("Installed version");
+    expect(emittedOutputs[0]).toContain("Update available");
+    expect(result.output).toContain("Updated from 0.2.0 to 0.2.1");
+    expect(result.output).not.toEqual(emittedOutputs[0]);
+  });
+
+  test("tty check decline keeps the original check output visible and returns a clear no-op result", async () => {
+    const emittedOutputs: string[] = [];
+    const services = createBaseServices();
+    let confirmCalls = 0;
+    let updateCalls = 0;
+
+    services.env = { CODE_HELM_CLI_IS_TTY: "1" };
+    services.emitOutput = (output) => {
+      emittedOutputs.push(output);
+    };
+    services.confirmUpdate = async () => {
+      confirmCalls += 1;
+      return false;
+    };
+    services.runPackageUpdate = async () => {
+      updateCalls += 1;
+      return createPackageUpdateResult();
+    };
+
+    const result = await runCliCommand({ kind: "check", yes: false }, services);
+
+    expect(confirmCalls).toBe(1);
+    expect(updateCalls).toBe(0);
+    expect(emittedOutputs).toHaveLength(1);
+    expect(emittedOutputs[0]).toContain("Installed version");
+    expect(emittedOutputs[0]).toContain("Update available");
+    expect(result.output).toContain("Update canceled");
+    expect(result.output).toContain("Installed version remains 0.2.0");
+  });
+
+  test("non-tty check never prompts", async () => {
+    const emittedOutputs: string[] = [];
+    const services = createBaseServices();
+    let confirmCalls = 0;
+
+    services.env = { CODE_HELM_CLI_IS_TTY: "0" };
+    services.emitOutput = (output) => {
+      emittedOutputs.push(output);
+    };
+    services.confirmUpdate = async () => {
+      confirmCalls += 1;
+      return true;
+    };
+
+    const result = await runCliCommand({ kind: "check", yes: false }, services);
+
+    expect(confirmCalls).toBe(0);
+    expect(emittedOutputs).toHaveLength(0);
+    expect(result.output).toContain("Update available");
+  });
+
+  test("check --yes never prompts even in tty mode", async () => {
+    const emittedOutputs: string[] = [];
+    const services = createBaseServices();
+    let confirmCalls = 0;
+
+    services.env = { CODE_HELM_CLI_IS_TTY: "1" };
+    services.emitOutput = (output) => {
+      emittedOutputs.push(output);
+    };
+    services.confirmUpdate = async () => {
+      confirmCalls += 1;
+      return true;
+    };
+
+    const result = await runCliCommand({ kind: "check", yes: true }, services);
+
+    expect(confirmCalls).toBe(0);
+    expect(emittedOutputs).toHaveLength(0);
+    expect(result.output).toContain("Updated from 0.2.0 to 0.2.1");
   });
 
   test("check --yes delegates into the update execution path", async () => {
