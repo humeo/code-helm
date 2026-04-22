@@ -46,6 +46,7 @@ import {
   shouldSkipTranscriptRelayEntry,
   shouldSkipTranscriptSnapshotItem,
   finalizeApprovalLifecycleMessageState,
+  finalizeCompletedAssistantTranscriptReply,
   hasHandledTranscriptItem,
   recoverApprovalLifecycleMessageFromHistory,
   isExpectedPreMaterializationIncludeTurnsError,
@@ -5174,6 +5175,65 @@ test("snapshot replay does not duplicate a resumed turn after live relay used a 
   expect(relayEntryIds({ turns: snapshotTurns, source: "snapshot" })).toEqual([]);
   expect(runtime.seenItemIds.has(getUserTranscriptEntryId("turn-1"))).toBe(true);
   expect(runtime.seenItemIds.has(getAssistantTranscriptEntryId("turn-1"))).toBe(true);
+});
+
+test("snapshot replay does not duplicate a resumed final assistant reply after live completion used the active turn fallback", async () => {
+  const runtime = {
+    seenItemIds: new Set<string>(),
+    finalizingItemIds: new Set<string>(),
+    itemTurnIds: new Map<string, string>(),
+    activeTurnId: "turn-1",
+    turnReplyMessageIds: new Map<string, string>(),
+  };
+  const sent: Array<{
+    payload: { content?: string; embeds?: unknown[] };
+    replyToMessageId?: string;
+  }> = [];
+  const snapshotTurns: CodexTurn[] = [
+    {
+      id: "turn-1",
+      status: "completed",
+      items: [
+        {
+          type: "agentMessage",
+          id: "item-2",
+          text: "You are in `/tmp/project`.",
+          phase: "final_answer",
+        },
+      ],
+    },
+  ];
+
+  await finalizeCompletedAssistantTranscriptReply({
+    runtime,
+    item: {
+      type: "agentMessage",
+      id: "item-2",
+      text: "You are in `/tmp/project`.",
+      phase: "final_answer",
+    },
+    sendMessage: async (payload, options = {}) => {
+      sent.push({
+        payload,
+        replyToMessageId: options.replyToMessageId,
+      });
+    },
+  });
+
+  expect(sent).toHaveLength(1);
+  expect(runtime.seenItemIds.has(getAssistantTranscriptEntryId("turn-1"))).toBe(true);
+
+  const snapshotEntries = collectTranscriptEntries(snapshotTurns, {
+    source: "snapshot",
+  }).filter((entry) =>
+    !shouldSkipTranscriptRelayEntry({
+      runtime,
+      itemId: entry.itemId,
+      source: "snapshot",
+    })
+  );
+
+  expect(renderTranscriptMessages(snapshotEntries).map((message) => message.entryItemId)).toEqual([]);
 });
 
 test("runtime seeded from snapshot after restart does not re-degrade the same completed Discord turn", () => {

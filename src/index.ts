@@ -1888,7 +1888,7 @@ export const seedTranscriptRuntimeSeenItemsFromSnapshot = ({
   runtime,
   turns,
 }: {
-  runtime: Pick<TranscriptRuntime, "seenItemIds" | "finalizingItemIds">;
+  runtime: Pick<TranscriptRuntime, "seenItemIds" | "finalizingItemIds" | "activeTurnId">;
   turns: CodexTurn[] | undefined;
 }) => {
   markTranscriptItemsSeen({
@@ -1896,6 +1896,63 @@ export const seedTranscriptRuntimeSeenItemsFromSnapshot = ({
     turns,
     source: "snapshot",
   });
+};
+
+export const finalizeCompletedAssistantTranscriptReply = async ({
+  runtime,
+  turnId,
+  item,
+  sendMessage,
+}: {
+  runtime: Pick<
+    TranscriptRuntime,
+    | "itemTurnIds"
+    | "activeTurnId"
+    | "finalizingItemIds"
+    | "seenItemIds"
+    | "turnReplyMessageIds"
+  >;
+  turnId?: string;
+  item: CodexAgentMessageItem;
+  sendMessage: (
+    payload: DiscordMessagePayload,
+    options?: {
+      replyToMessageId?: string;
+    },
+  ) => Promise<unknown>;
+}) => {
+  const resolvedTurnId =
+    turnId
+    ?? runtime.itemTurnIds.get(item.id)
+    ?? runtime.activeTurnId;
+  const rendered = renderTranscriptEntry({
+    itemId: resolvedTurnId
+      ? getAssistantTranscriptEntryId(resolvedTurnId)
+      : item.id,
+    kind: "assistant",
+    text: item.text,
+  });
+  const assistantEntryId = resolvedTurnId
+    ? getAssistantTranscriptEntryId(resolvedTurnId)
+    : item.id;
+
+  runtime.finalizingItemIds.add(assistantEntryId);
+
+  try {
+    await sendMessage(rendered, {
+      replyToMessageId: resolvedTurnId
+        ? runtime.turnReplyMessageIds.get(resolvedTurnId)
+        : undefined,
+    });
+    runtime.seenItemIds.add(assistantEntryId);
+  } finally {
+    runtime.finalizingItemIds.delete(assistantEntryId);
+    runtime.itemTurnIds.delete(item.id);
+
+    if (resolvedTurnId) {
+      runtime.turnReplyMessageIds.delete(resolvedTurnId);
+    }
+  }
 };
 
 const consumePendingDiscordReplyReferences = ({
@@ -5969,35 +6026,13 @@ const startCodeHelmRuntime = async (
       return;
     }
 
-    const rendered = renderTranscriptEntry({
-      itemId: resolvedTurnId
-        ? getAssistantTranscriptEntryId(resolvedTurnId)
-        : item.id,
-      kind: "assistant",
-      text: item.text,
+    await finalizeCompletedAssistantTranscriptReply({
+      runtime,
+      turnId: resolvedTurnId,
+      item,
+      sendMessage: async (payload, options) =>
+        sendChannelMessage(discord, session.discordThreadId, payload, options),
     });
-
-    const assistantEntryId = resolvedTurnId
-      ? getAssistantTranscriptEntryId(resolvedTurnId)
-      : item.id;
-
-    runtime.finalizingItemIds.add(assistantEntryId);
-
-    try {
-      await sendChannelMessage(discord, session.discordThreadId, rendered, {
-        replyToMessageId: resolvedTurnId
-          ? runtime.turnReplyMessageIds.get(resolvedTurnId)
-          : undefined,
-      });
-      runtime.seenItemIds.add(assistantEntryId);
-    } finally {
-      runtime.finalizingItemIds.delete(assistantEntryId);
-      runtime.itemTurnIds.delete(item.id);
-
-      if (resolvedTurnId) {
-        runtime.turnReplyMessageIds.delete(resolvedTurnId);
-      }
-    }
   };
 
   bot.client.on(Events.MessageCreate, (message) => {
