@@ -101,6 +101,19 @@ describe("resolveInstalledPackageManager", () => {
     });
   });
 
+  test("returns unknown for nested homebrew near-miss paths", () => {
+    const packageRoot =
+      "/opt/homebrew/lib/node_modules/foo/node_modules/code-helm";
+
+    const result = resolveInstalledPackageManager({ packageRoot });
+
+    expect(result).toEqual({
+      kind: "unknown",
+      command: undefined,
+      packageRoot,
+    });
+  });
+
   test("detects bun installs from canonical global package paths", () => {
     const packageRoot =
       "/Users/example/.bun/install/global/node_modules/code-helm";

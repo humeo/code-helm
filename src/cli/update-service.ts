@@ -72,6 +72,10 @@ const resolvePackageManagerFromPackageRoot = (
   const isCanonicalNvmGlobalPackagePath =
     /^\/Users\/[^/]+\/\.nvm\/versions\/node\/[^/]+\/lib\/node_modules\/code-helm$/u
       .test(packageRoot);
+  const isCanonicalHomebrewGlobalPackagePath =
+    packageRoot === `/opt/homebrew/lib/node_modules/${PACKAGE_NAME}`;
+  const isCanonicalUsrLocalGlobalPackagePath =
+    packageRoot === `/usr/local/lib/node_modules/${PACKAGE_NAME}`;
 
   if (packageRoot.endsWith(`/.bun/install/global/node_modules/${PACKAGE_NAME}`)) {
     return {
@@ -86,8 +90,8 @@ const resolvePackageManagerFromPackageRoot = (
     packageRoot.endsWith(`/node_modules/${PACKAGE_NAME}`) &&
     (
       isCanonicalNvmGlobalPackagePath ||
-      packageRoot.startsWith("/opt/homebrew/lib/node_modules/") ||
-      packageRoot.startsWith("/usr/local/lib/node_modules/")
+      isCanonicalHomebrewGlobalPackagePath ||
+      isCanonicalUsrLocalGlobalPackagePath
     )
   ) {
     return {
