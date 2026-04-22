@@ -953,6 +953,17 @@ export const runCliCommand = async (
     };
   }
 
+  if (
+    command.kind !== "start" &&
+    command.kind !== "status" &&
+    command.kind !== "stop" &&
+    command.kind !== "onboard" &&
+    command.kind !== "autostart" &&
+    command.kind !== "uninstall"
+  ) {
+    throw new Error(`Internal error: unsupported CLI command ${(command as { kind: string }).kind}`);
+  }
+
   const store = services.loadConfigStore({
     env: services.env,
   });
@@ -1233,5 +1244,4 @@ export const runCliCommand = async (
       };
   }
 
-  throw new Error(`Internal error: unsupported CLI command ${(command as { kind: string }).kind}`);
 };

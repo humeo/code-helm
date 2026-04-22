@@ -202,6 +202,7 @@ describe("runCliCommand", () => {
     expect(result.output).toContain("Check whether a newer version is available");
     expect(result.output).toContain("update");
     expect(result.output).toContain("Install the latest published package");
+    expect(result.output.indexOf("check")).toBeLessThan(result.output.indexOf("update"));
     expect(result.output).toContain("uninstall");
     expect(result.output).toContain("Remove local CodeHelm data");
     expect(result.output).not.toContain("Overview");
@@ -228,6 +229,27 @@ describe("runCliCommand", () => {
     expect(readRuntimeSummaryCalls).toBe(0);
     expect(result.output.trim().split("\n")).toEqual([`CodeHelm ${expectedMetadata.version}`]);
     expect(result.output).not.toContain("CodeHelm Version");
+  });
+
+  test("unsupported internal commands stop before touching config or runtime loaders", async () => {
+    const services = createBaseServices();
+    let loadConfigStoreCalls = 0;
+    let readRuntimeSummaryCalls = 0;
+
+    services.loadConfigStore = () => {
+      loadConfigStoreCalls += 1;
+      throw new Error("unsupported command should not load config");
+    };
+    services.readRuntimeSummary = () => {
+      readRuntimeSummaryCalls += 1;
+      throw new Error("unsupported command should not read runtime");
+    };
+
+    await expect(
+      runCliCommand({ kind: "bogus" } as unknown as CliCommand, services),
+    ).rejects.toThrow(/Internal error: unsupported CLI command bogus/);
+    expect(loadConfigStoreCalls).toBe(0);
+    expect(readRuntimeSummaryCalls).toBe(0);
   });
 
   test("update renders a success panel without touching config or runtime", async () => {
