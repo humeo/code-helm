@@ -9,6 +9,7 @@ import { dirname, join } from "node:path";
 import { readPackageMetadata } from "../../src/package-metadata";
 import {
   checkForUpdates,
+  performPackageUpdate,
   readInstalledPackageMetadataFromPath,
   readLatestPublishedVersion,
   resolveInstalledPackageManager,
@@ -531,6 +532,33 @@ describe("checkForUpdates", () => {
         packageRoot,
       },
       updateAvailable: false,
+    });
+  });
+});
+
+describe("performPackageUpdate", () => {
+  test("reports signal-terminated installs as failures with interruption details", () => {
+    const result = performPackageUpdate(
+      ["npm", "install", "-g", "code-helm@latest"],
+      {},
+      {
+        spawnSync: () => ({
+          status: null,
+          signal: "SIGTERM",
+          stdout: "partial output",
+          stderr: "terminated",
+          error: undefined,
+        }),
+      },
+    );
+
+    expect(result).toEqual({
+      command: "npm install -g code-helm@latest",
+      exitCode: 1,
+      signal: "SIGTERM",
+      stdout: "partial output",
+      stderr: "terminated",
+      error: "Install command terminated by signal: SIGTERM",
     });
   });
 });

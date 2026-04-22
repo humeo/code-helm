@@ -29,6 +29,7 @@ export type UpdateCheckResult = {
 export type PackageUpdateExecutionResult = {
   command: string;
   exitCode: number;
+  signal?: NodeJS.Signals;
   stdout: string;
   stderr: string;
   error?: string;
@@ -55,6 +56,25 @@ type CheckForUpdatesOptions = {
   fetch?: FetchLike;
   readPackageMetadataFromPath?: (packageRoot: string) => PackageMetadata;
   resolveRealPath?: (targetPath: string) => string;
+};
+
+type SpawnSyncLikeResult = {
+  status: number | null;
+  signal: NodeJS.Signals | null;
+  stdout?: string | Buffer;
+  stderr?: string | Buffer;
+  error?: Error;
+};
+
+type PerformPackageUpdateOptions = {
+  spawnSync?: (
+    command: string,
+    args: string[],
+    options: {
+      encoding: "utf8";
+      env: Record<string, string>;
+    },
+  ) => SpawnSyncLikeResult;
 };
 
 const buildInstallCommand = (
@@ -385,18 +405,27 @@ export const checkForUpdates = async ({
 export const performPackageUpdate = (
   commandParts: string[],
   env: Record<string, string | undefined>,
+  options: PerformPackageUpdateOptions = {},
 ): PackageUpdateExecutionResult => {
+  const spawnSyncImpl = options.spawnSync ?? spawnSync;
   const [command, ...args] = commandParts;
-  const result = spawnSync(command, args, {
+  const result = spawnSyncImpl(command, args, {
     encoding: "utf8",
     env: env as Record<string, string>,
   });
+  const exitCode =
+    result.status ?? (result.signal ? 1 : (result.error ? 1 : 0));
+  const signalError =
+    result.signal ? `Install command terminated by signal: ${result.signal}` : undefined;
+  const stdout = typeof result.stdout === "string" ? result.stdout : (result.stdout?.toString("utf8") ?? "");
+  const stderr = typeof result.stderr === "string" ? result.stderr : (result.stderr?.toString("utf8") ?? "");
 
   return {
     command: commandParts.join(" "),
-    exitCode: result.status ?? (result.error ? 1 : 0),
-    stdout: result.stdout ?? "",
-    stderr: result.stderr ?? "",
-    error: result.error?.message,
+    exitCode,
+    signal: result.signal ?? undefined,
+    stdout,
+    stderr,
+    error: signalError ?? result.error?.message,
   };
 };
