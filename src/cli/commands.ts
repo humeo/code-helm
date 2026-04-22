@@ -30,6 +30,13 @@ import {
   type OnboardingResult,
 } from "./onboard";
 import { readPackageMetadata } from "../package-metadata";
+import {
+  checkForUpdates,
+  performPackageUpdate,
+  type PackageManagerResolution,
+  type PackageUpdateExecutionResult,
+  type UpdateCheckResult,
+} from "./update-service";
 
 type StartHandle = {
   config: AppConfig;
@@ -46,13 +53,7 @@ export type CommandExecutionResult = {
   runtime?: RuntimeSummary;
 };
 
-export type PackageUpdateResult = {
-  command: string;
-  exitCode: number;
-  stdout: string;
-  stderr: string;
-  error?: string;
-};
+export type PackageUpdateResult = PackageUpdateExecutionResult;
 
 export type CommandServices = {
   backgroundRuntimeTimeoutMs: number;
@@ -91,7 +92,9 @@ export type CommandServices = {
     isPidAlive: (pid: number) => boolean;
     timeoutMs?: number;
   }) => Promise<boolean>;
-  runPackageUpdate: () => Promise<PackageUpdateResult>;
+  readUpdateCheck: () => Promise<UpdateCheckResult>;
+  ensurePackageManagerExecutable: (input: PackageManagerResolution) => Promise<void>;
+  runPackageUpdate: (command: string[]) => Promise<PackageUpdateResult>;
   removePath: (targetPath: string) => void;
 };
 
@@ -182,30 +185,49 @@ const defaultRunOnboarding: CommandServices["runOnboarding"] = async (options) =
   });
 };
 
-export const buildDefaultPackageUpdateCommand = () => [
-  "npm",
-  "install",
-  "-g",
-  "code-helm@latest",
-] as const;
+const defaultReadUpdateCheck = async (): Promise<UpdateCheckResult> => {
+  const packageJsonPath = fileURLToPath(new URL("../../package.json", import.meta.url));
 
-const defaultRunPackageUpdate = async (
-  env: Record<string, string | undefined>,
-): Promise<PackageUpdateResult> => {
-  const commandParts = [...buildDefaultPackageUpdateCommand()];
-  const [command, ...args] = commandParts;
-  const result = spawnSync(command, args, {
+  return checkForUpdates({
+    packageRoot: dirname(packageJsonPath),
+    executablePath: process.argv[1],
+  });
+};
+
+const defaultEnsurePackageManagerExecutable = async (
+  input: PackageManagerResolution,
+) => {
+  const executableName = input.executableName ?? input.command?.[0];
+
+  if (!executableName) {
+    throw new Error(
+      "CodeHelm could not determine whether the current installation is managed by npm or Bun.",
+    );
+  }
+
+  const result = spawnSync(executableName, ["--version"], {
     encoding: "utf8",
-    env: env as Record<string, string>,
+    env: process.env,
   });
 
-  return {
-    command: commandParts.join(" "),
-    exitCode: result.status ?? (result.error ? 1 : 0),
-    stdout: result.stdout ?? "",
-    stderr: result.stderr ?? "",
-    error: result.error?.message,
-  };
+  if (result.error) {
+    const errorMessage = result.error.message.toLowerCase();
+
+    if (errorMessage.includes("enoent")) {
+      throw new Error(`Package manager ${executableName} is not available on PATH.`);
+    }
+
+    throw new Error(
+      `Package manager ${executableName} could not be launched: ${result.error.message}`,
+    );
+  }
+};
+
+const defaultRunPackageUpdate = async (
+  command: string[],
+  env: Record<string, string | undefined>,
+): Promise<PackageUpdateResult> => {
+  return performPackageUpdate(command, env);
 };
 
 const createDefaultServices = (
@@ -233,7 +255,9 @@ const createDefaultServices = (
       timeoutMs: options.timeoutMs,
     }, { readRuntimeSummary }),
   waitForRuntimeExit: defaultWaitForRuntimeExit,
-  runPackageUpdate: async () => defaultRunPackageUpdate(env),
+  readUpdateCheck: defaultReadUpdateCheck,
+  ensurePackageManagerExecutable: defaultEnsurePackageManagerExecutable,
+  runPackageUpdate: async (command) => defaultRunPackageUpdate(command, env),
   removePath: defaultRemovePath,
 });
 
@@ -863,14 +887,72 @@ const formatUpdateDiagnostics = (result: PackageUpdateResult) => {
   return diagnostics.length > 0 ? diagnostics.join("\n\n") : undefined;
 };
 
+const renderCheckStatusOutput = (
+  env: Record<string, string | undefined>,
+  result: UpdateCheckResult,
+) => {
+  const commandPreview = result.packageManager.command?.join(" ") ?? "Unavailable";
+
+  return renderSuccessPanel({
+    title: "Update Check",
+    headline: result.updateAvailable ? "Update available" : "Up to date",
+    sections: [
+      {
+        kind: "key-value",
+        title: "Status",
+        rows: [
+          { key: "Installed version", value: result.installedVersion },
+          { key: "Latest version", value: result.latestVersion },
+          { key: "Status", value: result.updateAvailable ? "Update available" : "Up to date" },
+          { key: "Package manager", value: result.packageManager.kind },
+          { key: "Update command", value: commandPreview },
+        ],
+      },
+    ],
+    env,
+  });
+};
+
+const renderNoOpUpdateOutput = (
+  env: Record<string, string | undefined>,
+  result: UpdateCheckResult,
+) => {
+  return renderSuccessPanel({
+    title: "CodeHelm Up To Date",
+    headline: "Already on the latest version",
+    sections: [
+      {
+        kind: "key-value",
+        title: "Status",
+        rows: [
+          { key: "Installed version", value: result.installedVersion },
+          { key: "Latest version", value: result.latestVersion },
+          { key: "Package manager", value: result.packageManager.kind },
+        ],
+      },
+    ],
+    env,
+  });
+};
+
 const renderUpdateSuccessOutput = (
   env: Record<string, string | undefined>,
+  checkResult: UpdateCheckResult,
   result: PackageUpdateResult,
 ) => {
   return renderSuccessPanel({
     title: "CodeHelm Updated",
-    headline: "The latest published package was installed.",
+    headline: `Updated from ${checkResult.installedVersion} to ${checkResult.latestVersion}`,
     sections: [
+      {
+        kind: "key-value",
+        title: "Status",
+        rows: [
+          { key: "Installed version", value: checkResult.installedVersion },
+          { key: "Latest version", value: checkResult.latestVersion },
+          { key: "Package manager", value: checkResult.packageManager.kind },
+        ],
+      },
       {
         title: "Command run",
         lines: [result.command],
@@ -885,17 +967,27 @@ const renderUpdateSuccessOutput = (
   });
 };
 
+const renderTargetedUpdateFailureOutput = (
+  env: Record<string, string | undefined>,
+  title: string,
+  headline: string,
+  commandHints: string[] = [],
+) => {
+  return renderErrorPanel({
+    title,
+    headline,
+    commandHints,
+    env,
+  });
+};
+
 const renderUpdateFailureOutput = (
   env: Record<string, string | undefined>,
   result: PackageUpdateResult,
 ) => {
-  const missingNpm = (result.error ?? "").toLowerCase().includes("enoent");
-
   return renderErrorPanel({
     title: "Update Failed",
-    headline: missingNpm
-      ? "npm could not be launched from PATH."
-      : "The package update did not complete.",
+    headline: `The package update did not complete while running ${result.command}.`,
     sections: [
       {
         title: "Command run",
@@ -904,20 +996,58 @@ const renderUpdateFailureOutput = (
       {
         kind: "steps",
         title: "Try next",
-        items: missingNpm
-          ? [
-            "Install npm or ensure it is available on PATH.",
-            "code-helm update",
-          ]
-          : [
-            "Inspect the diagnostics below, resolve the npm issue, then retry.",
-            "code-helm update",
-          ],
+        items: [
+          "Inspect the diagnostics below, resolve the package-manager issue, then retry.",
+          "code-helm update",
+        ],
       },
     ],
     diagnostics: formatUpdateDiagnostics(result),
     env,
   });
+};
+
+const executeUpdateCommand = async (
+  services: CommandServices,
+  checkResult: UpdateCheckResult,
+) => {
+  if (!checkResult.updateAvailable) {
+    return {
+      output: renderNoOpUpdateOutput(services.env, checkResult),
+    };
+  }
+
+  if (!checkResult.packageManager.command) {
+    throw new Error(
+      renderTargetedUpdateFailureOutput(
+        services.env,
+        "Update Failed",
+        "CodeHelm could not determine whether the current installation is managed by npm or Bun.",
+      ),
+    );
+  }
+
+  try {
+    await services.ensurePackageManagerExecutable(checkResult.packageManager);
+  } catch (error) {
+    throw new Error(
+      renderTargetedUpdateFailureOutput(
+        services.env,
+        "Update Failed",
+        error instanceof Error ? error.message : "Package manager could not be launched.",
+      ),
+    );
+  }
+
+  const result = await services.runPackageUpdate(checkResult.packageManager.command);
+
+  if (result.exitCode !== 0) {
+    throw new Error(renderUpdateFailureOutput(services.env, result));
+  }
+
+  return {
+    output: renderUpdateSuccessOutput(services.env, checkResult, result),
+  };
 };
 
 export const runCliCommand = async (
@@ -941,16 +1071,23 @@ export const runCliCommand = async (
     };
   }
 
-  if (command.kind === "update") {
-    const result = await services.runPackageUpdate();
+  if (command.kind === "check") {
+    const checkResult = await services.readUpdateCheck();
 
-    if (result.exitCode !== 0) {
-      throw new Error(renderUpdateFailureOutput(services.env, result));
+    if (!command.yes || !checkResult.updateAvailable) {
+      return {
+        output: command.yes
+          ? renderNoOpUpdateOutput(services.env, checkResult)
+          : renderCheckStatusOutput(services.env, checkResult),
+      };
     }
 
-    return {
-      output: renderUpdateSuccessOutput(services.env, result),
-    };
+    return executeUpdateCommand(services, checkResult);
+  }
+
+  if (command.kind === "update") {
+    const checkResult = await services.readUpdateCheck();
+    return executeUpdateCommand(services, checkResult);
   }
 
   if (
