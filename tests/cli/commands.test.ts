@@ -269,14 +269,6 @@ describe("runCliCommand", () => {
     expect(result.output).toContain("code-helm version");
   });
 
-  test("check stays unimplemented at the command layer for now", async () => {
-    const services = createBaseServices();
-
-    await expect(
-      runCliCommand({ kind: "check", yes: false }, services),
-    ).rejects.toThrow(/check is not implemented yet/i);
-  });
-
   test("update surfaces a failed npm exit as an error panel", async () => {
     const services = createBaseServices() as CommandServices & {
       runPackageUpdate: () => Promise<{

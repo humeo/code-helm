@@ -929,28 +929,28 @@ export const runCliCommand = async (
     ...overrides,
   } satisfies CommandServices;
 
-  switch (command.kind) {
-    case "help":
-      return {
-        output: renderHelpOutput(services.env),
-      };
-    case "version":
-      return {
-        output: renderVersionOutput(services.env),
-      };
-    case "check":
-      throw new Error("check is not implemented yet");
-    case "update": {
-      const result = await services.runPackageUpdate();
+  if (command.kind === "help") {
+    return {
+      output: renderHelpOutput(services.env),
+    };
+  }
 
-      if (result.exitCode !== 0) {
-        throw new Error(renderUpdateFailureOutput(services.env, result));
-      }
+  if (command.kind === "version") {
+    return {
+      output: renderVersionOutput(services.env),
+    };
+  }
 
-      return {
-        output: renderUpdateSuccessOutput(services.env, result),
-      };
+  if (command.kind === "update") {
+    const result = await services.runPackageUpdate();
+
+    if (result.exitCode !== 0) {
+      throw new Error(renderUpdateFailureOutput(services.env, result));
     }
+
+    return {
+      output: renderUpdateSuccessOutput(services.env, result),
+    };
   }
 
   const store = services.loadConfigStore({
@@ -1232,4 +1232,6 @@ export const runCliCommand = async (
         ),
       };
   }
+
+  throw new Error(`Internal error: unsupported CLI command ${(command as { kind: string }).kind}`);
 };
