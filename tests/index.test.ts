@@ -5296,6 +5296,53 @@ test("snapshot replay does not duplicate a resumed final assistant reply after l
   expect(renderTranscriptMessages(snapshotEntries).map((message) => message.entryItemId)).toEqual([]);
 });
 
+test("completed assistant live replies split long final answers across multiple sends", async () => {
+  const runtime = {
+    seenItemIds: new Set<string>(),
+    finalizingItemIds: new Set<string>(),
+    itemTurnIds: new Map<string, string>(),
+    activeTurnId: "turn-1",
+    turnReplyMessageIds: new Map<string, string>([["turn-1", "discord-msg-1"]]),
+  };
+  const longReply = `${"a".repeat(1_895)}不过我还看到一个更长的尾巴`;
+  const sent: Array<{
+    payload: { content?: string; embeds?: unknown[] };
+    replyToMessageId?: string;
+  }> = [];
+
+  await finalizeCompletedAssistantTranscriptReply({
+    runtime,
+    item: {
+      type: "agentMessage",
+      id: "item-2",
+      text: longReply,
+      phase: "final_answer",
+    },
+    sendMessage: async (payload, options = {}) => {
+      sent.push({
+        payload,
+        replyToMessageId: options.replyToMessageId,
+      });
+    },
+  });
+
+  expect(sent).toEqual([
+    {
+      payload: {
+        content: longReply.slice(0, 1_900),
+      },
+      replyToMessageId: "discord-msg-1",
+    },
+    {
+      payload: {
+        content: longReply.slice(1_900),
+      },
+      replyToMessageId: undefined,
+    },
+  ]);
+  expect(runtime.seenItemIds.has(getAssistantTranscriptEntryId("turn-1"))).toBe(true);
+});
+
 test("runtime seeded from snapshot after restart does not re-degrade the same completed Discord turn", () => {
   const turns: CodexTurn[] = [
     {

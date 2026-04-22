@@ -1925,26 +1925,32 @@ export const finalizeCompletedAssistantTranscriptReply = async ({
     turnId
     ?? runtime.itemTurnIds.get(item.id)
     ?? runtime.activeTurnId;
-  const rendered = renderTranscriptEntry({
-    itemId: resolvedTurnId
-      ? getAssistantTranscriptEntryId(resolvedTurnId)
-      : item.id,
-    kind: "assistant",
-    text: item.text,
-  });
   const assistantEntryId = resolvedTurnId
     ? getAssistantTranscriptEntryId(resolvedTurnId)
     : item.id;
+  const renderedMessages = renderTranscriptMessages([{
+    itemId: assistantEntryId,
+    kind: "assistant",
+    text: item.text,
+  }]);
+  const replyToMessageId = resolvedTurnId
+    ? runtime.turnReplyMessageIds.get(resolvedTurnId)
+    : undefined;
 
   runtime.finalizingItemIds.add(assistantEntryId);
 
   try {
-    await sendMessage(rendered, {
-      replyToMessageId: resolvedTurnId
-        ? runtime.turnReplyMessageIds.get(resolvedTurnId)
-        : undefined,
-    });
-    runtime.seenItemIds.add(assistantEntryId);
+    for (const renderedMessage of renderedMessages) {
+      await sendMessage(renderedMessage.payload, {
+        replyToMessageId: renderedMessage.isFirstChunk
+          ? replyToMessageId
+          : undefined,
+      });
+
+      for (const itemId of renderedMessage.itemIds) {
+        runtime.seenItemIds.add(itemId);
+      }
+    }
   } finally {
     runtime.finalizingItemIds.delete(assistantEntryId);
     runtime.itemTurnIds.delete(item.id);
