@@ -825,6 +825,7 @@ const renderHelpOutput = (env: Record<string, string | undefined>) => {
         kind: "command-list",
         title: "Maintenance",
         items: [
+          { command: "check", description: "Check whether a newer version is available" },
           { command: "update", description: "Install the latest published package" },
           { command: "uninstall", description: "Remove local CodeHelm data" },
         ],
@@ -937,6 +938,8 @@ export const runCliCommand = async (
       return {
         output: renderVersionOutput(services.env),
       };
+    case "check":
+      throw new Error("check is not implemented yet");
     case "update": {
       const result = await services.runPackageUpdate();
 

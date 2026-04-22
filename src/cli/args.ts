@@ -5,11 +5,12 @@ export type CliCommand =
   | { kind: "status" }
   | { kind: "stop" }
   | { kind: "version" }
+  | { kind: "check"; yes: boolean }
   | { kind: "update" }
   | { kind: "autostart"; action: "enable" | "disable" }
   | { kind: "uninstall" };
 
-const usage = "Usage: code-helm <help|onboard|start|status|stop|version|update|autostart|uninstall>";
+const usage = "Usage: code-helm <help|onboard|start|status|stop|version|check|update|autostart|uninstall>";
 
 const failUsage = (message: string): never => {
   throw new Error(`${message}\n${usage}`);
@@ -60,6 +61,16 @@ export const parseCliArgs = (argv: string[]): CliCommand => {
         failUsage(`Unknown arguments for version: ${rest.join(" ")}`);
       }
       return { kind: "version" };
+    case "check":
+      if (rest.length === 0) {
+        return { kind: "check", yes: false };
+      }
+
+      if (rest.length === 1 && rest[0] === "--yes") {
+        return { kind: "check", yes: true };
+      }
+
+      failUsage(`Unknown arguments for check: ${rest.join(" ")}`);
     case "update":
       if (rest.length > 0) {
         failUsage(`Unknown arguments for update: ${rest.join(" ")}`);

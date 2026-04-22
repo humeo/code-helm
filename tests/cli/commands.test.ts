@@ -198,6 +198,10 @@ describe("runCliCommand", () => {
     expect(result.output).toContain("Start CodeHelm in background");
     expect(result.output).toContain("autostart enable");
     expect(result.output).toContain("Enable automatic startup");
+    expect(result.output).toContain("check");
+    expect(result.output).toContain("Check whether a newer version is available");
+    expect(result.output).toContain("update");
+    expect(result.output).toContain("Install the latest published package");
     expect(result.output).toContain("uninstall");
     expect(result.output).toContain("Remove local CodeHelm data");
     expect(result.output).not.toContain("Overview");
@@ -263,6 +267,14 @@ describe("runCliCommand", () => {
     expect(result.output).toContain("npm install -g code-helm@latest");
     expect(result.output).toContain("Next steps");
     expect(result.output).toContain("code-helm version");
+  });
+
+  test("check stays unimplemented at the command layer for now", async () => {
+    const services = createBaseServices();
+
+    await expect(
+      runCliCommand({ kind: "check", yes: false }, services),
+    ).rejects.toThrow(/check is not implemented yet/i);
   });
 
   test("update surfaces a failed npm exit as an error panel", async () => {
