@@ -181,6 +181,28 @@ describe("resolveInstalledPackageManager", () => {
     });
   });
 
+  test("detects npm installs from canonical executable realpaths before falling back to packageRoot", () => {
+    const packageRoot = "/srv/custom/code-helm";
+    const executablePath = "/Users/example/.nvm/versions/node/v22.17.0/bin/code-helm";
+    const resolvedPackageRoot =
+      "/Users/example/.nvm/versions/node/v22.17.0/lib/node_modules/code-helm";
+    const resolvedExecutablePath = `${resolvedPackageRoot}/bin/code-helm`;
+
+    const result = resolveInstalledPackageManager({
+      packageRoot,
+      executablePath,
+      resolveRealPath: () => resolvedExecutablePath,
+    });
+
+    expect(result).toEqual({
+      kind: "npm",
+      command: ["npm", "install", "-g", "code-helm@latest"],
+      executableName: "npm",
+      executablePath,
+      packageRoot: resolvedPackageRoot,
+    });
+  });
+
   test("returns unknown when the installed path does not match npm or bun conventions", () => {
     const packageRoot = "/srv/custom/code-helm";
 

@@ -123,6 +123,37 @@ const resolveBunPackageRootFromExecutablePath = (resolvedPath: string) => {
   return match?.[1];
 };
 
+const resolveNpmPackageRootFromExecutablePath = (resolvedPath: string) => {
+  const nvmMatch =
+    resolvedPath.match(
+      /^((?:\/Users\/[^/]+\/\.nvm\/versions\/node\/[^/]+\/lib\/node_modules\/code-helm))(?:\/.*)?$/u,
+    );
+
+  if (nvmMatch?.[1]) {
+    return nvmMatch[1];
+  }
+
+  const homebrewPrefix = `/opt/homebrew/lib/node_modules/${PACKAGE_NAME}`;
+
+  if (
+    resolvedPath === homebrewPrefix ||
+    resolvedPath.startsWith(`${homebrewPrefix}/`)
+  ) {
+    return homebrewPrefix;
+  }
+
+  const usrLocalPrefix = `/usr/local/lib/node_modules/${PACKAGE_NAME}`;
+
+  if (
+    resolvedPath === usrLocalPrefix ||
+    resolvedPath.startsWith(`${usrLocalPrefix}/`)
+  ) {
+    return usrLocalPrefix;
+  }
+
+  return undefined;
+};
+
 type ParsedSemanticVersion = {
   major: number;
   minor: number;
@@ -254,6 +285,18 @@ export const resolveInstalledPackageManager = ({
         executableName: "bun",
         executablePath,
         packageRoot: bunPackageRoot,
+      };
+    }
+
+    const npmPackageRoot = resolveNpmPackageRootFromExecutablePath(resolvedExecutablePath);
+
+    if (npmPackageRoot) {
+      return {
+        kind: "npm",
+        command: buildInstallCommand("npm"),
+        executableName: "npm",
+        executablePath,
+        packageRoot: npmPackageRoot,
       };
     }
   }
