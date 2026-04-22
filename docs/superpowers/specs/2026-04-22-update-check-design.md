@@ -117,6 +117,8 @@ If `check --yes` finds no newer version, it should return a clear no-op result i
 
 If `check` prompts and the user declines, it should return a clear no-op result and keep the check output visible.
 
+If `check` continues into an update, either through `--yes` or through an interactive confirmation, it should delegate to the same execution path as `code-helm update` so runtime handling and final output stay consistent.
+
 ### `code-helm update`
 
 `update` becomes the execution command.
@@ -126,11 +128,12 @@ It must:
 1. read the installed version
 2. read the latest published version
 3. detect the installation source
-4. stop the background runtime if one is active
-5. perform the package update
-6. verify the installed version after update
-7. restart the background runtime if one was stopped
-8. render the final outcome
+4. verify the required package-manager executable is available
+5. stop the background runtime if one is active
+6. perform the package update
+7. verify the installed version after update
+8. restart the background runtime if one was stopped
+9. render the final outcome
 
 `update` does not prompt for confirmation.
 
@@ -326,6 +329,7 @@ Behavior:
 
 - explicitly name the missing executable
 - explicitly report the detected installation source
+- do not stop an already running background daemon before surfacing this failure
 
 ### Install Command Failed
 
