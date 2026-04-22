@@ -1898,6 +1898,41 @@ export const seedTranscriptRuntimeSeenItemsFromSnapshot = ({
   });
 };
 
+export const remapSeenTranscriptEntriesToCompletedTurn = ({
+  runtime,
+  turn,
+}: {
+  runtime: Pick<TranscriptRuntime, "seenItemIds">;
+  turn?: CodexTurn;
+}) => {
+  if (!turn) {
+    return;
+  }
+
+  const syntheticLiveUserEntryId = getUserTranscriptEntryId("live");
+  const syntheticLiveAssistantEntryId = getAssistantTranscriptEntryId("live");
+
+  for (const item of turn.items ?? []) {
+    if (isUserMessageItem(item)) {
+      if (runtime.seenItemIds.has(syntheticLiveUserEntryId)) {
+        runtime.seenItemIds.add(getUserTranscriptEntryId(turn.id));
+      }
+      continue;
+    }
+
+    if (!isAgentMessageItem(item) || item.phase === "commentary") {
+      continue;
+    }
+
+    if (
+      runtime.seenItemIds.has(item.id)
+      || runtime.seenItemIds.has(syntheticLiveAssistantEntryId)
+    ) {
+      runtime.seenItemIds.add(getAssistantTranscriptEntryId(turn.id));
+    }
+  }
+};
+
 export const finalizeCompletedAssistantTranscriptReply = async ({
   runtime,
   turnId,
@@ -6568,6 +6603,11 @@ const startCodeHelmRuntime = async (
           turnId,
         });
       }
+
+      remapSeenTranscriptEntriesToCompletedTurn({
+        runtime,
+        turn: params.turn,
+      });
 
       await applyManagedTurnCompletion({
         session,

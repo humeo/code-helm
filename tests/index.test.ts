@@ -60,6 +60,7 @@ import {
   renderApprovalLifecyclePayload,
   detectThreadLanguageFromTexts,
   renderApprovalDeliveryFailureText,
+  remapSeenTranscriptEntriesToCompletedTurn,
   resumeManagedSession,
   startTurnWithThreadResumeRetry,
   syncManagedSession,
@@ -124,6 +125,8 @@ const createSessionRecord = (
   state: "idle",
   lifecycleState: "active",
   degradationReason: null,
+  modelOverride: null,
+  reasoningEffortOverride: null,
   createdAt: "2026-04-09T00:00:00.000Z",
   updatedAt: "2026-04-09T00:00:00.000Z",
   ...overrides,
@@ -5341,6 +5344,87 @@ test("completed assistant live replies split long final answers across multiple 
     },
   ]);
   expect(runtime.seenItemIds.has(getAssistantTranscriptEntryId("turn-1"))).toBe(true);
+});
+
+test("completed turn remaps synthetic live transcript ids so snapshot replay stays deduped", async () => {
+  const userItem = {
+    type: "userMessage" as const,
+    id: "user-1",
+    content: [{ type: "text" as const, text: "hi" }],
+  };
+  const assistantItem = {
+    type: "agentMessage" as const,
+    id: "agent-1",
+    text: "Hi! What would you like to work on in this repo?",
+    phase: "final_answer" as const,
+  };
+  const runtime = {
+    seenItemIds: new Set<string>(),
+    finalizingItemIds: new Set<string>(),
+    pendingDiscordInputs: ["hi"],
+    itemTurnIds: new Map<string, string>(),
+    activeTurnId: undefined as string | undefined,
+    turnReplyMessageIds: new Map<string, string>(),
+  };
+
+  const liveUserEntries = collectTranscriptEntries([{
+    id: "live",
+    status: "completed",
+    items: [userItem],
+  }], {
+    source: "live",
+    pendingDiscordInputs: runtime.pendingDiscordInputs,
+  }).filter((entry) =>
+    !shouldSkipTranscriptRelayEntry({
+      runtime,
+      itemId: entry.itemId,
+      source: "live",
+    })
+  );
+
+  expect(liveUserEntries).toEqual([]);
+
+  markTranscriptItemsSeen({
+    runtime,
+    turns: [{
+      id: "live",
+      status: "completed",
+      items: [userItem],
+    }],
+    source: "live",
+  });
+
+  await finalizeCompletedAssistantTranscriptReply({
+    runtime,
+    item: assistantItem,
+    sendMessage: async () => undefined,
+  });
+
+  remapSeenTranscriptEntriesToCompletedTurn({
+    runtime,
+    turn: {
+      id: "turn-1",
+      status: "completed",
+      items: [userItem, assistantItem],
+    },
+  });
+
+  const snapshotEntries = collectTranscriptEntries([{
+    id: "turn-1",
+    status: "completed",
+    items: [userItem, assistantItem],
+  }], {
+    source: "snapshot",
+    pendingDiscordInputs: runtime.pendingDiscordInputs,
+  }).filter((entry) =>
+    !shouldSkipTranscriptRelayEntry({
+      runtime,
+      itemId: entry.itemId,
+      source: "snapshot",
+    })
+  );
+
+  expect(renderTranscriptMessages(snapshotEntries).map((message) => message.entryItemId)).toEqual([]);
 });
 
 test("runtime seeded from snapshot after restart does not re-degrade the same completed Discord turn", () => {
