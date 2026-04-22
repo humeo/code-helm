@@ -1848,7 +1848,7 @@ export const markTranscriptItemsSeen = ({
   turns,
   source,
 }: {
-  runtime: Pick<TranscriptRuntime, "seenItemIds" | "finalizingItemIds">;
+  runtime: Pick<TranscriptRuntime, "seenItemIds" | "finalizingItemIds" | "activeTurnId">;
   turns: CodexTurn[] | undefined;
   source: "live" | "snapshot";
 }) => {
@@ -1862,6 +1862,25 @@ export const markTranscriptItemsSeen = ({
 
   for (const itemId of collectComparableTranscriptItemIds(turns)) {
     runtime.seenItemIds.add(itemId);
+  }
+
+  if (source !== "live" || !runtime.activeTurnId) {
+    return;
+  }
+
+  for (const turn of turns ?? []) {
+    if (turn.id !== "live") {
+      continue;
+    }
+
+    for (const itemId of collectComparableTranscriptItemIds([
+      {
+        ...turn,
+        id: runtime.activeTurnId,
+      },
+    ])) {
+      runtime.seenItemIds.add(itemId);
+    }
   }
 };
 
@@ -5935,7 +5954,10 @@ const startCodeHelmRuntime = async (
     item: CodexAgentMessageItem;
   }) => {
     const runtime = ensureTranscriptRuntime(session.codexThreadId);
-    const resolvedTurnId = turnId ?? runtime.itemTurnIds.get(item.id);
+    const resolvedTurnId =
+      turnId
+      ?? runtime.itemTurnIds.get(item.id)
+      ?? runtime.activeTurnId;
 
     if (!shouldProjectManagedSessionDiscordSurface(session)) {
       runtime.itemTurnIds.delete(item.id);

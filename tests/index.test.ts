@@ -100,9 +100,11 @@ import {
 } from "../src/index";
 import { renderStatusCardText } from "../src/discord/renderers";
 import {
+  collectTranscriptEntries,
   getAssistantTranscriptEntryId,
   getProcessTranscriptEntryId,
   getUserTranscriptEntryId,
+  renderTranscriptMessages,
 } from "../src/discord/transcript";
 import type { CodexTurn } from "../src/codex/protocol-types";
 import type {
@@ -5094,6 +5096,84 @@ test("snapshot mismatch ignores live-vs-snapshot id remapping when the same turn
       turns,
     }),
   ).toBe(false);
+});
+
+test("snapshot replay does not duplicate a resumed turn after live relay used a synthetic fallback id", () => {
+  const runtime = {
+    seenItemIds: new Set<string>(),
+    finalizingItemIds: new Set<string>(),
+    pendingDiscordInputs: [] as string[],
+    activeTurnId: "turn-1",
+  };
+  const liveTurns: CodexTurn[] = [
+    {
+      id: "live",
+      status: "completed",
+      items: [
+        {
+          type: "userMessage",
+          id: "item-1",
+          content: [{ type: "text", text: "where am I?" }],
+        },
+        {
+          type: "agentMessage",
+          id: "item-2",
+          text: "You are in `/tmp/project`.",
+          phase: "final_answer",
+        },
+      ],
+    },
+  ];
+  const snapshotTurns: CodexTurn[] = [
+    {
+      id: "turn-1",
+      status: "completed",
+      items: liveTurns[0]?.items ?? [],
+    },
+  ];
+
+  const relayEntryIds = ({
+    turns,
+    source,
+  }: {
+    turns: CodexTurn[];
+    source: "live" | "snapshot";
+  }) => {
+    const entries = collectTranscriptEntries(turns, {
+      source,
+      pendingDiscordInputs: runtime.pendingDiscordInputs,
+    }).filter((entry) =>
+      !shouldSkipTranscriptRelayEntry({
+        runtime,
+        itemId: entry.itemId,
+        source,
+      })
+    );
+
+    const rendered = renderTranscriptMessages(entries).map((message) => message.entryItemId);
+
+    for (const message of renderTranscriptMessages(entries)) {
+      for (const itemId of message.itemIds) {
+        runtime.seenItemIds.add(itemId);
+      }
+    }
+
+    markTranscriptItemsSeen({
+      runtime,
+      turns,
+      source,
+    });
+
+    return rendered;
+  };
+
+  expect(relayEntryIds({ turns: liveTurns, source: "live" })).toEqual([
+    getUserTranscriptEntryId("live"),
+    getAssistantTranscriptEntryId("live"),
+  ]);
+  expect(relayEntryIds({ turns: snapshotTurns, source: "snapshot" })).toEqual([]);
+  expect(runtime.seenItemIds.has(getUserTranscriptEntryId("turn-1"))).toBe(true);
+  expect(runtime.seenItemIds.has(getAssistantTranscriptEntryId("turn-1"))).toBe(true);
 });
 
 test("runtime seeded from snapshot after restart does not re-degrade the same completed Discord turn", () => {
