@@ -26,6 +26,8 @@ import {
   applyStatusCardUpdate,
   canAcceptManagedSessionThreadInput,
   closeManagedSession,
+  clearQueuedSteerInputs,
+  createManagedSessionCommandServices,
   reconcileResumedApprovalState,
   reconcileApprovalResolutionSurface,
   createControlChannelServices,
@@ -56,6 +58,7 @@ import {
   isNotLoadedCodexThreadError,
   shouldProjectManagedSessionDiscordSurface,
   persistApprovalRequestSnapshot,
+  handleManagedSessionModelComponentInteraction,
   renderApprovalLifecycleMessage,
   renderApprovalLifecyclePayload,
   detectThreadLanguageFromTexts,
@@ -77,6 +80,9 @@ import {
   formatResumeSessionAutocompleteChoice,
   recoverStatusCardMessageFromHistory,
   resolveResumeAttachmentKind,
+  readActiveTurnIdFromThreadReadResult,
+  getPendingLocalInputTexts,
+  getQueuedSteerInputs,
   shouldPollSnapshotForSessionState,
   shouldDegradeForSnapshotMismatch,
   shouldHoldSnapshotTranscriptForManualSync,
@@ -97,6 +103,7 @@ import {
   seedTranscriptRuntimeSeenItemsFromSnapshot,
   noteTrustedLiveExternalTurnStart,
   sortResumePickerThreads,
+  applySessionStartTurnOverrides,
   startCodeHelm,
   rememberRuntimeApprovalRequest,
   resolveStoredApprovalForResolvedEvent,
@@ -211,6 +218,387 @@ test("thread statuses map into Discord session runtime states", () => {
   expect(inferSessionStateFromThreadStatus({ type: "systemError" })).toBe(
     "degraded",
   );
+});
+
+test("active turn ids are recovered only for running snapshots", () => {
+  expect(
+    readActiveTurnIdFromThreadReadResult({
+      thread: {
+        id: "codex-thread-1",
+        cwd: "/tmp/workspace/api",
+        preview: "",
+        status: { type: "active", activeFlags: [] },
+        turns: [{ id: "turn-1", items: [] }],
+      },
+    }),
+  ).toBe("turn-1");
+  expect(
+    readActiveTurnIdFromThreadReadResult({
+      thread: {
+        id: "codex-thread-1",
+        cwd: "/tmp/workspace/api",
+        preview: "",
+        status: { type: "idle" },
+        turns: [{ id: "turn-1", items: [] }],
+      },
+    }),
+  ).toBeUndefined();
+});
+
+test("session start-turn overrides fill in model and effort defaults without clobbering explicit request values", () => {
+  expect(
+    applySessionStartTurnOverrides({
+      session: {
+        modelOverride: "gpt-5.4",
+        reasoningEffortOverride: "xhigh",
+      },
+      request: {
+        threadId: "codex-thread-1",
+        input: [{ type: "text", text: "Continue." }],
+      },
+    }),
+  ).toEqual({
+    threadId: "codex-thread-1",
+    input: [{ type: "text", text: "Continue." }],
+    model: "gpt-5.4",
+    effort: "xhigh",
+  });
+  expect(
+    applySessionStartTurnOverrides({
+      session: {
+        modelOverride: "gpt-5.4",
+        reasoningEffortOverride: "xhigh",
+      },
+      request: {
+        threadId: "codex-thread-1",
+        input: [{ type: "text", text: "Continue." }],
+        model: "gpt-5.3-codex",
+        effort: "medium",
+      },
+    }),
+  ).toEqual({
+    threadId: "codex-thread-1",
+    input: [{ type: "text", text: "Continue." }],
+    model: "gpt-5.3-codex",
+    effort: "medium",
+  });
+});
+
+test("queued steer helpers keep start-turn inputs and remove only queued steers", () => {
+  const runtime = {
+    pendingLocalInputs: [
+      { kind: "start" as const, text: "Start a new task", replyToMessageId: "m1" },
+      { kind: "steer" as const, text: "Please continue." },
+      { kind: "steer" as const, text: "Then update the tests." },
+    ],
+  };
+
+  expect(getPendingLocalInputTexts(runtime)).toEqual([
+    "Start a new task",
+    "Please continue.",
+    "Then update the tests.",
+  ]);
+  expect(getQueuedSteerInputs(runtime).map((input) => input.text)).toEqual([
+    "Please continue.",
+    "Then update the tests.",
+  ]);
+  expect(clearQueuedSteerInputs({ runtime }).map((input) => input.text)).toEqual([
+    "Please continue.",
+    "Then update the tests.",
+  ]);
+  expect(getPendingLocalInputTexts(runtime)).toEqual(["Start a new task"]);
+});
+
+test("managed session status command prefers fresh snapshot state and queued steer previews", async () => {
+  const db = createDatabaseClient(":memory:");
+  applyMigrations(db);
+  const sessionRepo = createSessionRepo(db);
+  const approvalRepo = createApprovalRepo(db);
+  const runtime = {
+    pendingLocalInputs: [
+      { kind: "steer" as const, text: "Please continue." },
+    ],
+    activeTurnId: undefined as string | undefined,
+  };
+
+  sessionRepo.insert({
+    discordThreadId: "discord-thread-1",
+    codexThreadId: "codex-thread-1",
+    ownerDiscordUserId: "owner-1",
+    cwd: "/tmp/workspace/api",
+    state: "idle",
+  });
+  approvalRepo.insert({
+    approvalKey: "turn-1:call-1",
+    requestId: "req-1",
+    codexThreadId: "codex-thread-1",
+    discordThreadId: "discord-thread-1",
+    status: "pending",
+    displayTitle: "Command approval",
+    commandPreview: "touch c.txt",
+    justification: null,
+    cwd: "/tmp/workspace/api",
+    requestKind: "command_execution",
+    decisionCatalog: null,
+    resolvedProviderDecision: null,
+    resolvedBySurface: null,
+    resolvedElsewhere: false,
+    resolvedByDiscordUserId: null,
+    resolution: null,
+  });
+
+  const services = createManagedSessionCommandServices({
+    sessionRepo,
+    approvalRepo,
+    codexClient: {
+      async listModels() {
+        return { data: [], nextCursor: null };
+      },
+      async turnInterrupt() {
+        return {};
+      },
+    } as never,
+    getDiscordClient() {
+      throw new Error("status should not need a Discord client");
+    },
+    ensureTranscriptRuntime() {
+      return runtime as never;
+    },
+    async readThreadForSnapshotReconciliation() {
+      return {
+        thread: {
+          id: "codex-thread-1",
+          cwd: "/tmp/workspace/api",
+          preview: "",
+          status: { type: "active", activeFlags: [] },
+          turns: [{ id: "turn-1", items: [] }],
+        },
+      };
+    },
+    async resolveActiveTurnId() {
+      return "turn-1";
+    },
+    async sendTextToChannel() {
+      return undefined;
+    },
+  });
+
+  const result = await services.status({
+    actorId: "viewer-1",
+    guildId: "guild-1",
+    channelId: "discord-thread-1",
+  });
+
+  expect(result.reply.content).toContain("Runtime:            running");
+  expect(result.reply.content).toContain("Queued steer:       1");
+  expect(result.reply.content).toContain("Pending approvals:  1");
+  expect(result.reply.content).toContain("Please continue.");
+  expect(runtime.activeTurnId).toBe("turn-1");
+
+  db.close();
+});
+
+test("managed session interrupt clears queued steer only after interrupt succeeds", async () => {
+  const db = createDatabaseClient(":memory:");
+  applyMigrations(db);
+  const sessionRepo = createSessionRepo(db);
+  const approvalRepo = createApprovalRepo(db);
+  const runtime = {
+    pendingLocalInputs: [
+      { kind: "steer" as const, text: "Please continue." },
+      { kind: "steer" as const, text: "Then update the tests." },
+    ],
+    activeTurnId: "turn-1",
+  };
+  const turnInterruptCalls: Array<Record<string, string>> = [];
+
+  sessionRepo.insert({
+    discordThreadId: "discord-thread-1",
+    codexThreadId: "codex-thread-1",
+    ownerDiscordUserId: "owner-1",
+    cwd: "/tmp/workspace/api",
+    state: "running",
+  });
+
+  const services = createManagedSessionCommandServices({
+    sessionRepo,
+    approvalRepo,
+    codexClient: {
+      async listModels() {
+        return { data: [], nextCursor: null };
+      },
+      async turnInterrupt(input: { threadId: string; turnId: string }) {
+        turnInterruptCalls.push(input as Record<string, string>);
+        return {};
+      },
+    } as never,
+    getDiscordClient() {
+      throw new Error("interrupt should not need a Discord client");
+    },
+    ensureTranscriptRuntime() {
+      return runtime as never;
+    },
+    async readThreadForSnapshotReconciliation() {
+      throw new Error("interrupt should not need a snapshot when turn id is present");
+    },
+    async resolveActiveTurnId() {
+      return "turn-1";
+    },
+    async sendTextToChannel() {
+      return undefined;
+    },
+  });
+
+  const result = await services.interrupt({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "discord-thread-1",
+  });
+
+  expect(turnInterruptCalls).toEqual([
+    {
+      threadId: "codex-thread-1",
+      turnId: "turn-1",
+    },
+  ]);
+  expect(result.reply.content).toContain("Discarded 2 queued steer messages");
+  expect(getQueuedSteerInputs(runtime)).toHaveLength(0);
+
+  db.close();
+});
+
+test("managed session interrupt preserves queued steer when the upstream interrupt fails", async () => {
+  const db = createDatabaseClient(":memory:");
+  applyMigrations(db);
+  const sessionRepo = createSessionRepo(db);
+  const approvalRepo = createApprovalRepo(db);
+  const runtime = {
+    pendingLocalInputs: [
+      { kind: "steer" as const, text: "Please continue." },
+    ],
+    activeTurnId: "turn-1",
+  };
+
+  sessionRepo.insert({
+    discordThreadId: "discord-thread-1",
+    codexThreadId: "codex-thread-1",
+    ownerDiscordUserId: "owner-1",
+    cwd: "/tmp/workspace/api",
+    state: "running",
+  });
+
+  const services = createManagedSessionCommandServices({
+    sessionRepo,
+    approvalRepo,
+    codexClient: {
+      async listModels() {
+        return { data: [], nextCursor: null };
+      },
+      async turnInterrupt() {
+        throw new Error("boom");
+      },
+    } as never,
+    getDiscordClient() {
+      throw new Error("interrupt should not need a Discord client");
+    },
+    ensureTranscriptRuntime() {
+      return runtime as never;
+    },
+    async readThreadForSnapshotReconciliation() {
+      throw new Error("interrupt should not need a snapshot when turn id is present");
+    },
+    async resolveActiveTurnId() {
+      return "turn-1";
+    },
+    async sendTextToChannel() {
+      return undefined;
+    },
+  });
+
+  const result = await services.interrupt({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "discord-thread-1",
+  });
+
+  expect(result.reply.content).toBe("Failed to interrupt the current turn.");
+  expect(getQueuedSteerInputs(runtime).map((input) => input.text)).toEqual([
+    "Please continue.",
+  ]);
+
+  db.close();
+});
+
+test("managed session model component persists the selected model and sends a thread confirmation", async () => {
+  const db = createDatabaseClient(":memory:");
+  applyMigrations(db);
+  const sessionRepo = createSessionRepo(db);
+  const sentTexts: string[] = [];
+  const updatedPayloads: unknown[] = [];
+
+  sessionRepo.insert({
+    discordThreadId: "discord-thread-1",
+    codexThreadId: "codex-thread-1",
+    ownerDiscordUserId: "owner-1",
+    cwd: "/tmp/workspace/api",
+    state: "idle",
+  });
+
+  const handled = await handleManagedSessionModelComponentInteraction({
+    interaction: {
+      customId: "msm|model|discord-thread-1",
+      values: ["gpt-5.4"],
+      user: { id: "owner-1" },
+      async reply() {
+        throw new Error("reply should not be used on the happy path");
+      },
+      async update(payload: unknown) {
+        updatedPayloads.push(payload);
+      },
+    } as never,
+    sessionRepo,
+    codexClient: {
+      async listModels() {
+        return {
+          data: [
+            {
+              model: "gpt-5.4",
+              displayName: "GPT-5.4",
+              description: "Frontier model",
+              supportedReasoningEfforts: ["high"],
+              defaultReasoningEffort: "high",
+              isDefault: true,
+            },
+          ],
+          nextCursor: null,
+        };
+      },
+    } as never,
+    getDiscordClient() {
+      return {} as never;
+    },
+    async sendTextToChannel(_client, _channelId, payload) {
+      sentTexts.push(payload);
+      return undefined;
+    },
+  });
+
+  expect(handled).toBe(true);
+  expect(sessionRepo.getByDiscordThreadId("discord-thread-1")).toMatchObject({
+    modelOverride: "gpt-5.4",
+    reasoningEffortOverride: "high",
+  });
+  expect(sentTexts).toEqual([
+    "Model set to `gpt-5.4` with `high` reasoning effort for this session.",
+  ]);
+  expect(updatedPayloads).toEqual([
+    {
+      content: "Saved `gpt-5.4` for this session.",
+      components: [],
+    },
+  ]);
+
+  db.close();
 });
 
 const createAppConfig = (): AppConfig => ({
@@ -4964,7 +5352,7 @@ test("snapshot mismatch does not degrade when snapshot can consume a pending Dis
   const runtime = {
     seenItemIds: new Set<string>(),
     finalizingItemIds: new Set<string>(),
-    pendingDiscordInputs: ["reply exactly OK"],
+    pendingLocalInputs: [{ kind: "start" as const, text: "reply exactly OK" }],
   };
   const turns: CodexTurn[] = [
     {
@@ -5004,7 +5392,7 @@ test("snapshot mismatch still degrades when unseen items do not match pending Di
   const runtime = {
     seenItemIds: new Set<string>(),
     finalizingItemIds: new Set<string>(),
-    pendingDiscordInputs: ["something else"],
+    pendingLocalInputs: [{ kind: "start" as const, text: "something else" }],
   };
   const turns: CodexTurn[] = [
     {
@@ -5032,7 +5420,7 @@ test("snapshot mismatch does not degrade for a live-observed external turn", () 
   const runtime = {
     seenItemIds: new Set<string>(),
     finalizingItemIds: new Set<string>(),
-    pendingDiscordInputs: [],
+    pendingLocalInputs: [],
     trustedExternalTurnIds: new Set<string>(["turn-1"]),
   };
   const turns: CodexTurn[] = [
@@ -5061,7 +5449,7 @@ test("live turn start trusts only external turns that did not originate from Dis
   const runtime = {
     seenItemIds: new Set<string>(),
     finalizingItemIds: new Set<string>(),
-    pendingDiscordInputs: [] as string[],
+    pendingLocalInputs: [] as Array<{ kind: "start"; text: string }>,
     trustedExternalTurnIds: new Set<string>(),
   };
 
@@ -5071,7 +5459,10 @@ test("live turn start trusts only external turns that did not originate from Dis
   });
   expect(runtime.trustedExternalTurnIds.has("external-turn")).toBe(true);
 
-  runtime.pendingDiscordInputs.push("reply exactly OK");
+  runtime.pendingLocalInputs.push({
+    kind: "start",
+    text: "reply exactly OK",
+  });
   noteTrustedLiveExternalTurnStart({
     runtime,
     turnId: "discord-turn",
@@ -5083,7 +5474,7 @@ test("automatic snapshot mismatch holds transcript relay until manual sync", () 
   const runtime = {
     seenItemIds: new Set<string>(),
     finalizingItemIds: new Set<string>(),
-    pendingDiscordInputs: [],
+    pendingLocalInputs: [],
   };
   const turns: CodexTurn[] = [
     {
@@ -5126,7 +5517,7 @@ test("snapshot mismatch ignores live-vs-snapshot id remapping when the same turn
       getAssistantTranscriptEntryId("turn-1"),
     ]),
     finalizingItemIds: new Set<string>(),
-    pendingDiscordInputs: [],
+    pendingLocalInputs: [],
   };
   const turns: CodexTurn[] = [
     {
@@ -5166,7 +5557,7 @@ test("snapshot replay does not duplicate a resumed turn after live relay used a 
   const runtime = {
     seenItemIds: new Set<string>(),
     finalizingItemIds: new Set<string>(),
-    pendingDiscordInputs: [] as string[],
+    pendingLocalInputs: [] as Array<{ kind: "start"; text: string }>,
     activeTurnId: "turn-1",
   };
   const liveTurns: CodexTurn[] = [
@@ -5205,7 +5596,7 @@ test("snapshot replay does not duplicate a resumed turn after live relay used a 
   }) => {
     const entries = collectTranscriptEntries(turns, {
       source,
-      pendingDiscordInputs: runtime.pendingDiscordInputs,
+      pendingDiscordInputs: getPendingLocalInputTexts(runtime),
     }).filter((entry) =>
       !shouldSkipTranscriptRelayEntry({
         runtime,
@@ -5361,7 +5752,7 @@ test("completed turn remaps synthetic live transcript ids so snapshot replay sta
   const runtime = {
     seenItemIds: new Set<string>(),
     finalizingItemIds: new Set<string>(),
-    pendingDiscordInputs: ["hi"],
+    pendingLocalInputs: [{ kind: "start" as const, text: "hi" }],
     itemTurnIds: new Map<string, string>(),
     activeTurnId: undefined as string | undefined,
     turnReplyMessageIds: new Map<string, string>(),
@@ -5373,7 +5764,7 @@ test("completed turn remaps synthetic live transcript ids so snapshot replay sta
     items: [userItem],
   }], {
     source: "live",
-    pendingDiscordInputs: runtime.pendingDiscordInputs,
+    pendingDiscordInputs: getPendingLocalInputTexts(runtime),
   }).filter((entry) =>
     !shouldSkipTranscriptRelayEntry({
       runtime,
@@ -5415,7 +5806,7 @@ test("completed turn remaps synthetic live transcript ids so snapshot replay sta
     items: [userItem, assistantItem],
   }], {
     source: "snapshot",
-    pendingDiscordInputs: runtime.pendingDiscordInputs,
+    pendingDiscordInputs: getPendingLocalInputTexts(runtime),
   }).filter((entry) =>
     !shouldSkipTranscriptRelayEntry({
       runtime,
@@ -5456,7 +5847,7 @@ test("runtime seeded from snapshot after restart does not re-degrade the same co
   const runtime = {
     seenItemIds: new Set<string>(),
     finalizingItemIds: new Set<string>(),
-    pendingDiscordInputs: [],
+    pendingLocalInputs: [],
   };
 
   seedTranscriptRuntimeSeenItemsFromSnapshot({

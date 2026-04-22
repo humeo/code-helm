@@ -70,7 +70,40 @@ export type StartTurnParams = {
   input: unknown;
   approvalPolicy?: string;
   sandboxPolicy?: string;
+  model?: string;
+  effort?: string;
 };
+
+export type TurnSteerParams = {
+  threadId: string;
+  expectedTurnId: string;
+  input: unknown;
+};
+
+export type TurnInterruptParams = {
+  threadId: string;
+  turnId: string;
+};
+
+export type ModelListParams = {
+  cursor?: string | null;
+  includeHidden?: boolean | null;
+  limit?: number | null;
+};
+
+export type ModelCatalogEntry = {
+  model: string;
+  displayName: string;
+  description: string;
+  supportedReasoningEfforts: string[];
+  defaultReasoningEffort: string;
+  isDefault: boolean;
+} & Record<string, unknown>;
+
+export type ModelListResult = {
+  data: ModelCatalogEntry[];
+  nextCursor: string | null;
+} & Record<string, unknown>;
 
 export type ReplyToServerRequestParams = {
   requestId: JsonRpcId;

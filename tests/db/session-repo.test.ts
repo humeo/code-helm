@@ -205,6 +205,8 @@ test("lists persisted sessions with runtime, lifecycle, degradation, and cwd sem
       state: "running",
       lifecycleState: "archived",
       degradationReason: null,
+      modelOverride: null,
+      reasoningEffortOverride: null,
       createdAt: expect.any(String),
       updatedAt: expect.any(String),
     },
@@ -256,6 +258,102 @@ test("marks externally modified sessions as degraded with a reason", () => {
   expect(session?.lifecycleState).toBe("active");
   expect(session?.degradationReason).toBe("native_cli_write");
   expect(session?.cwd).toBe("/tmp/ws1/app");
+
+  db.close();
+});
+
+test("new sessions default model overrides to null", () => {
+  const db = createMigratedDb();
+  seedWorkspaceGraph(db);
+  const repo = insertSession(db);
+
+  expect(repo.getByDiscordThreadId("123")).toMatchObject({
+    discordThreadId: "123",
+    modelOverride: null,
+    reasoningEffortOverride: null,
+  });
+
+  db.close();
+});
+
+test("updates stored session model and reasoning effort overrides", () => {
+  const db = createMigratedDb();
+  seedWorkspaceGraph(db);
+  const repo = insertSession(db);
+
+  repo.updateModelOverride("123", {
+    modelOverride: "gpt-5.4",
+    reasoningEffortOverride: "xhigh",
+  });
+
+  expect(repo.getByDiscordThreadId("123")).toMatchObject({
+    discordThreadId: "123",
+    modelOverride: "gpt-5.4",
+    reasoningEffortOverride: "xhigh",
+  });
+
+  repo.updateModelOverride("123", {
+    modelOverride: null,
+    reasoningEffortOverride: null,
+  });
+
+  expect(repo.getByDiscordThreadId("123")).toMatchObject({
+    discordThreadId: "123",
+    modelOverride: null,
+    reasoningEffortOverride: null,
+  });
+
+  db.close();
+});
+
+test("applyMigrations backfills session model override columns for legacy databases", () => {
+  const db = createDatabaseClient(":memory:");
+
+  db.exec(`
+    CREATE TABLE sessions (
+      discord_thread_id TEXT PRIMARY KEY,
+      codex_thread_id TEXT NOT NULL UNIQUE,
+      owner_discord_user_id TEXT NOT NULL,
+      cwd TEXT NOT NULL,
+      state TEXT NOT NULL,
+      lifecycle_state TEXT NOT NULL DEFAULT 'active',
+      degradation_reason TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `);
+  db.exec(`
+    INSERT INTO sessions (
+      discord_thread_id,
+      codex_thread_id,
+      owner_discord_user_id,
+      cwd,
+      state,
+      lifecycle_state,
+      degradation_reason,
+      created_at,
+      updated_at
+    ) VALUES (
+      '123',
+      'abc',
+      'u1',
+      '/tmp/ws1/app',
+      'idle',
+      'active',
+      NULL,
+      '2026-04-22T00:00:00.000Z',
+      '2026-04-22T00:00:00.000Z'
+    )
+  `);
+
+  applyMigrations(db);
+
+  const repo = createSessionRepo(db);
+  expect(repo.getByDiscordThreadId("123")).toMatchObject({
+    discordThreadId: "123",
+    modelOverride: null,
+    reasoningEffortOverride: null,
+  });
 
   db.close();
 });
@@ -796,6 +894,7 @@ test("exposes only the narrow session repository API", () => {
     "rebindDiscordThread",
     "syncState",
     "updateLifecycleState",
+    "updateModelOverride",
     "updateState",
   ]);
 

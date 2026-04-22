@@ -91,7 +91,7 @@ test("non-owner messages are ignored", () => {
   });
 });
 
-test("running sessions do not start a second turn", () => {
+test("running sessions steer the active turn", () => {
   const result = decideThreadTurn({
     authorId: "u1",
     ownerId: "u1",
@@ -101,12 +101,15 @@ test("running sessions do not start a second turn", () => {
   });
 
   expect(result).toEqual({
-    kind: "noop",
-    reason: "session-busy",
+    kind: "steer-turn",
+    request: {
+      threadId: "codex-thread-1",
+      input: [{ type: "text", text: "run again" }],
+    },
   });
 });
 
-test("waiting approval sessions also stay single-turn", () => {
+test("waiting approval sessions reject new owner messages", () => {
   const result = decideThreadTurn({
     authorId: "u1",
     ownerId: "u1",
@@ -116,8 +119,8 @@ test("waiting approval sessions also stay single-turn", () => {
   });
 
   expect(result).toEqual({
-    kind: "noop",
-    reason: "session-busy",
+    kind: "reject",
+    reason: "waiting-approval",
   });
 });
 

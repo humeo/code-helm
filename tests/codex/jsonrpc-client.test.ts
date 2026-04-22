@@ -521,3 +521,120 @@ test("listThreads supports cwd filtering via thread/list", async () => {
     nextCursor: null,
   });
 });
+
+test("turnSteer sends turn/steer with expected turn id", async () => {
+  const stub = createTransportStub();
+  const client = new JsonRpcClient("ws://example.test", {
+    transport: stub.transport,
+  });
+
+  const steerPromise = client.turnSteer({
+    threadId: "thread-123",
+    expectedTurnId: "turn-123",
+    input: [{ type: "text", text: "Please continue." }],
+  });
+
+  await Promise.resolve();
+  stub.receive({ id: 1, result: {} });
+  await Bun.sleep(0);
+
+  expect(JSON.parse(stub.sent[2])).toMatchObject({
+    jsonrpc: "2.0",
+    id: 2,
+    method: "turn/steer",
+    params: {
+      threadId: "thread-123",
+      expectedTurnId: "turn-123",
+      input: [{ type: "text", text: "Please continue." }],
+    },
+  });
+
+  stub.receive({ id: 2, result: {} });
+  await expect(steerPromise).resolves.toEqual({});
+});
+
+test("turnInterrupt sends turn/interrupt for the active turn", async () => {
+  const stub = createTransportStub();
+  const client = new JsonRpcClient("ws://example.test", {
+    transport: stub.transport,
+  });
+
+  const interruptPromise = client.turnInterrupt({
+    threadId: "thread-123",
+    turnId: "turn-123",
+  });
+
+  await Promise.resolve();
+  stub.receive({ id: 1, result: {} });
+  await Bun.sleep(0);
+
+  expect(JSON.parse(stub.sent[2])).toMatchObject({
+    jsonrpc: "2.0",
+    id: 2,
+    method: "turn/interrupt",
+    params: {
+      threadId: "thread-123",
+      turnId: "turn-123",
+    },
+  });
+
+  stub.receive({ id: 2, result: {} });
+  await expect(interruptPromise).resolves.toEqual({});
+});
+
+test("listModels requests model/list", async () => {
+  const stub = createTransportStub();
+  const client = new JsonRpcClient("ws://example.test", {
+    transport: stub.transport,
+  });
+
+  const listPromise = client.listModels({
+    includeHidden: true,
+    limit: 10,
+  });
+
+  await Promise.resolve();
+  stub.receive({ id: 1, result: {} });
+  await Bun.sleep(0);
+
+  expect(JSON.parse(stub.sent[2])).toMatchObject({
+    jsonrpc: "2.0",
+    id: 2,
+    method: "model/list",
+    params: {
+      includeHidden: true,
+      limit: 10,
+    },
+  });
+
+  stub.receive({
+    id: 2,
+    result: {
+      data: [
+        {
+          model: "gpt-5.4",
+          displayName: "GPT-5.4",
+          description: "Frontier model",
+          supportedReasoningEfforts: ["medium", "high", "xhigh"],
+          defaultReasoningEffort: "medium",
+          isDefault: true,
+        },
+      ],
+      nextCursor: null,
+    },
+  });
+
+  await expect(listPromise).resolves.toEqual({
+    data: [
+      {
+        model: "gpt-5.4",
+        displayName: "GPT-5.4",
+        description: "Frontier model",
+        supportedReasoningEfforts: ["medium", "high", "xhigh"],
+        defaultReasoningEffort: "medium",
+        isDefault: true,
+      },
+    ],
+    nextCursor: null,
+  });
+});

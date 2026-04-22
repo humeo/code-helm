@@ -11,6 +11,8 @@ export type SessionRecord = {
   state: SessionState;
   lifecycleState: SessionLifecycleState;
   degradationReason: string | null;
+  modelOverride: string | null;
+  reasoningEffortOverride: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -31,6 +33,8 @@ type SessionRow = {
   state: string;
   lifecycle_state: SessionLifecycleState;
   degradation_reason: string | null;
+  model_override: string | null;
+  reasoning_effort_override: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -52,6 +56,8 @@ const mapSession = (row: SessionRow | null): SessionRecord | null => {
     state: row.state,
     lifecycleState: row.lifecycle_state,
     degradationReason: row.degradation_reason,
+    modelOverride: row.model_override,
+    reasoningEffortOverride: row.reasoning_effort_override,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -106,6 +112,11 @@ export const createSessionRepo = (db: Database) => {
   const updateLifecycleStateStatement = db.prepare(
     `UPDATE sessions
       SET lifecycle_state = ?, updated_at = ?
+      WHERE discord_thread_id = ?`,
+  );
+  const updateModelOverrideStatement = db.prepare(
+    `UPDATE sessions
+      SET model_override = ?, reasoning_effort_override = ?, updated_at = ?
       WHERE discord_thread_id = ?`,
   );
   const markExternallyModifiedStatement = db.prepare(
@@ -186,6 +197,23 @@ export const createSessionRepo = (db: Database) => {
       assertSessionUpdated(
         updateLifecycleStateStatement.run(
           lifecycleState,
+          now(),
+          discordThreadId,
+        ) as MutationResult,
+        discordThreadId,
+      );
+    },
+    updateModelOverride(
+      discordThreadId: string,
+      overrides: {
+        modelOverride: string | null;
+        reasoningEffortOverride: string | null;
+      },
+    ) {
+      assertSessionUpdated(
+        updateModelOverrideStatement.run(
+          overrides.modelOverride,
+          overrides.reasoningEffortOverride,
           now(),
           discordThreadId,
         ) as MutationResult,

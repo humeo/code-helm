@@ -13,6 +13,8 @@ import {
   type JsonRpcOutgoingMessage,
   type JsonRpcRequest,
   type JsonRpcSuccess,
+  type ModelListParams,
+  type ModelListResult,
   type ThreadListParams,
   type ThreadListResult,
   type ThreadReadParams,
@@ -23,6 +25,8 @@ import {
   type ServerRequestResolvedEvent,
   type StartThreadParams,
   type StartTurnParams,
+  type TurnInterruptParams,
+  type TurnSteerParams,
   type ThreadResumeResult,
   type ThreadStartResult,
 } from "./protocol-types";
@@ -264,6 +268,21 @@ export class JsonRpcClient {
   async startTurn(params: StartTurnParams) {
     await this.initialize();
     return this.sendRequest("turn/start", params);
+  }
+
+  async turnSteer(params: TurnSteerParams) {
+    await this.initialize();
+    return this.sendRequest("turn/steer", params);
+  }
+
+  async turnInterrupt(params: TurnInterruptParams) {
+    await this.initialize();
+    return this.sendRequest("turn/interrupt", params);
+  }
+
+  async listModels(params: ModelListParams = {}) {
+    await this.initialize();
+    return this.sendRequest<ModelListResult>("model/list", params);
   }
 
   async replyToServerRequest({

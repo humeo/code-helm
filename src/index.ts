@@ -7,11 +7,13 @@ import {
   ButtonBuilder,
   ButtonStyle,
   Events,
+  MessageFlags,
   type Message,
   REST,
   Routes,
   ThreadAutoArchiveDuration,
   type ButtonInteraction,
+  type StringSelectMenuInteraction,
   type AnyThreadChannel,
   type Client,
   type MessageMentionOptions,
@@ -112,6 +114,17 @@ import {
   type DiscordCommandResult,
   type DiscordCommandServices,
 } from "./discord/commands";
+import {
+  buildManagedSessionCommands,
+  handleManagedSessionCommand,
+  type ManagedSessionCommandServices,
+} from "./discord/managed-session-commands";
+import {
+  buildManagedEffortPickerRow,
+  buildManagedModelPickerRow,
+  parseManagedModelCustomId,
+} from "./discord/managed-session-model-ui";
+import { renderManagedSessionStatus } from "./discord/managed-session-status";
 import { buildDiscordRestOptions } from "./discord/rest";
 import {
   renderDegradationActionText,
@@ -139,6 +152,7 @@ import {
   decideArchivedThreadResume,
   decideThreadTurn,
   type CodexTurnInput,
+  type StartThreadTurnDecision,
 } from "./discord/thread-handler";
 import { logger } from "./logger";
 
@@ -313,10 +327,16 @@ type RenamableThreadChannel = {
   name: string | null;
   setName(name: string, reason?: string): Promise<unknown>;
 };
+export type PendingLocalInput = {
+  kind: "start" | "steer";
+  text: string;
+  replyToMessageId?: string;
+  turnId?: string;
+};
 type TranscriptRuntime = {
   seenItemIds: Set<string>;
   finalizingItemIds: Set<string>;
-  pendingDiscordInputs: string[];
+  pendingLocalInputs: PendingLocalInput[];
   pendingDiscordInputReplyMessageIds: Array<string | undefined>;
   turnReplyMessageIds: Map<string, string>;
   trustedExternalTurnIds: Set<string>;
@@ -717,12 +737,12 @@ export const shouldDegradeForSnapshotMismatch = ({
   runtime: {
     seenItemIds: Set<string>;
     finalizingItemIds: Set<string>;
-    pendingDiscordInputs: string[];
+    pendingLocalInputs: PendingLocalInput[];
     trustedExternalTurnIds?: Set<string>;
   };
   turns: CodexTurn[] | undefined;
 }) => {
-  const pendingDiscordInputsProbe = [...runtime.pendingDiscordInputs];
+  const pendingDiscordInputsProbe = getPendingLocalInputTexts(runtime);
   const trustedExternalTurnIds = runtime.trustedExternalTurnIds ?? new Set<string>();
   const unseenItemIds = collectComparableTranscriptItemIds(turns, {
     pendingDiscordInputs: pendingDiscordInputsProbe,
@@ -736,11 +756,11 @@ export const shouldDegradeForSnapshotMismatch = ({
     return false;
   }
 
-  if (runtime.pendingDiscordInputs.length === 0) {
+  if (runtime.pendingLocalInputs.length === 0) {
     return true;
   }
 
-  return pendingDiscordInputsProbe.length === runtime.pendingDiscordInputs.length;
+  return pendingDiscordInputsProbe.length === runtime.pendingLocalInputs.length;
 };
 
 export const shouldHoldSnapshotTranscriptForManualSync = ({
@@ -751,7 +771,7 @@ export const shouldHoldSnapshotTranscriptForManualSync = ({
   runtime: {
     seenItemIds: Set<string>;
     finalizingItemIds: Set<string>;
-    pendingDiscordInputs: string[];
+    pendingLocalInputs: PendingLocalInput[];
     trustedExternalTurnIds?: Set<string>;
   };
   turns: CodexTurn[] | undefined;
@@ -1759,6 +1779,30 @@ export const inferSessionStateFromThreadStatus = (
   return "idle";
 };
 
+export const readActiveTurnIdFromThreadReadResult = (
+  snapshot: ThreadReadResult,
+) => {
+  const activeRuntimeState = inferSessionStateFromThreadStatus(snapshot.thread.status);
+
+  return activeRuntimeState === "running" || activeRuntimeState === "waiting-approval"
+    ? snapshot.thread.turns?.at(-1)?.id
+    : undefined;
+};
+
+export const applySessionStartTurnOverrides = ({
+  session,
+  request,
+}: {
+  session: Pick<SessionRecord, "modelOverride" | "reasoningEffortOverride">;
+  request: StartThreadTurnDecision["request"];
+}) => {
+  return {
+    ...request,
+    model: request.model ?? session.modelOverride ?? undefined,
+    effort: request.effort ?? session.reasoningEffortOverride ?? undefined,
+  };
+};
+
 export const describeCodexThreadStatus = (status: CodexThreadStatus) => {
   if (status.type !== "active") {
     return status.type;
@@ -1811,7 +1855,7 @@ const buildTranscriptRuntime = (): TranscriptRuntime => {
   return {
     seenItemIds: new Set<string>(),
     finalizingItemIds: new Set<string>(),
-    pendingDiscordInputs: [],
+    pendingLocalInputs: [],
     pendingDiscordInputReplyMessageIds: [],
     turnReplyMessageIds: new Map(),
     trustedExternalTurnIds: new Set<string>(),
@@ -1827,6 +1871,47 @@ const buildTranscriptRuntime = (): TranscriptRuntime => {
     attemptedStatusRecovery: false,
     pendingStatusUpdate: undefined,
   };
+};
+
+export const getPendingLocalInputTexts = (
+  runtime: Pick<TranscriptRuntime, "pendingLocalInputs">,
+) => {
+  return runtime.pendingLocalInputs.map((input) => input.text);
+};
+
+export const getQueuedSteerInputs = (
+  runtime: Pick<TranscriptRuntime, "pendingLocalInputs">,
+) => {
+  return runtime.pendingLocalInputs.filter((input) => input.kind === "steer");
+};
+
+const removePendingLocalInput = ({
+  runtime,
+  pendingInput,
+}: {
+  runtime: Pick<TranscriptRuntime, "pendingLocalInputs">;
+  pendingInput: PendingLocalInput;
+}) => {
+  const index = runtime.pendingLocalInputs.indexOf(pendingInput);
+
+  if (index >= 0) {
+    runtime.pendingLocalInputs.splice(index, 1);
+  }
+};
+
+export const clearQueuedSteerInputs = ({
+  runtime,
+}: {
+  runtime: Pick<TranscriptRuntime, "pendingLocalInputs">;
+}) => {
+  const discarded = getQueuedSteerInputs(runtime);
+
+  if (discarded.length === 0) {
+    return [] as PendingLocalInput[];
+  }
+
+  runtime.pendingLocalInputs = runtime.pendingLocalInputs.filter((input) => input.kind !== "steer");
+  return discarded;
 };
 
 const readTurnIdFromTranscriptEntryId = (itemId: string) => {
@@ -1850,10 +1935,10 @@ export const noteTrustedLiveExternalTurnStart = ({
   runtime,
   turnId,
 }: {
-  runtime: Pick<TranscriptRuntime, "pendingDiscordInputs" | "trustedExternalTurnIds">;
+  runtime: Pick<TranscriptRuntime, "pendingLocalInputs" | "trustedExternalTurnIds">;
   turnId?: string;
 }) => {
-  if (!turnId || runtime.pendingDiscordInputs.length > 0) {
+  if (!turnId || runtime.pendingLocalInputs.length > 0) {
     return;
   }
 
@@ -2025,6 +2110,20 @@ const consumePendingDiscordReplyReferences = ({
   }
 };
 
+const consumePendingLocalInputs = ({
+  runtime,
+  consumedCount,
+}: {
+  runtime: Pick<TranscriptRuntime, "pendingLocalInputs">;
+  consumedCount: number;
+}) => {
+  if (consumedCount <= 0) {
+    return;
+  }
+
+  runtime.pendingLocalInputs.splice(0, consumedCount);
+};
+
 const rememberPendingDiscordReplyReferenceForTurn = ({
   runtime,
   turnId,
@@ -2074,10 +2173,11 @@ const relayTranscriptEntries = async ({
   activeTurnId?: string;
   activeTurnFooter?: ProcessFooterText;
 }) => {
-  const pendingDiscordInputCount = runtime.pendingDiscordInputs.length;
+  const pendingDiscordInputs = getPendingLocalInputTexts(runtime);
+  const pendingDiscordInputCount = pendingDiscordInputs.length;
   const entries = collectTranscriptEntries(turns, {
     source,
-    pendingDiscordInputs: runtime.pendingDiscordInputs,
+    pendingDiscordInputs,
     activeTurnId,
     activeTurnFooter,
   }).filter((entry) =>
@@ -2088,9 +2188,13 @@ const relayTranscriptEntries = async ({
     })
   );
   const consumedPendingDiscordInputs =
-    pendingDiscordInputCount - runtime.pendingDiscordInputs.length;
+    pendingDiscordInputCount - pendingDiscordInputs.length;
 
   if (consumedPendingDiscordInputs > 0) {
+    consumePendingLocalInputs({
+      runtime,
+      consumedCount: consumedPendingDiscordInputs,
+    });
     consumePendingDiscordReplyReferences({
       runtime,
       consumedCount: consumedPendingDiscordInputs,
@@ -4163,6 +4267,400 @@ const createAttachedSessionThread = async ({
   }
 };
 
+type CreateManagedSessionCommandServicesDeps = {
+  sessionRepo: ReturnType<typeof createSessionRepo>;
+  approvalRepo: ReturnType<typeof createApprovalRepo>;
+  codexClient: Pick<JsonRpcClient, "listModels" | "turnInterrupt">;
+  getDiscordClient: () => Client;
+  ensureTranscriptRuntime: (codexThreadId: string) => TranscriptRuntime;
+  readThreadForSnapshotReconciliation: (input: {
+    threadId: string;
+  }) => Promise<ThreadReadResult>;
+  resolveActiveTurnId: (input: {
+    session: Pick<SessionRecord, "codexThreadId">;
+    runtime: Pick<TranscriptRuntime, "activeTurnId">;
+  }) => Promise<string | undefined>;
+  sendTextToChannel: (
+    client: Client,
+    channelId: string,
+    payload: string,
+  ) => Promise<unknown>;
+};
+
+const resolveManagedSessionThreadCommandSession = ({
+  sessionRepo,
+  channelId,
+}: {
+  sessionRepo: ReturnType<typeof createSessionRepo>;
+  channelId: string;
+}) => {
+  const session = sessionRepo.getByDiscordThreadId(channelId);
+
+  if (!session) {
+    return {
+      session: undefined,
+      error: {
+        reply: {
+          content: "This command only works inside a managed session thread.",
+          ephemeral: true,
+        },
+      } satisfies DiscordCommandResult,
+    } as const;
+  }
+
+  if (session.lifecycleState !== "active") {
+    return {
+      session: undefined,
+      error: {
+        reply: {
+          content: "This managed session thread is not currently active.",
+          ephemeral: true,
+        },
+      } satisfies DiscordCommandResult,
+    } as const;
+  }
+
+  return {
+    session,
+    error: undefined,
+  };
+};
+
+const isManagedSessionCommandActorAllowed = ({
+  actorId,
+  session,
+}: {
+  actorId: string;
+  session: Pick<SessionRecord, "ownerDiscordUserId">;
+}) => {
+  return canControlSession({
+    viewerId: actorId,
+    ownerId: session.ownerDiscordUserId,
+  });
+};
+
+export const createManagedSessionCommandServices = ({
+  sessionRepo,
+  approvalRepo,
+  codexClient,
+  getDiscordClient,
+  ensureTranscriptRuntime,
+  readThreadForSnapshotReconciliation,
+  resolveActiveTurnId,
+  sendTextToChannel,
+}: CreateManagedSessionCommandServicesDeps): ManagedSessionCommandServices => {
+  return {
+    async status({ channelId }) {
+      const resolved = resolveManagedSessionThreadCommandSession({
+        sessionRepo,
+        channelId,
+      });
+
+      if (!resolved.session) {
+        return resolved.error!;
+      }
+
+      const session = resolved.session;
+      const runtime = ensureTranscriptRuntime(session.codexThreadId);
+      const queuedSteers = getQueuedSteerInputs(runtime).map((input) => input.text);
+      const pendingApprovalCount = approvalRepo.listPendingByDiscordThreadId(
+        session.discordThreadId,
+      ).length;
+      let effectiveState = session.state;
+
+      try {
+        const snapshot = await readThreadForSnapshotReconciliation({
+          threadId: session.codexThreadId,
+        });
+
+        effectiveState = inferSessionStateFromThreadStatus(snapshot.thread.status);
+        runtime.activeTurnId = readActiveTurnIdFromThreadReadResult(snapshot);
+      } catch {
+        effectiveState = session.state;
+      }
+
+      return {
+        reply: {
+          content: renderManagedSessionStatus({
+            session,
+            effectiveState,
+            queuedSteers,
+            pendingApprovalCount,
+          }),
+        },
+      };
+    },
+    async interrupt({ actorId, channelId }) {
+      const resolved = resolveManagedSessionThreadCommandSession({
+        sessionRepo,
+        channelId,
+      });
+
+      if (!resolved.session) {
+        return resolved.error!;
+      }
+
+      const session = resolved.session;
+
+      if (!isManagedSessionCommandActorAllowed({ actorId, session })) {
+        return {
+          reply: {
+            content: "Only the session owner can interrupt this managed session.",
+            ephemeral: true,
+          },
+        };
+      }
+
+      if (session.state !== "running" && session.state !== "waiting-approval") {
+        return {
+          reply: {
+            content: "Session is not currently running.",
+          },
+        };
+      }
+
+      const runtime = ensureTranscriptRuntime(session.codexThreadId);
+      let activeTurnId: string | undefined;
+
+      try {
+        activeTurnId = await resolveActiveTurnId({
+          session,
+          runtime,
+        });
+      } catch {
+        activeTurnId = undefined;
+      }
+
+      if (!activeTurnId) {
+        return {
+          reply: {
+            content: "Couldn't interrupt the current turn because the active turn could not be resolved.",
+          },
+        };
+      }
+
+      try {
+        await codexClient.turnInterrupt({
+          threadId: session.codexThreadId,
+          turnId: activeTurnId,
+        });
+      } catch {
+        return {
+          reply: {
+            content: "Failed to interrupt the current turn.",
+          },
+        };
+      }
+
+      const discarded = clearQueuedSteerInputs({
+        runtime,
+      });
+
+      return {
+        reply: {
+          content:
+            discarded.length > 0
+              ? `Interrupted current turn. Discarded ${discarded.length} queued steer messages.`
+              : "Interrupted current turn.",
+        },
+      };
+    },
+    async openModelPicker({ interaction, actorId, channelId }) {
+      const resolved = resolveManagedSessionThreadCommandSession({
+        sessionRepo,
+        channelId,
+      });
+
+      if (!resolved.session) {
+        await interaction.reply({
+          content: resolved.error!.reply.content,
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      const session = resolved.session;
+
+      if (!isManagedSessionCommandActorAllowed({ actorId, session })) {
+        await interaction.reply({
+          content: "Only the session owner can change the model for this managed session.",
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      if (session.state !== "idle") {
+        await interaction.reply({
+          content: "Model changes are only available while the session is idle.",
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      const catalog = await codexClient.listModels();
+
+      if (catalog.data.length === 0) {
+        await interaction.reply({
+          content: "No models are available for selection right now.",
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      await interaction.reply({
+        content: "Select a model for this managed session.",
+        components: [
+          buildManagedModelPickerRow({
+            channelId: session.discordThreadId,
+            currentModel: session.modelOverride,
+            models: catalog.data,
+          }),
+        ],
+        flags: MessageFlags.Ephemeral,
+      });
+    },
+  };
+};
+
+type HandleManagedSessionModelComponentDeps = {
+  interaction: StringSelectMenuInteraction;
+  sessionRepo: ReturnType<typeof createSessionRepo>;
+  codexClient: Pick<JsonRpcClient, "listModels">;
+  getDiscordClient: () => Client;
+  sendTextToChannel: (
+    client: Client,
+    channelId: string,
+    payload: string,
+  ) => Promise<unknown>;
+};
+
+export const handleManagedSessionModelComponentInteraction = async ({
+  interaction,
+  sessionRepo,
+  codexClient,
+  getDiscordClient,
+  sendTextToChannel,
+}: HandleManagedSessionModelComponentDeps) => {
+  const parsed = parseManagedModelCustomId(interaction.customId);
+
+  if (!parsed) {
+    return false;
+  }
+
+  const resolved = resolveManagedSessionThreadCommandSession({
+    sessionRepo,
+    channelId: parsed.channelId,
+  });
+
+  if (!resolved.session) {
+    await interaction.reply({
+      content: resolved.error!.reply.content,
+      flags: MessageFlags.Ephemeral,
+    });
+    return true;
+  }
+
+  const session = resolved.session;
+
+  if (!isManagedSessionCommandActorAllowed({
+    actorId: interaction.user.id,
+    session,
+  })) {
+    await interaction.reply({
+      content: "Only the session owner can change the model for this managed session.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return true;
+  }
+
+  if (session.state !== "idle") {
+    await interaction.reply({
+      content: "Model changes are only available while the session is idle.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return true;
+  }
+
+  const catalog = await codexClient.listModels();
+
+  if (parsed.kind === "model") {
+    const selectedModel = interaction.values[0];
+    const model = catalog.data.find((entry) => entry.model === selectedModel);
+
+    if (!model) {
+      await interaction.update({
+        content: "That model is no longer available.",
+        components: [],
+      });
+      return true;
+    }
+
+    const supportedEfforts = model.supportedReasoningEfforts;
+
+    if (supportedEfforts.length <= 1) {
+      const reasoningEffortOverride =
+        supportedEfforts[0] ?? model.defaultReasoningEffort;
+
+      sessionRepo.updateModelOverride(session.discordThreadId, {
+        modelOverride: model.model,
+        reasoningEffortOverride,
+      });
+      await sendTextToChannel(
+        getDiscordClient(),
+        session.discordThreadId,
+        `Model set to \`${model.model}\` with \`${reasoningEffortOverride}\` reasoning effort for this session.`,
+      );
+      await interaction.update({
+        content: `Saved \`${model.model}\` for this session.`,
+        components: [],
+      });
+      return true;
+    }
+
+    await interaction.update({
+      content: `Selected \`${model.model}\`. Now choose a reasoning effort.`,
+      components: [
+        buildManagedEffortPickerRow({
+          channelId: session.discordThreadId,
+          model: model.model,
+          currentEffort:
+            session.modelOverride === model.model
+              ? session.reasoningEffortOverride
+              : model.defaultReasoningEffort,
+          efforts: supportedEfforts,
+        }),
+      ],
+    });
+    return true;
+  }
+
+  const model = catalog.data.find((entry) => entry.model === parsed.model);
+  const selectedEffort = interaction.values[0];
+
+  if (!model || !model.supportedReasoningEfforts.includes(selectedEffort)) {
+    await interaction.update({
+      content: "That reasoning effort is no longer available.",
+      components: [],
+    });
+    return true;
+  }
+
+  sessionRepo.updateModelOverride(session.discordThreadId, {
+    modelOverride: model.model,
+    reasoningEffortOverride: selectedEffort,
+  });
+  await sendTextToChannel(
+    getDiscordClient(),
+    session.discordThreadId,
+    `Model set to \`${model.model}\` with \`${selectedEffort}\` reasoning effort for this session.`,
+  );
+  await interaction.update({
+    content: `Saved \`${model.model}\` with \`${selectedEffort}\` reasoning effort for this session.`,
+    components: [],
+  });
+  return true;
+};
+
 export const createControlChannelServices = ({
   config,
   homeDir = homedir(),
@@ -5522,10 +6020,8 @@ const startCodeHelmRuntime = async (
     }
 
     const activeRuntimeState = inferSessionStateFromThreadStatus(snapshot.thread.status);
-    const activeTurnId =
-      activeRuntimeState === "running" || activeRuntimeState === "waiting-approval"
-        ? snapshot.thread.turns?.at(-1)?.id
-        : undefined;
+    const activeTurnId = readActiveTurnIdFromThreadReadResult(snapshot);
+    runtime.activeTurnId = activeTurnId;
 
     await relayTranscriptEntries({
       client: discord,
@@ -5581,7 +6077,14 @@ const startCodeHelmRuntime = async (
     request,
     replyToMessageId,
   }: {
-    session: Pick<SessionRecord, "codexThreadId" | "state" | "discordThreadId">;
+    session: Pick<
+      SessionRecord,
+      | "codexThreadId"
+      | "state"
+      | "discordThreadId"
+      | "modelOverride"
+      | "reasoningEffortOverride"
+    >;
     content: string;
     request: Omit<StartTurnParams, "input"> & {
       input: CodexTurnInput;
@@ -5589,13 +6092,21 @@ const startCodeHelmRuntime = async (
     replyToMessageId?: string;
   }) => {
     const runtime = ensureTranscriptRuntime(session.codexThreadId);
+    const pendingInput: PendingLocalInput = {
+      kind: "start",
+      text: content,
+      replyToMessageId,
+    };
 
-    runtime.pendingDiscordInputs.push(content);
+    runtime.pendingLocalInputs.push(pendingInput);
     runtime.pendingDiscordInputReplyMessageIds.push(replyToMessageId);
 
     try {
       await startTurnWithThreadResumeRetry({
-        request,
+        request: applySessionStartTurnOverrides({
+          session,
+          request,
+        }),
         startTurn: async (params) => codexClient.startTurn(params),
         resumeThread: async ({ threadId }) => codexClient.resumeThread({
           threadId,
@@ -5610,10 +6121,77 @@ const startCodeHelmRuntime = async (
         sessionRepo.updateState(session.discordThreadId, "running");
       }
     } catch (error) {
-      if (runtime.pendingDiscordInputs.at(-1) === content) {
-        runtime.pendingDiscordInputs.pop();
+      removePendingLocalInput({
+        runtime,
+        pendingInput,
+      });
+      if (replyToMessageId && runtime.pendingDiscordInputReplyMessageIds.at(-1) === replyToMessageId) {
         runtime.pendingDiscordInputReplyMessageIds.pop();
       }
+      throw error;
+    }
+  };
+
+  const resolveManagedSessionActiveTurnId = async ({
+    session,
+    runtime,
+  }: {
+    session: Pick<SessionRecord, "codexThreadId">;
+    runtime: Pick<TranscriptRuntime, "activeTurnId">;
+  }) => {
+    if (runtime.activeTurnId) {
+      return runtime.activeTurnId;
+    }
+
+    const snapshot = await readThreadForSnapshotReconciliation({
+      codexClient,
+      threadId: session.codexThreadId,
+    });
+    const recoveredTurnId = readActiveTurnIdFromThreadReadResult(snapshot);
+
+    if (recoveredTurnId) {
+      runtime.activeTurnId = recoveredTurnId;
+    }
+
+    return recoveredTurnId;
+  };
+
+  const steerTurnFromDiscordInput = async ({
+    session,
+    content,
+  }: {
+    session: Pick<SessionRecord, "codexThreadId">;
+    content: string;
+  }) => {
+    const runtime = ensureTranscriptRuntime(session.codexThreadId);
+    const activeTurnId = await resolveManagedSessionActiveTurnId({
+      session,
+      runtime,
+    });
+
+    if (!activeTurnId) {
+      throw new Error("Active turn could not be resolved");
+    }
+
+    const pendingInput: PendingLocalInput = {
+      kind: "steer",
+      text: content,
+      turnId: activeTurnId,
+    };
+
+    runtime.pendingLocalInputs.push(pendingInput);
+
+    try {
+      await codexClient.turnSteer({
+        threadId: session.codexThreadId,
+        expectedTurnId: activeTurnId,
+        input: [{ type: "text", text: content }],
+      });
+    } catch (error) {
+      removePendingLocalInput({
+        runtime,
+        pendingInput,
+      });
       throw error;
     }
   };
@@ -5930,11 +6508,32 @@ const startCodeHelmRuntime = async (
         threadId,
       }),
   });
+  const managedSessionServices = createManagedSessionCommandServices({
+    sessionRepo,
+    approvalRepo,
+    codexClient,
+    getDiscordClient: () => requireDiscordClient(discordClient),
+    ensureTranscriptRuntime,
+    readThreadForSnapshotReconciliation: ({ threadId }) =>
+      readThreadForSnapshotReconciliation({
+        codexClient,
+        threadId,
+      }),
+    resolveActiveTurnId: ({ session, runtime }) =>
+      resolveManagedSessionActiveTurnId({
+        session,
+        runtime,
+      }),
+    sendTextToChannel,
+  });
 
   const bot = createDiscordBot({
     token: config.discord.botToken,
     services,
     logger,
+    onUnhandledInteraction: async (interaction) => {
+      await handleManagedSessionCommand(interaction, managedSessionServices);
+    },
   });
   discordClient = bot.client;
 
@@ -6208,9 +6807,13 @@ const startCodeHelmRuntime = async (
       });
 
       if (decision.kind === "noop") {
-        if (decision.reason === "session-busy") {
-          await message.reply("Session is already running.");
-        }
+        return;
+      }
+
+      if (decision.kind === "reject") {
+        await message.reply(
+          "Session is waiting for approval. New follow-up input is blocked until that approval is resolved.",
+        );
         return;
       }
 
@@ -6235,6 +6838,25 @@ const startCodeHelmRuntime = async (
             },
           }),
         );
+        return;
+      }
+
+      if (decision.kind === "steer-turn") {
+        try {
+          await steerTurnFromDiscordInput({
+            session,
+            content: message.content,
+          });
+        } catch (error) {
+          logger.warn("Failed to steer managed session turn from Discord message", {
+            discordThreadId: session.discordThreadId,
+            codexThreadId: session.codexThreadId,
+            error,
+          });
+          await message.reply(
+            "Couldn't queue follow-up input for the current turn.",
+          );
+        }
         return;
       }
 
@@ -6276,6 +6898,19 @@ const startCodeHelmRuntime = async (
   });
 
   bot.client.on(Events.InteractionCreate, (interaction) => {
+    if (interaction.isStringSelectMenu()) {
+      void handleManagedSessionModelComponentInteraction({
+        interaction,
+        sessionRepo,
+        codexClient,
+        getDiscordClient: () => requireDiscordClient(discordClient),
+        sendTextToChannel,
+      }).catch((error) => {
+        logger.error("Managed session model interaction failed", error);
+      });
+      return;
+    }
+
     if (!interaction.isButton()) {
       return;
     }
@@ -6933,7 +7568,10 @@ const startCodeHelmRuntime = async (
   await codexClient.initialize();
   await registerGuildCommands(
     config,
-    buildControlChannelCommands(),
+    [
+      ...buildControlChannelCommands(),
+      ...buildManagedSessionCommands(),
+    ],
   );
   await bot.start();
 

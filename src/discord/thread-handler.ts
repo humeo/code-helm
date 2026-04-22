@@ -1,4 +1,7 @@
-import type { StartTurnParams } from "../codex/protocol-types";
+import type {
+  StartTurnParams,
+  TurnSteerParams,
+} from "../codex/protocol-types";
 import { canControlSession } from "./permissions";
 import type { SessionRuntimeState } from "../domain/types";
 
@@ -27,9 +30,21 @@ export type ArchivedThreadResumeDecision = {
   request: StartThreadTurnDecision["request"];
 };
 
+export type SteerThreadTurnDecision = {
+  kind: "steer-turn";
+  request: Omit<TurnSteerParams, "input" | "expectedTurnId"> & {
+    input: CodexTurnInput;
+  };
+};
+
 export type NoopThreadTurnDecision = {
   kind: "noop";
-  reason: "non-owner" | "session-busy";
+  reason: "non-owner";
+};
+
+export type RejectThreadTurnDecision = {
+  kind: "reject";
+  reason: "waiting-approval";
 };
 
 export type ReadOnlyThreadTurnDecision = {
@@ -39,7 +54,9 @@ export type ReadOnlyThreadTurnDecision = {
 
 export type ThreadTurnDecision =
   | StartThreadTurnDecision
+  | SteerThreadTurnDecision
   | NoopThreadTurnDecision
+  | RejectThreadTurnDecision
   | ReadOnlyThreadTurnDecision;
 
 export type ArchivedThreadDecision =
@@ -51,10 +68,6 @@ export type DecideThreadTurnInput = OwnerThreadMessage & {
   codexThreadId: string;
   approvalPolicy?: StartTurnParams["approvalPolicy"];
   sandboxPolicy?: StartTurnParams["sandboxPolicy"];
-};
-
-const isSessionBusy = (sessionState: SessionRuntimeState) => {
-  return sessionState === "running" || sessionState === "waiting-approval";
 };
 
 export const normalizeOwnerThreadMessage = ({
@@ -86,10 +99,20 @@ export const decideThreadTurn = ({
     };
   }
 
-  if (isSessionBusy(sessionState)) {
+  if (sessionState === "waiting-approval") {
     return {
-      kind: "noop",
-      reason: "session-busy",
+      kind: "reject",
+      reason: "waiting-approval",
+    };
+  }
+
+  if (sessionState === "running") {
+    return {
+      kind: "steer-turn",
+      request: {
+        threadId: codexThreadId,
+        input: normalizeOwnerThreadMessage({ authorId, ownerId, content }),
+      },
     };
   }
 

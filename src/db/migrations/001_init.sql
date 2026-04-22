@@ -24,6 +24,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   state TEXT NOT NULL,
   lifecycle_state TEXT NOT NULL DEFAULT 'active' CHECK (lifecycle_state IN ('active', 'archived', 'deleted')),
   degradation_reason TEXT,
+  model_override TEXT,
+  reasoning_effort_override TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );

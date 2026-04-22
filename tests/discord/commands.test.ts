@@ -8,6 +8,12 @@ import {
   type DiscordCommandResult,
   type DiscordCommandServices,
 } from "../../src/discord/commands";
+import {
+  buildManagedSessionCommands,
+  handleManagedSessionCommand,
+  managedSessionCommands,
+  type ManagedSessionCommandServices,
+} from "../../src/discord/managed-session-commands";
 
 const okResult = (
   content: string,
@@ -74,6 +80,31 @@ const createServices = () => {
       return [
         { name: `session:${input.query}`, value: "codex-thread-7" },
       ];
+    },
+  };
+
+  return { calls, services };
+};
+
+const createManagedServices = () => {
+  const calls = {
+    status: [] as Array<Record<string, string>>,
+    interrupt: [] as Array<Record<string, string>>,
+    openModelPicker: [] as Array<Record<string, string>>,
+  };
+
+  const services: ManagedSessionCommandServices = {
+    status(input) {
+      calls.status.push(input);
+      return okResult("status shown");
+    },
+    interrupt(input) {
+      calls.interrupt.push(input);
+      return okResult("session interrupted");
+    },
+    async openModelPicker({ interaction, ...input }) {
+      void interaction;
+      calls.openModelPicker.push(input);
     },
   };
 
@@ -255,6 +286,17 @@ test("/session-resume only has the required session autocomplete option", () => 
   ]);
 });
 
+test("managed session commands register status, model, and interrupt without options", () => {
+  const commandsByName = new Map(
+    buildManagedSessionCommands().map((command) => [command.name, command]),
+  );
+
+  expect(managedSessionCommands).toHaveLength(3);
+  expect(commandsByName.get("status")?.options ?? []).toEqual([]);
+  expect(commandsByName.get("model")?.options ?? []).toEqual([]);
+  expect(commandsByName.get("interrupt")?.options ?? []).toEqual([]);
+});
+
 test("/session-new forwards only actor/guild/channel context", async () => {
   const { calls, services } = createServices();
   const { interaction, replies, followsUps, defers } = createInteraction({
@@ -274,6 +316,67 @@ test("/session-new forwards only actor/guild/channel context", async () => {
   expect(defers).toEqual([null]);
   expect(replies).toEqual([]);
   expect(followsUps).toEqual([{ content: "session created" }]);
+});
+
+test("/status forwards actor, guild, and thread context", async () => {
+  const { calls, services } = createManagedServices();
+  const { interaction, followsUps, defers } = createInteraction({
+    commandName: "status",
+  });
+
+  const handled = await handleManagedSessionCommand(interaction as never, services);
+
+  expect(handled).toBe(true);
+  expect(calls.status).toEqual([
+    {
+      actorId: "u1",
+      guildId: "g1",
+      channelId: "c1",
+    },
+  ]);
+  expect(defers).toEqual([null]);
+  expect(followsUps).toEqual([{ content: "status shown" }]);
+});
+
+test("/interrupt forwards actor, guild, and thread context", async () => {
+  const { calls, services } = createManagedServices();
+  const { interaction, followsUps, defers } = createInteraction({
+    commandName: "interrupt",
+  });
+
+  const handled = await handleManagedSessionCommand(interaction as never, services);
+
+  expect(handled).toBe(true);
+  expect(calls.interrupt).toEqual([
+    {
+      actorId: "u1",
+      guildId: "g1",
+      channelId: "c1",
+    },
+  ]);
+  expect(defers).toEqual([null]);
+  expect(followsUps).toEqual([{ content: "session interrupted" }]);
+});
+
+test("/model delegates to the model picker flow", async () => {
+  const { calls, services } = createManagedServices();
+  const { interaction, defers, followsUps, replies } = createInteraction({
+    commandName: "model",
+  });
+
+  const handled = await handleManagedSessionCommand(interaction as never, services);
+
+  expect(handled).toBe(true);
+  expect(calls.openModelPicker).toEqual([
+    {
+      actorId: "u1",
+      guildId: "g1",
+      channelId: "c1",
+    },
+  ]);
+  expect(defers).toEqual([]);
+  expect(followsUps).toEqual([]);
+  expect(replies).toEqual([]);
 });
 
 test("/workdir focused path routes to autocompleteSessionPaths", async () => {

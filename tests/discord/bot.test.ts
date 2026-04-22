@@ -255,3 +255,53 @@ test("createDiscordBot downgrades expired primary autocomplete responses", async
   expect(loggedWarnings).toHaveLength(1);
   expect(loggedWarnings[0]?.[0]).toBe("Discord autocomplete expired before response");
 });
+
+test("createDiscordBot forwards unhandled chat commands to the optional fallback handler", async () => {
+  const { services } = createServices();
+  const seenCommands: string[] = [];
+  const bot = createDiscordBot({
+    token: "token",
+    services,
+    logger,
+    onUnhandledInteraction(interaction) {
+      seenCommands.push(interaction.commandName);
+    },
+  });
+
+  let resolveHandled: (() => void) | undefined;
+  const handled = new Promise<void>((resolve) => {
+    resolveHandled = resolve;
+  });
+  const interaction = {
+    commandName: "status",
+    isChatInputCommand() {
+      return true;
+    },
+    isAutocomplete() {
+      return false;
+    },
+    guildId: "g1",
+    channelId: "thread-1",
+    user: { id: "u1" },
+    options: {
+      getString() {
+        return null;
+      },
+    },
+    async reply() {
+      throw new Error("reply should not be called by the fallback routing test");
+    },
+    async followUp() {
+      throw new Error("followUp should not be called by the fallback routing test");
+    },
+    async deferReply() {
+      throw new Error("deferReply should not be called by the fallback routing test");
+    },
+  };
+
+  bot.client.emit(Events.InteractionCreate, interaction as never);
+  resolveHandled?.();
+  await handled;
+
+  expect(seenCommands).toEqual(["status"]);
+});

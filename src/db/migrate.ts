@@ -42,6 +42,11 @@ const sessionsTableHasLifecycleConstraint = (db: Database) => {
   return row?.sql.includes(lifecycleConstraintSql) ?? false;
 };
 
+const sessionsTableHasModelOverrideColumns = (db: Database) => {
+  return hasColumn(db, "sessions", "model_override")
+    && hasColumn(db, "sessions", "reasoning_effort_override");
+};
+
 const approvalsTableHasCascadeUpdate = (db: Database) => {
   const row = db.prepare(
     "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'approvals'",
@@ -115,6 +120,12 @@ const rebuildSessionsTableWithLifecycleConstraint = (
   hasLifecycleStateColumn: boolean,
 ) => {
   const hasCwdColumn = hasColumn(db, "sessions", "cwd");
+  const hasModelOverrideColumn = hasColumn(db, "sessions", "model_override");
+  const hasReasoningEffortOverrideColumn = hasColumn(
+    db,
+    "sessions",
+    "reasoning_effort_override",
+  );
   const cwdSelect = hasCwdColumn
     ? "sessions.cwd"
     : "workdirs.absolute_path";
@@ -129,6 +140,12 @@ const rebuildSessionsTableWithLifecycleConstraint = (
         ELSE 'active'
       END`
     : "'active'";
+  const modelOverrideSelect = hasModelOverrideColumn
+    ? "sessions.model_override"
+    : "NULL";
+  const reasoningEffortOverrideSelect = hasReasoningEffortOverrideColumn
+    ? "sessions.reasoning_effort_override"
+    : "NULL";
 
   assertLegacySessionsCanBackfillCwd(db, hasCwdColumn);
 
@@ -144,6 +161,8 @@ const rebuildSessionsTableWithLifecycleConstraint = (
         state TEXT NOT NULL,
         lifecycle_state TEXT NOT NULL DEFAULT 'active' ${lifecycleConstraintSql},
         degradation_reason TEXT,
+        model_override TEXT,
+        reasoning_effort_override TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       )
@@ -157,6 +176,8 @@ const rebuildSessionsTableWithLifecycleConstraint = (
         state,
         lifecycle_state,
         degradation_reason,
+        model_override,
+        reasoning_effort_override,
         created_at,
         updated_at
       )
@@ -168,6 +189,8 @@ const rebuildSessionsTableWithLifecycleConstraint = (
         sessions.state,
         ${lifecycleStateSelect},
         sessions.degradation_reason,
+        ${modelOverrideSelect},
+        ${reasoningEffortOverrideSelect},
         sessions.created_at,
         sessions.updated_at
       ${sessionsSource}
@@ -200,6 +223,21 @@ const upgradeSessionsLifecycleState = (db: Database) => {
     SET lifecycle_state = 'active'
     WHERE lifecycle_state IS NULL
   `);
+};
+
+const upgradeSessionsModelOverrides = (db: Database) => {
+  if (sessionsTableHasModelOverrideColumns(db)) {
+    return;
+  }
+
+  const missingColumns = [
+    ["model_override", "TEXT"],
+    ["reasoning_effort_override", "TEXT"],
+  ].filter(([columnName]) => !hasColumn(db, "sessions", columnName));
+
+  for (const [columnName, columnType] of missingColumns) {
+    db.exec(`ALTER TABLE sessions ADD COLUMN ${columnName} ${columnType}`);
+  }
 };
 
 const assertLegacyApprovalsSessionRefsExist = (db: Database) => {
@@ -413,6 +451,7 @@ const upgradeApprovalsSchema = (db: Database) => {
 export const applyMigrations = (db: Database) => {
   db.exec(initMigration);
   upgradeSessionsLifecycleState(db);
+  upgradeSessionsModelOverrides(db);
   upgradeApprovalsSchema(db);
 };
 
