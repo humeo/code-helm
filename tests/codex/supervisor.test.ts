@@ -39,11 +39,13 @@ test("startManagedCodexAppServer uses the codex app-server listen command", asyn
         command: string;
         args: string[];
         stdio: string[];
+        cwd?: string;
       }
     | undefined;
   let readyChecked = false;
 
   const server = await startManagedCodexAppServer({
+    cwd: "/tmp/codehelm-app-server-workdir",
     resolveBinary: async () => "/usr/local/bin/codex",
     allocatePort: async () => 4511,
     spawnProcess: (command, args, options) => {
@@ -51,6 +53,7 @@ test("startManagedCodexAppServer uses the codex app-server listen command", asyn
         command,
         args,
         stdio: options.stdio as string[],
+        cwd: options.cwd as string | undefined,
       };
       return child;
     },
@@ -64,6 +67,7 @@ test("startManagedCodexAppServer uses the codex app-server listen command", asyn
     command: "/usr/local/bin/codex",
     args: ["app-server", "--listen", "ws://127.0.0.1:4511"],
     stdio: ["ignore", "pipe", "pipe"],
+    cwd: "/tmp/codehelm-app-server-workdir",
   });
   expect(server.pid).toBe(4242);
   expect(server.address).toBe("ws://127.0.0.1:4511");

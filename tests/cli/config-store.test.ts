@@ -55,6 +55,7 @@ describe("resolveCodeHelmPaths", () => {
       secretsPath: join(homeDir, ".config", "code-helm", "secrets.toml"),
       databasePath: join(homeDir, ".local", "share", "code-helm", "codehelm.sqlite"),
       stateDir: `${join(homeDir, ".local", "state", "code-helm")}/`,
+      appServerWorkdir: join(homeDir, ".codehelm", "workdir"),
     });
   });
 

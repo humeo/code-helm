@@ -64,7 +64,12 @@ export type OnboardingResult =
 
 const ONBOARDING_CANCELLED_MESSAGE = "Onboarding cancelled.";
 const MANAGED_CODEX_APP_SERVER_ADDRESS = "ws://127.0.0.1:<auto>";
-const MANAGED_CODEX_CONNECT_COMMAND = `codex --remote ${MANAGED_CODEX_APP_SERVER_ADDRESS}`;
+
+export const formatCodexConnectCommand = (address: string) => {
+  return `codex --remote ${address} -C "$(pwd)"`;
+};
+
+const MANAGED_CODEX_CONNECT_COMMAND = formatCodexConnectCommand(MANAGED_CODEX_APP_SERVER_ADDRESS);
 
 const unwrapPromptValue = <T>(value: T | symbol): T => {
   if (isCancel(value)) {

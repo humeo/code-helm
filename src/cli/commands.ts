@@ -26,6 +26,7 @@ import { resolveLegacyWorkspaceBootstrap, startCodeHelm } from "../index";
 import {
   createDefaultDiscoveryServices,
   createOnboardingUi,
+  formatCodexConnectCommand,
   runOnboarding,
   type OnboardingResult,
 } from "./onboard";
@@ -331,7 +332,7 @@ const renderRuntimeStatusOutput = (
     });
   }
 
-  const nextSteps = [`codex --remote ${runtime.codex.appServerAddress}`];
+  const nextSteps = [formatCodexConnectCommand(runtime.codex.appServerAddress)];
 
   if (options.context !== "status") {
     nextSteps.push("code-helm status");
@@ -786,6 +787,7 @@ const uninstallPaths = (store: LoadedConfigStore) => {
     store.paths.secretsPath,
     store.paths.databasePath,
     store.paths.stateDir,
+    store.paths.appServerWorkdir,
   ];
 };
 

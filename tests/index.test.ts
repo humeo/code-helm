@@ -8,6 +8,7 @@ import type {
   ThreadListParams,
 } from "../src/codex/protocol-types";
 import { CodexSupervisorError } from "../src/codex/supervisor";
+import { resolveCodeHelmPaths } from "../src/cli/paths";
 import { DEFAULT_CODEX_APP_SERVER_URL, type AppConfig } from "../src/config";
 import type { SessionResumeState } from "../src/domain/types";
 import { createDatabaseClient } from "../src/db/client";
@@ -340,6 +341,65 @@ test("startCodeHelm does not enter a running runtime when managed Codex startup 
 
   expect(startedRuntime).toBe(false);
   expect(clearedStateDirs).toEqual(["/tmp/codehelm-state"]);
+});
+
+test("startCodeHelm starts managed Codex App Server in foreground using current cwd", async () => {
+  let receivedCwd: string | undefined;
+
+  const handle = await startCodeHelm({
+    ...createAppConfig(),
+    codex: {
+      appServerUrl: DEFAULT_CODEX_APP_SERVER_URL,
+    },
+  }, {
+    installSignalHandlers: false,
+    startManagedCodexAppServer: async (options = {}) => {
+      receivedCwd = options.cwd;
+      return {
+        pid: 999,
+        address: "ws://127.0.0.1:4511",
+        stop: async () => {},
+      };
+    },
+    startRuntime: async (config) => ({
+      config,
+      stop: async () => {},
+    }),
+  });
+
+  await handle.stop();
+
+  expect(receivedCwd).toBe(process.cwd());
+});
+
+test("startCodeHelm starts managed Codex App Server in background using dedicated workdir", async () => {
+  let receivedCwd: string | undefined;
+
+  const handle = await startCodeHelm({
+    ...createAppConfig(),
+    codex: {
+      appServerUrl: DEFAULT_CODEX_APP_SERVER_URL,
+    },
+  }, {
+    installSignalHandlers: false,
+    mode: "background",
+    startManagedCodexAppServer: async (options = {}) => {
+      receivedCwd = options.cwd;
+      return {
+        pid: 999,
+        address: "ws://127.0.0.1:4511",
+        stop: async () => {},
+      };
+    },
+    startRuntime: async (config) => ({
+      config,
+      stop: async () => {},
+    }),
+  });
+
+  await handle.stop();
+
+  expect(receivedCwd).toBe(resolveCodeHelmPaths().appServerWorkdir);
 });
 
 test("applyDiscordReplyReference leaves non-reply payloads unchanged", () => {

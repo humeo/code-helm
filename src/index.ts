@@ -7065,7 +7065,12 @@ export const startCodeHelm = async (
 
   try {
     if (runtimeConfig.codex.appServerUrl === DEFAULT_CODEX_APP_SERVER_URL) {
-      managedCodexAppServer = await startManagedServer();
+      const managedAppServerCwd = mode === "background"
+        ? resolveCodeHelmPaths().appServerWorkdir
+        : process.cwd();
+      managedCodexAppServer = await startManagedServer({
+        cwd: managedAppServerCwd,
+      });
       runtimeConfig = {
         ...runtimeConfig,
         codex: {

@@ -1,5 +1,6 @@
 import { execFile, spawn, type SpawnOptions } from "node:child_process";
 import { once } from "node:events";
+import { mkdirSync } from "node:fs";
 import { createServer } from "node:net";
 import { promisify } from "node:util";
 
@@ -65,6 +66,7 @@ export type DetectCodexBinaryOptions = {
 };
 
 export type StartManagedCodexAppServerOptions = {
+  cwd?: string;
   resolveBinary?: ResolveBinary;
   allocatePort?: AllocatePort;
   spawnProcess?: SpawnProcess;
@@ -343,11 +345,16 @@ export const startManagedCodexAppServer = async (
   const address = `ws://127.0.0.1:${port}`;
   let child: ChildProcessLike;
 
+  if (options.cwd) {
+    mkdirSync(options.cwd, { recursive: true });
+  }
+
   try {
     child = spawnProcess(
       binaryPath,
       ["app-server", "--listen", address],
       {
+        cwd: options.cwd,
         stdio: ["ignore", "pipe", "pipe"],
       },
     );

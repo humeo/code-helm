@@ -5,6 +5,7 @@ const DEFAULT_CONFIG_PATH = "~/.config/code-helm/config.toml";
 const DEFAULT_SECRETS_PATH = "~/.config/code-helm/secrets.toml";
 const DEFAULT_DATABASE_PATH = "~/.local/share/code-helm/codehelm.sqlite";
 const DEFAULT_STATE_DIR = "~/.local/state/code-helm/";
+const DEFAULT_APP_SERVER_WORKDIR = "~/.codehelm/workdir";
 
 export type CodeHelmPathEnv = Record<string, string | undefined>;
 
@@ -13,6 +14,7 @@ export type CodeHelmPaths = {
   secretsPath: string;
   databasePath: string;
   stateDir: string;
+  appServerWorkdir: string;
 };
 
 export const expandHomePath = (value: string, homeDir = homedir()) => {
@@ -41,5 +43,6 @@ export const resolveCodeHelmPaths = (
     secretsPath: expandHomePath(env.CODE_HELM_SECRETS ?? DEFAULT_SECRETS_PATH, homeDir),
     databasePath: expandHomePath(env.CODE_HELM_DATABASE_PATH ?? DEFAULT_DATABASE_PATH, homeDir),
     stateDir: expandHomePath(DEFAULT_STATE_DIR, homeDir),
+    appServerWorkdir: expandHomePath(DEFAULT_APP_SERVER_WORKDIR, homeDir),
   };
 };

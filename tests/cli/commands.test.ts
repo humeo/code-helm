@@ -28,6 +28,7 @@ const createPaths = () => {
     secretsPath: join(root, "config", "secrets.toml"),
     databasePath: join(root, "data", "codehelm.sqlite"),
     stateDir: join(root, "state"),
+    appServerWorkdir: join(root, ".codehelm", "workdir"),
   };
 };
 
@@ -378,7 +379,7 @@ describe("runCliCommand", () => {
     expect(result.output).toContain(expectedStatePath);
     expect(result.output).not.toContain("Time Zone");
     expect(result.output).not.toContain("Runtime State");
-    expect(result.output).toContain("codex --remote ws://127.0.0.1:4200");
+    expect(result.output).toContain('codex --remote ws://127.0.0.1:4200 -C "$(pwd)"');
     expect(result.output).toContain("code-helm status");
     expect(result.output).toContain("already active");
     expect(result.output).not.toContain("CodeHelm running\nMode:");
@@ -469,7 +470,7 @@ describe("runCliCommand", () => {
     expect(result.output).toMatch(/Mode\s+foreground/);
     expect(result.output).toMatch(/Started\s+/);
     expect(result.output).toMatch(/PID\s+\d+/);
-    expect(result.output).toContain("codex --remote ws://127.0.0.1:4100");
+    expect(result.output).toContain('codex --remote ws://127.0.0.1:4100 -C "$(pwd)"');
     expect(result.output).toContain("code-helm status");
     expect(result.output).not.toContain("code-helm stop");
     expect(result.output).toContain("Ctrl+C");
@@ -654,7 +655,7 @@ describe("runCliCommand", () => {
     expect(result.output).toMatch(/Mode\s+background/);
     expect(result.output).toMatch(/Started\s+/);
     expect(result.output).toMatch(/PID\s+\d+/);
-    expect(result.output).toContain("codex --remote ws://127.0.0.1:4100");
+    expect(result.output).toContain('codex --remote ws://127.0.0.1:4100 -C "$(pwd)"');
     expect(result.output).toContain("code-helm status");
     expect(result.output).toContain("code-helm stop");
     expect(result.output).not.toContain("CodeHelm running\nMode:");
@@ -776,7 +777,7 @@ describe("runCliCommand", () => {
     expect(result.output).toMatch(/Started\s+/);
     expect(result.output).toMatch(/PID\s+2222/);
     expect(result.output).toContain("ws://127.0.0.1:4400");
-    expect(result.output).toContain("codex --remote ws://127.0.0.1:4400");
+    expect(result.output).toContain('codex --remote ws://127.0.0.1:4400 -C "$(pwd)"');
     expect(result.output).not.toContain("code-helm status");
     expect(result.output).not.toContain("code-helm stop");
     expect(result.output).not.toContain("Ctrl+C");
@@ -1073,6 +1074,7 @@ describe("runCliCommand", () => {
     mkdirSync(join(paths.configPath, ".."), { recursive: true });
     mkdirSync(join(paths.databasePath, ".."), { recursive: true });
     mkdirSync(paths.stateDir, { recursive: true });
+    mkdirSync(paths.appServerWorkdir, { recursive: true });
     writeFileSync(paths.configPath, "config", "utf8");
     writeFileSync(paths.secretsPath, "secrets", "utf8");
     writeFileSync(paths.databasePath, "db", "utf8");
@@ -1102,6 +1104,7 @@ describe("runCliCommand", () => {
     expect(existsSync(paths.secretsPath)).toBe(false);
     expect(existsSync(paths.databasePath)).toBe(false);
     expect(existsSync(paths.stateDir)).toBe(false);
+    expect(existsSync(paths.appServerWorkdir)).toBe(false);
     expect(result.output).toContain("CodeHelm uninstalled");
     expect(result.output).toContain("Removed");
     expect(result.output).toContain("Next steps");
@@ -1132,6 +1135,7 @@ describe("runCliCommand", () => {
     expect(result.output).toContain(paths.secretsPath);
     expect(result.output).toContain(paths.databasePath);
     expect(result.output).toContain(paths.stateDir);
+    expect(result.output).toContain(paths.appServerWorkdir);
   });
 
   test("uninstall attempts every cleanup path before surfacing failures", async () => {
@@ -1170,12 +1174,14 @@ describe("runCliCommand", () => {
     expect(message).toContain(paths.secretsPath);
     expect(message).toContain(paths.databasePath);
     expect(message).toContain(paths.stateDir);
+    expect(message).toContain(paths.appServerWorkdir);
     expect(message).toMatch(/cannot remove config/i);
     expect(attemptedPaths).toEqual([
       paths.configPath,
       paths.secretsPath,
       paths.databasePath,
       paths.stateDir,
+      paths.appServerWorkdir,
     ]);
   });
 
@@ -1216,6 +1222,7 @@ describe("runCliCommand", () => {
       paths.secretsPath,
       paths.databasePath,
       paths.stateDir,
+      paths.appServerWorkdir,
     ]);
   });
 });

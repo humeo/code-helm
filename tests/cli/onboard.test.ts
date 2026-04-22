@@ -169,7 +169,7 @@ describe("runOnboarding", () => {
     expect(lines[3]).toMatch(/^Control channel\s+#control-room$/);
     expect(lines[4]).toMatch(/^Codex App Server\s+managed \(loopback, port assigned on start\)$/);
     expect(lines[5]).toMatch(/^Codex address\s+ws:\/\/127\.0\.0\.1:<auto>$/);
-    expect(lines[6]).toMatch(/^Codex connect\s+codex --remote ws:\/\/127\.0\.0\.1:<auto>$/);
+    expect(lines[6]).toMatch(/^Codex connect\s+codex --remote ws:\/\/127\.0\.0\.1:<auto> -C "\$\(pwd\)"$/);
     expect(lines[7]).toMatch(/^Config path\s+\/tmp\/config\.toml$/);
     expect(lines[8]).toMatch(/^Secrets path\s+\/tmp\/secrets\.toml$/);
     expect(lines[9]).toMatch(/^Database path\s+\/tmp\/codehelm\.sqlite$/);

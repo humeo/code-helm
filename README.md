@@ -11,9 +11,8 @@ CodeHelm turns Discord into the control surface for your Codex sessions. Start n
 
 ## Demo Video
 
-- [TODO: add demo video link]
-- [TODO: add demo thumbnail or GIF]
-- [TODO: define what the demo should show]
+A public demo video and preview asset are not published yet.
+Until they are, use [Demo Storyboard](docs/demo-storyboard.md) to record a short happy-path walkthrough without guessing.
 
 The demo should show:
 
@@ -31,9 +30,12 @@ Before you install CodeHelm, make sure you already have:
 - Codex installed on the machine
 - a Discord bot token
 - the bot invited to the target Discord server
-- one text channel to use as the control channel
+- one text or announcement channel to use as the control channel
+- public threads enabled in that control channel
 - `Message Content Intent` enabled for the bot
-- [TODO: add Discord bot setup guide/link]
+
+Need help creating the app, inviting the bot, or choosing the right permissions? See [Discord Bot Setup](docs/discord-bot-setup.md).
+If you still need to create the app, generate a bot token, or install the bot to a server, start with Discord's official guide: [Building your first Discord Bot](https://docs.discord.com/developers/docs/getting-started).
 
 ## Install
 
@@ -73,8 +75,6 @@ Background:
 code-helm start --daemon
 ```
 
-- [TODO: add sample startup output with ws-url]
-
 ### 3. Connect Codex
 
 Use the printed address with:
@@ -82,6 +82,14 @@ Use the printed address with:
 ```bash
 codex --remote <ws-url>
 ```
+
+If you want the remote Codex session to start in the directory you are currently in, launch Codex with:
+
+```bash
+codex -C "$(pwd)" --remote <ws-url>
+```
+
+`-C "$(pwd)"` tells Codex to use your current shell directory as the session's starting workdir.
 
 ### 4. Control The Session From Discord
 
@@ -92,16 +100,8 @@ Use the configured control channel to point Codex at a workdir, create or resume
 - `/session-resume`
 - approve requests from Discord
 - watch progress and final output in the session thread
-- [TODO: add Discord thread screenshot or transcript snippet]
-- [TODO: add approval screenshot or transcript snippet]
 
 Each Discord thread stays attached to its Codex session so you can come back later, resume, approve, and keep working without starting over.
-
-## Why CodeHelm
-
-If you already use `codex --remote`, the model is familiar. CodeHelm packages that flow into one local daemon and a Discord-first control surface so you do not need to babysit a separate app-server process or rebuild session context every time.
-
-CodeHelm is not just a Discord bot wrapper. It is a remote control layer for Codex sessions, with thread-to-session continuity, approval handling, and progress visibility built into the day-to-day workflow.
 
 ## How It Works
 
@@ -110,26 +110,7 @@ CodeHelm is not just a Discord bot wrapper. It is a remote control layer for Cod
 - CodeHelm binds Discord threads to Codex sessions so you can resume work instead of starting from scratch.
 - Session state, approval state, and thread metadata are persisted locally.
 
-## Operational Notes
-
-Normal local state lives here:
-
-- config: `~/.config/code-helm/config.toml`
-- secrets: `~/.config/code-helm/secrets.toml`
-- database: `~/.local/share/code-helm/codehelm.sqlite`
-- runtime state: `~/.local/state/code-helm/`
-
-CodeHelm touches:
-
-- Discord API for bot login, command registration, and thread operations
-- a local managed Codex App Server on loopback
-- local config, secrets, database, and runtime-state files
-
-CodeHelm does not install for you:
-
-- Bun
-- Codex
-- a hand-written `.env` file for the normal onboarding flow
+### Runtime And Cleanup Commands
 
 To inspect or stop the local daemon:
 
@@ -137,8 +118,6 @@ To inspect or stop the local daemon:
 code-helm status
 code-helm stop
 ```
-
-## Autostart
 
 On macOS, CodeHelm can install a LaunchAgent that starts the daemon at login:
 
@@ -154,7 +133,7 @@ code-helm autostart disable
 
 On unsupported platforms, CodeHelm returns a clear unsupported result instead of pretending it worked.
 
-## Uninstall
+To remove the local CodeHelm installation and state:
 
 ```bash
 code-helm uninstall
@@ -185,5 +164,3 @@ Useful development commands:
 bun run dev
 bun run migrate
 ```
-
-Release workflow and publishing notes live in [docs/release.md](./docs/release.md).
