@@ -86,6 +86,47 @@ const logAutocompleteInteractionError = (
   logger.error("Discord autocomplete failed", error);
 };
 
+const logChatInteractionError = (
+  logger: DiscordBotLogger,
+  interaction: ChatInputCommandInteraction,
+  error: unknown,
+) => {
+  if (
+    typeof error === "object"
+    && error !== null
+    && "code" in error
+    && error.code === 10062
+  ) {
+    const log = logger.warn ?? logger.info;
+    log("Discord chat command expired before response", {
+      channelId: interaction.channelId,
+      commandName: interaction.commandName,
+      guildId: interaction.guildId,
+      userId: interaction.user.id,
+    }, error);
+    return true;
+  }
+
+  if (
+    typeof error === "object"
+    && error !== null
+    && "code" in error
+    && error.code === DiscordjsErrorCodes.InteractionAlreadyReplied
+  ) {
+    const log = logger.warn ?? logger.info;
+    log("Discord chat command was already acknowledged", {
+      channelId: interaction.channelId,
+      commandName: interaction.commandName,
+      guildId: interaction.guildId,
+      userId: interaction.user.id,
+    }, error);
+    return true;
+  }
+
+  logger.error("Discord interaction failed", error);
+  return false;
+};
+
 const safelyRespondToAutocompleteInteraction = async (
   interaction: AutocompleteInteraction,
   choices: Array<{ name: string; value: string }>,
@@ -140,7 +181,9 @@ export const createDiscordBot = ({
         await onUnhandledInteraction(interaction);
       }
     } catch (error) {
-      logger.error("Discord interaction failed", error);
+      if (logChatInteractionError(logger, interaction, error)) {
+        return;
+      }
       await replyWithCommandError(interaction);
     }
   });

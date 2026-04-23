@@ -250,6 +250,76 @@ test("createDiscordBot downgrades expired primary autocomplete responses", async
   expect(loggedWarnings[0]?.[0]).toBe("Discord autocomplete expired before response");
 });
 
+test("createDiscordBot downgrades expired chat command responses", async () => {
+  const { services } = createServices();
+  const loggedErrors: unknown[][] = [];
+  const loggedWarnings: unknown[][] = [];
+  const bot = createDiscordBot({
+    token: "token",
+    services,
+    logger: {
+      info() {},
+      warn(...args: unknown[]) {
+        loggedWarnings.push(args);
+      },
+      error(...args: unknown[]) {
+        loggedErrors.push(args);
+      },
+    },
+  });
+
+  let resolveAttempted: (() => void) | undefined;
+  const attempted = new Promise<void>((resolve) => {
+    resolveAttempted = resolve;
+  });
+  const interaction = {
+    commandName: "workdir",
+    isChatInputCommand() {
+      return true;
+    },
+    isAutocomplete() {
+      return false;
+    },
+    guildId: "g1",
+    channelId: "c1",
+    user: { id: "u1" },
+    replied: false,
+    deferred: false,
+    options: {
+      getString(name: string) {
+        return name === "path" ? "/tmp/workspace/example" : null;
+      },
+    },
+    async reply() {
+      throw new Error("reply should not be called after an expired deferReply");
+    },
+    async followUp() {
+      throw new Error("followUp should not be called after an expired deferReply");
+    },
+    async deferReply() {
+      resolveAttempted?.();
+      const error = new Error("Unknown interaction") as Error & { code: number };
+      error.code = 10062;
+      throw error;
+    },
+  };
+
+  bot.client.emit(Events.InteractionCreate, interaction as never);
+  await Promise.race([
+    attempted,
+    new Promise<never>((_, reject) => {
+      setTimeout(() => {
+        reject(new Error("Expired command response was not attempted"));
+      }, 100);
+    }),
+  ]);
+  await Bun.sleep(0);
+
+  expect(loggedErrors).toHaveLength(0);
+  expect(loggedWarnings).toHaveLength(1);
+  expect(loggedWarnings[0]?.[0]).toBe("Discord chat command expired before response");
+});
+
 test("createDiscordBot forwards unhandled chat commands to the optional fallback handler", async () => {
   const { services } = createServices();
   const seenCommands: string[] = [];
