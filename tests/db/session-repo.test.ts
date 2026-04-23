@@ -276,6 +276,30 @@ test("new sessions default model overrides to null", () => {
   db.close();
 });
 
+test("stores session model metadata returned during session creation", () => {
+  const db = createMigratedDb();
+  seedWorkspaceGraph(db);
+  const repo = createSessionRepo(db);
+
+  repo.insert({
+    discordThreadId: "123",
+    codexThreadId: "abc",
+    ownerDiscordUserId: "u1",
+    cwd: "/tmp/ws1/app",
+    state: "idle",
+    modelOverride: "gpt-5.4",
+    reasoningEffortOverride: "high",
+  } as any);
+
+  expect(repo.getByDiscordThreadId("123")).toMatchObject({
+    discordThreadId: "123",
+    modelOverride: "gpt-5.4",
+    reasoningEffortOverride: "high",
+  });
+
+  db.close();
+});
+
 test("updates stored session model and reasoning effort overrides", () => {
   const db = createMigratedDb();
   seedWorkspaceGraph(db);

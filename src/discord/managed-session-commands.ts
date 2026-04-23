@@ -7,10 +7,6 @@ export type ManagedSessionCommandInput = {
   channelId: string;
 };
 
-export type ManagedSessionModelPickerInput = ManagedSessionCommandInput & {
-  interaction: ChatInputCommandInteraction;
-};
-
 export type ManagedSessionCommandServices = {
   status(
     input: ManagedSessionCommandInput,
@@ -18,9 +14,6 @@ export type ManagedSessionCommandServices = {
   interrupt(
     input: ManagedSessionCommandInput,
   ): Promise<DiscordCommandResult> | DiscordCommandResult;
-  openModelPicker(
-    input: ManagedSessionModelPickerInput,
-  ): Promise<void> | void;
 };
 
 const guildOnlyCommand = (name: string, description: string) => {
@@ -33,7 +26,6 @@ const guildOnlyCommand = (name: string, description: string) => {
 export const buildManagedSessionCommands = (): RESTPostAPIChatInputApplicationCommandsJSONBody[] =>
   [
     guildOnlyCommand("status", "Show the current managed session status"),
-    guildOnlyCommand("model", "Select model and reasoning effort for this session"),
     guildOnlyCommand("interrupt", "Interrupt the current managed session turn"),
   ].map((command) => command.toJSON());
 
@@ -41,7 +33,6 @@ export const managedSessionCommands = buildManagedSessionCommands();
 
 const managedSessionCommandNames = new Set([
   "status",
-  "model",
   "interrupt",
 ]);
 
@@ -112,12 +103,6 @@ export const handleManagedSessionCommand = async (
     case "interrupt":
       await safelyDeferReply(interaction);
       await safelyReply(interaction, await services.interrupt(context));
-      return true;
-    case "model":
-      await services.openModelPicker({
-        interaction,
-        ...context,
-      });
       return true;
     default:
       return false;

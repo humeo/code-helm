@@ -120,8 +120,6 @@ import {
   type ManagedSessionCommandServices,
 } from "./discord/managed-session-commands";
 import {
-  buildManagedEffortPickerRow,
-  buildManagedModelPickerRow,
   parseManagedModelCustomId,
 } from "./discord/managed-session-model-ui";
 import { renderManagedSessionStatus } from "./discord/managed-session-status";
@@ -1803,6 +1801,40 @@ export const applySessionStartTurnOverrides = ({
   };
 };
 
+const hydrateSessionModelMetadataFromResume = async ({
+  session,
+  sessionRepo,
+  resumeThread,
+}: {
+  session: SessionRecord;
+  sessionRepo: ReturnType<typeof createSessionRepo>;
+  resumeThread: Pick<JsonRpcClient, "resumeThread">["resumeThread"];
+}) => {
+  if (session.modelOverride && session.reasoningEffortOverride) {
+    return sessionRepo.getByDiscordThreadId(session.discordThreadId) ?? session;
+  }
+
+  const resumed = await resumeThread({
+    threadId: session.codexThreadId,
+  });
+  const nextModel = resumed.model ?? session.modelOverride ?? null;
+  const nextReasoningEffort =
+    resumed.reasoningEffort ?? session.reasoningEffortOverride ?? null;
+
+  if (
+    nextModel === session.modelOverride
+    && nextReasoningEffort === session.reasoningEffortOverride
+  ) {
+    return sessionRepo.getByDiscordThreadId(session.discordThreadId) ?? session;
+  }
+
+  sessionRepo.updateModelOverride(session.discordThreadId, {
+    modelOverride: nextModel,
+    reasoningEffortOverride: nextReasoningEffort,
+  });
+
+  return sessionRepo.getByDiscordThreadId(session.discordThreadId) ?? session;
+};
 export const describeCodexThreadStatus = (status: CodexThreadStatus) => {
   if (status.type !== "active") {
     return status.type;
@@ -4270,7 +4302,7 @@ const createAttachedSessionThread = async ({
 type CreateManagedSessionCommandServicesDeps = {
   sessionRepo: ReturnType<typeof createSessionRepo>;
   approvalRepo: ReturnType<typeof createApprovalRepo>;
-  codexClient: Pick<JsonRpcClient, "listModels" | "turnInterrupt">;
+  codexClient: Pick<JsonRpcClient, "listModels" | "resumeThread" | "turnInterrupt">;
   getDiscordClient: () => Client;
   ensureTranscriptRuntime: (codexThreadId: string) => TranscriptRuntime;
   readThreadForSnapshotReconciliation: (input: {
@@ -4360,13 +4392,23 @@ export const createManagedSessionCommandServices = ({
         return resolved.error!;
       }
 
-      const session = resolved.session;
+      let session = resolved.session;
       const runtime = ensureTranscriptRuntime(session.codexThreadId);
       const queuedSteers = getQueuedSteerInputs(runtime).map((input) => input.text);
       const pendingApprovalCount = approvalRepo.listPendingByDiscordThreadId(
         session.discordThreadId,
       ).length;
       let effectiveState = session.state;
+
+      try {
+        session = await hydrateSessionModelMetadataFromResume({
+          session,
+          sessionRepo,
+          resumeThread: (params) => codexClient.resumeThread(params),
+        });
+      } catch {
+        session = sessionRepo.getByDiscordThreadId(session.discordThreadId) ?? session;
+      }
 
       try {
         const snapshot = await readThreadForSnapshotReconciliation({
@@ -4465,67 +4507,13 @@ export const createManagedSessionCommandServices = ({
         },
       };
     },
-    async openModelPicker({ interaction, actorId, channelId }) {
-      const resolved = resolveManagedSessionThreadCommandSession({
-        sessionRepo,
-        channelId,
-      });
-
-      if (!resolved.session) {
-        await interaction.reply({
-          content: resolved.error!.reply.content,
-          flags: MessageFlags.Ephemeral,
-        });
-        return;
-      }
-
-      const session = resolved.session;
-
-      if (!isManagedSessionCommandActorAllowed({ actorId, session })) {
-        await interaction.reply({
-          content: "Only the session owner can change the model for this managed session.",
-          flags: MessageFlags.Ephemeral,
-        });
-        return;
-      }
-
-      if (session.state !== "idle") {
-        await interaction.reply({
-          content: "Model changes are only available while the session is idle.",
-          flags: MessageFlags.Ephemeral,
-        });
-        return;
-      }
-
-      const catalog = await codexClient.listModels();
-
-      if (catalog.data.length === 0) {
-        await interaction.reply({
-          content: "No models are available for selection right now.",
-          flags: MessageFlags.Ephemeral,
-        });
-        return;
-      }
-
-      await interaction.reply({
-        content: "Select a model for this managed session.",
-        components: [
-          buildManagedModelPickerRow({
-            channelId: session.discordThreadId,
-            currentModel: session.modelOverride,
-            models: catalog.data,
-          }),
-        ],
-        flags: MessageFlags.Ephemeral,
-      });
-    },
   };
 };
 
 type HandleManagedSessionModelComponentDeps = {
   interaction: StringSelectMenuInteraction;
   sessionRepo: ReturnType<typeof createSessionRepo>;
-  codexClient: Pick<JsonRpcClient, "listModels">;
+  codexClient: Pick<JsonRpcClient, "listModels" | "resumeThread">;
   getDiscordClient: () => Client;
   sendTextToChannel: (
     client: Client,
@@ -4536,10 +4524,10 @@ type HandleManagedSessionModelComponentDeps = {
 
 export const handleManagedSessionModelComponentInteraction = async ({
   interaction,
-  sessionRepo,
-  codexClient,
-  getDiscordClient,
-  sendTextToChannel,
+  sessionRepo: _sessionRepo,
+  codexClient: _codexClient,
+  getDiscordClient: _getDiscordClient,
+  sendTextToChannel: _sendTextToChannel,
 }: HandleManagedSessionModelComponentDeps) => {
   const parsed = parseManagedModelCustomId(interaction.customId);
 
@@ -4547,116 +4535,10 @@ export const handleManagedSessionModelComponentInteraction = async ({
     return false;
   }
 
-  const resolved = resolveManagedSessionThreadCommandSession({
-    sessionRepo,
-    channelId: parsed.channelId,
-  });
-
-  if (!resolved.session) {
-    await interaction.reply({
-      content: resolved.error!.reply.content,
-      flags: MessageFlags.Ephemeral,
-    });
-    return true;
-  }
-
-  const session = resolved.session;
-
-  if (!isManagedSessionCommandActorAllowed({
-    actorId: interaction.user.id,
-    session,
-  })) {
-    await interaction.reply({
-      content: "Only the session owner can change the model for this managed session.",
-      flags: MessageFlags.Ephemeral,
-    });
-    return true;
-  }
-
-  if (session.state !== "idle") {
-    await interaction.reply({
-      content: "Model changes are only available while the session is idle.",
-      flags: MessageFlags.Ephemeral,
-    });
-    return true;
-  }
-
-  const catalog = await codexClient.listModels();
-
-  if (parsed.kind === "model") {
-    const selectedModel = interaction.values[0];
-    const model = catalog.data.find((entry) => entry.model === selectedModel);
-
-    if (!model) {
-      await interaction.update({
-        content: "That model is no longer available.",
-        components: [],
-      });
-      return true;
-    }
-
-    const supportedEfforts = model.supportedReasoningEfforts;
-
-    if (supportedEfforts.length <= 1) {
-      const reasoningEffortOverride =
-        supportedEfforts[0] ?? model.defaultReasoningEffort;
-
-      sessionRepo.updateModelOverride(session.discordThreadId, {
-        modelOverride: model.model,
-        reasoningEffortOverride,
-      });
-      await sendTextToChannel(
-        getDiscordClient(),
-        session.discordThreadId,
-        `Model set to \`${model.model}\` with \`${reasoningEffortOverride}\` reasoning effort for this session.`,
-      );
-      await interaction.update({
-        content: `Saved \`${model.model}\` for this session.`,
-        components: [],
-      });
-      return true;
-    }
-
-    await interaction.update({
-      content: `Selected \`${model.model}\`. Now choose a reasoning effort.`,
-      components: [
-        buildManagedEffortPickerRow({
-          channelId: session.discordThreadId,
-          model: model.model,
-          currentEffort:
-            session.modelOverride === model.model
-              ? session.reasoningEffortOverride
-              : model.defaultReasoningEffort,
-          efforts: supportedEfforts,
-        }),
-      ],
-    });
-    return true;
-  }
-
-  const model = catalog.data.find((entry) => entry.model === parsed.model);
-  const selectedEffort = interaction.values[0];
-
-  if (!model || !model.supportedReasoningEfforts.includes(selectedEffort)) {
-    await interaction.update({
-      content: "That reasoning effort is no longer available.",
-      components: [],
-    });
-    return true;
-  }
-
-  sessionRepo.updateModelOverride(session.discordThreadId, {
-    modelOverride: model.model,
-    reasoningEffortOverride: selectedEffort,
-  });
-  await sendTextToChannel(
-    getDiscordClient(),
-    session.discordThreadId,
-    `Model set to \`${model.model}\` with \`${selectedEffort}\` reasoning effort for this session.`,
-  );
-  await interaction.update({
-    content: `Saved \`${model.model}\` with \`${selectedEffort}\` reasoning effort for this session.`,
-    components: [],
+  void parsed;
+  await interaction.reply({
+    content: "Model selection is no longer supported in CodeHelm. Use `/status` to inspect the current session.",
+    flags: MessageFlags.Ephemeral,
   });
   return true;
 };
@@ -4752,12 +4634,20 @@ export const createControlChannelServices = ({
           title: sessionThreadTitle(codexThreadId),
           starterText: `Opening session for \`${authoritativeCwd}\`.`,
           onBound: async (boundThread) => {
+            const sessionModelMetadata =
+              started.model !== undefined || started.reasoningEffort !== undefined
+                ? {
+                    modelOverride: started.model ?? null,
+                    reasoningEffortOverride: started.reasoningEffort ?? null,
+                  }
+                : {};
             sessionRepo.insert({
               discordThreadId: boundThread.id,
               codexThreadId,
               ownerDiscordUserId: actorId,
               cwd: authoritativeCwd,
               state: "idle",
+              ...sessionModelMetadata,
             });
             ensureTranscriptRuntime(codexThreadId);
           },
@@ -6204,9 +6094,16 @@ const startCodeHelmRuntime = async (
     return resumeManagedSession({
       session,
       materializeThread: async () => {
-        await codexClient.resumeThread({
+        const resumed = await codexClient.resumeThread({
           threadId: session.codexThreadId,
         });
+
+        if (resumed.model !== undefined || resumed.reasoningEffort !== undefined) {
+          sessionRepo.updateModelOverride(session.discordThreadId, {
+            modelOverride: resumed.model ?? null,
+            reasoningEffortOverride: resumed.reasoningEffort ?? null,
+          });
+        }
       },
       readThread: async () =>
         readThreadForSnapshotReconciliation({

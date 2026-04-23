@@ -11,6 +11,7 @@ import {
 import {
   buildManagedSessionCommands,
   handleManagedSessionCommand,
+  isManagedSessionCommandName,
   managedSessionCommands,
   type ManagedSessionCommandServices,
 } from "../../src/discord/managed-session-commands";
@@ -90,7 +91,6 @@ const createManagedServices = () => {
   const calls = {
     status: [] as Array<Record<string, string>>,
     interrupt: [] as Array<Record<string, string>>,
-    openModelPicker: [] as Array<Record<string, string>>,
   };
 
   const services: ManagedSessionCommandServices = {
@@ -101,10 +101,6 @@ const createManagedServices = () => {
     interrupt(input) {
       calls.interrupt.push(input);
       return okResult("session interrupted");
-    },
-    async openModelPicker({ interaction, ...input }) {
-      void interaction;
-      calls.openModelPicker.push(input);
     },
   };
 
@@ -286,14 +282,17 @@ test("/session-resume only has the required session autocomplete option", () => 
   ]);
 });
 
-test("managed session commands register status, model, and interrupt without options", () => {
+test("managed session commands register status and interrupt without options", () => {
   const commandsByName = new Map(
     buildManagedSessionCommands().map((command) => [command.name, command]),
   );
 
-  expect(managedSessionCommands).toHaveLength(3);
+  expect(managedSessionCommands).toHaveLength(2);
+  expect(isManagedSessionCommandName("status")).toBe(true);
+  expect(isManagedSessionCommandName("interrupt")).toBe(true);
+  expect(isManagedSessionCommandName("model")).toBe(false);
   expect(commandsByName.get("status")?.options ?? []).toEqual([]);
-  expect(commandsByName.get("model")?.options ?? []).toEqual([]);
+  expect(commandsByName.has("model")).toBe(false);
   expect(commandsByName.get("interrupt")?.options ?? []).toEqual([]);
 });
 
@@ -358,7 +357,7 @@ test("/interrupt forwards actor, guild, and thread context", async () => {
   expect(followsUps).toEqual([{ content: "session interrupted" }]);
 });
 
-test("/model delegates to the model picker flow", async () => {
+test("managed session commands no longer claim /model", async () => {
   const { calls, services } = createManagedServices();
   const { interaction, defers, followsUps, replies } = createInteraction({
     commandName: "model",
@@ -366,14 +365,9 @@ test("/model delegates to the model picker flow", async () => {
 
   const handled = await handleManagedSessionCommand(interaction as never, services);
 
-  expect(handled).toBe(true);
-  expect(calls.openModelPicker).toEqual([
-    {
-      actorId: "u1",
-      guildId: "g1",
-      channelId: "c1",
-    },
-  ]);
+  expect(handled).toBe(false);
+  expect(calls.status).toEqual([]);
+  expect(calls.interrupt).toEqual([]);
   expect(defers).toEqual([]);
   expect(followsUps).toEqual([]);
   expect(replies).toEqual([]);

@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { MessageFlags } from "discord.js";
 import { expect, test } from "bun:test";
 import type {
   CodexThread,
@@ -398,6 +399,94 @@ test("managed session status command prefers fresh snapshot state and queued ste
   db.close();
 });
 
+test("managed session status command backfills missing live model metadata from Codex", async () => {
+  const db = createDatabaseClient(":memory:");
+  applyMigrations(db);
+  const sessionRepo = createSessionRepo(db);
+  const approvalRepo = createApprovalRepo(db);
+  const runtime = {
+    pendingLocalInputs: [],
+    activeTurnId: undefined as string | undefined,
+  };
+  const resumeCalls: Array<{ threadId: string }> = [];
+
+  sessionRepo.insert({
+    discordThreadId: "discord-thread-1",
+    codexThreadId: "019db4bb-74c9-7673-b1ac-cf0e10b63f4c",
+    ownerDiscordUserId: "owner-1",
+    cwd: "/tmp/workspace/api",
+    state: "idle",
+  });
+
+  const services = createManagedSessionCommandServices({
+    sessionRepo,
+    approvalRepo,
+    codexClient: {
+      async listModels() {
+        return { data: [], nextCursor: null };
+      },
+      async resumeThread(input: { threadId: string }) {
+        resumeCalls.push(input);
+        return {
+          thread: {
+            id: input.threadId,
+            cwd: "/tmp/workspace/api",
+            preview: "",
+            status: { type: "idle" },
+            turns: [],
+          },
+          model: "gpt-5.4",
+          reasoningEffort: "low",
+        };
+      },
+      async turnInterrupt() {
+        return {};
+      },
+    } as never,
+    getDiscordClient() {
+      throw new Error("status should not need a Discord client");
+    },
+    ensureTranscriptRuntime() {
+      return runtime as never;
+    },
+    async readThreadForSnapshotReconciliation() {
+      return {
+        thread: {
+          id: "019db4bb-74c9-7673-b1ac-cf0e10b63f4c",
+          cwd: "/tmp/workspace/api",
+          preview: "",
+          status: { type: "idle" },
+          turns: [],
+        },
+      };
+    },
+    async resolveActiveTurnId() {
+      return undefined;
+    },
+    async sendTextToChannel() {
+      return undefined;
+    },
+  });
+
+  const result = await services.status({
+    actorId: "viewer-1",
+    guildId: "guild-1",
+    channelId: "discord-thread-1",
+  });
+
+  expect(resumeCalls).toEqual([
+    { threadId: "019db4bb-74c9-7673-b1ac-cf0e10b63f4c" },
+  ]);
+  expect(result.reply.content).toContain("Model:              gpt-5.4");
+  expect(result.reply.content).toContain("Reasoning effort:   low");
+  expect(sessionRepo.getByDiscordThreadId("discord-thread-1")).toMatchObject({
+    modelOverride: "gpt-5.4",
+    reasoningEffortOverride: "low",
+  });
+
+  db.close();
+});
+
 test("managed session interrupt clears queued steer only after interrupt succeeds", async () => {
   const db = createDatabaseClient(":memory:");
   applyMigrations(db);
@@ -529,12 +618,12 @@ test("managed session interrupt preserves queued steer when the upstream interru
   db.close();
 });
 
-test("managed session model component persists the selected model and sends a thread confirmation", async () => {
+test("legacy managed session model components reply with a removal notice and skip legacy side effects", async () => {
   const db = createDatabaseClient(":memory:");
   applyMigrations(db);
   const sessionRepo = createSessionRepo(db);
-  const sentTexts: string[] = [];
-  const updatedPayloads: unknown[] = [];
+  const replies: unknown[] = [];
+  const defers: string[] = [];
 
   sessionRepo.insert({
     discordThreadId: "discord-thread-1",
@@ -542,61 +631,95 @@ test("managed session model component persists the selected model and sends a th
     ownerDiscordUserId: "owner-1",
     cwd: "/tmp/workspace/api",
     state: "idle",
+    modelOverride: "gpt-5.4",
+    reasoningEffortOverride: "high",
   });
 
   const handled = await handleManagedSessionModelComponentInteraction({
     interaction: {
       customId: "msm|model|discord-thread-1",
-      values: ["gpt-5.4"],
+      values: ["gpt-5.2"],
       user: { id: "owner-1" },
-      async reply() {
-        throw new Error("reply should not be used on the happy path");
+      async deferUpdate() {
+        defers.push("deferUpdate");
       },
-      async update(payload: unknown) {
-        updatedPayloads.push(payload);
+      async reply(payload: unknown) {
+        replies.push(payload);
+      },
+      async editReply() {
+        throw new Error("legacy model compatibility should not edit replies");
+      },
+      async update() {
+        throw new Error("legacy model compatibility should not update components");
       },
     } as never,
     sessionRepo,
     codexClient: {
       async listModels() {
-        return {
-          data: [
-            {
-              model: "gpt-5.4",
-              displayName: "GPT-5.4",
-              description: "Frontier model",
-              supportedReasoningEfforts: ["high"],
-              defaultReasoningEffort: "high",
-              isDefault: true,
-            },
-          ],
-          nextCursor: null,
-        };
+        throw new Error("legacy model compatibility should not list models");
+      },
+      async resumeThread() {
+        throw new Error("legacy model compatibility should not resume threads");
       },
     } as never,
     getDiscordClient() {
-      return {} as never;
+      throw new Error("legacy model compatibility should not need a Discord client");
     },
-    async sendTextToChannel(_client, _channelId, payload) {
-      sentTexts.push(payload);
-      return undefined;
+    async sendTextToChannel() {
+      throw new Error("legacy model compatibility should not send thread confirmations");
     },
   });
 
   expect(handled).toBe(true);
+  expect(defers).toEqual([]);
+  expect(replies).toEqual([
+    {
+      content: "Model selection is no longer supported in CodeHelm. Use `/status` to inspect the current session.",
+      flags: MessageFlags.Ephemeral,
+    },
+  ]);
   expect(sessionRepo.getByDiscordThreadId("discord-thread-1")).toMatchObject({
     modelOverride: "gpt-5.4",
     reasoningEffortOverride: "high",
   });
-  expect(sentTexts).toEqual([
-    "Model set to `gpt-5.4` with `high` reasoning effort for this session.",
-  ]);
-  expect(updatedPayloads).toEqual([
-    {
-      content: "Saved `gpt-5.4` for this session.",
-      components: [],
+
+  db.close();
+});
+
+test("non-legacy string select menus are ignored by managed session model compatibility handling", async () => {
+  const db = createDatabaseClient(":memory:");
+  applyMigrations(db);
+  const sessionRepo = createSessionRepo(db);
+  const replies: unknown[] = [];
+
+  const handled = await handleManagedSessionModelComponentInteraction({
+    interaction: {
+      customId: "approval|discord-thread-1",
+      values: ["ignored"],
+      user: { id: "owner-1" },
+      async reply(payload: unknown) {
+        replies.push(payload);
+      },
+    } as never,
+    sessionRepo,
+    codexClient: {
+      async listModels() {
+        throw new Error("non-legacy components should be ignored");
+      },
+      async resumeThread() {
+        throw new Error("non-legacy components should be ignored");
+      },
+    } as never,
+    getDiscordClient() {
+      throw new Error("non-legacy components should be ignored");
     },
-  ]);
+    async sendTextToChannel() {
+      throw new Error("non-legacy components should be ignored");
+    },
+  });
+
+  expect(handled).toBe(false);
+  expect(replies).toEqual([]);
 
   db.close();
 });
@@ -881,6 +1004,8 @@ const createControlChannelServicesFixture = ({
   readThreadStatus = { type: "idle" } satisfies CodexThreadStatus,
   readThreadCwd = "/tmp/workspace/api",
   startThreadCwd,
+  startThreadModel,
+  startThreadReasoningEffort,
   readThreadError,
   discordClientError,
   createThreadSendError,
@@ -899,6 +1024,8 @@ const createControlChannelServicesFixture = ({
   readThreadStatus?: CodexThreadStatus;
   readThreadCwd?: string;
   startThreadCwd?: string;
+  startThreadModel?: string;
+  startThreadReasoningEffort?: string | null;
   readThreadError?: Error;
   discordClientError?: Error;
   createThreadSendError?: Error;
@@ -933,6 +1060,8 @@ const createControlChannelServicesFixture = ({
       ownerDiscordUserId: string;
       cwd: string;
       state: string;
+      modelOverride?: string | null;
+      reasoningEffortOverride?: string | null;
     }>,
     deletedSessions: [] as string[],
     reboundThreads: [] as Array<{
@@ -984,6 +1113,8 @@ const createControlChannelServicesFixture = ({
             cwd: authoritativeCwd,
           }),
           cwd: authoritativeCwd,
+          model: startThreadModel,
+          reasoningEffort: startThreadReasoningEffort,
         };
       },
       async listThreads(params: ThreadListParams) {
@@ -1016,6 +1147,8 @@ const createControlChannelServicesFixture = ({
           ownerDiscordUserId: input.ownerDiscordUserId,
           cwd: input.cwd,
           state: input.state,
+          modelOverride: input.modelOverride ?? null,
+          reasoningEffortOverride: input.reasoningEffortOverride ?? null,
           lifecycleState: "active",
         });
         sessionRecords.set(inserted.discordThreadId, inserted);
@@ -1398,10 +1531,12 @@ test("resume session autocomplete labels normalize second-based provider timesta
   ).toBe(true);
 });
 
-test("create session persists and displays the authoritative cwd returned by Codex", async () => {
+test("create session persists the authoritative cwd and model metadata returned by Codex", async () => {
   const authoritativeCwd = "/tmp/workspace/api-authoritative";
   const { services, calls, getSessionByCodexThreadId } = createControlChannelServicesFixture({
     startThreadCwd: authoritativeCwd,
+    startThreadModel: "gpt-5.4",
+    startThreadReasoningEffort: "high",
   });
 
   const result = await services.createSession({
@@ -1419,6 +1554,8 @@ test("create session persists and displays the authoritative cwd returned by Cod
       ownerDiscordUserId: "owner-1",
       cwd: authoritativeCwd,
       state: "idle",
+      modelOverride: "gpt-5.4",
+      reasoningEffortOverride: "high",
     },
   ]);
   expect(calls.createVisibleSessionThread).toEqual([
@@ -1429,6 +1566,8 @@ test("create session persists and displays the authoritative cwd returned by Cod
   ]);
   expect(getSessionByCodexThreadId("codex-thread-1")).toMatchObject({
     cwd: authoritativeCwd,
+    modelOverride: "gpt-5.4",
+    reasoningEffortOverride: "high",
   });
   expect(result).toEqual({
     reply: {

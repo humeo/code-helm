@@ -1296,6 +1296,25 @@ describe("runCliCommand", () => {
     expect(signalled).toEqual([{ pid: 5555, signal: "SIGTERM" }]);
   });
 
+  test("start --daemon preserves the runtime-state error when the child already exited", async () => {
+    const services = createBaseServices();
+
+    services.spawnBackgroundProcess = () => ({
+      pid: 5555,
+      unref() {},
+    });
+    services.waitForBackgroundRuntime = async () => undefined;
+    services.signalProcess = () => {
+      const error = new Error("kill ESRCH");
+      (error as NodeJS.ErrnoException).code = "ESRCH";
+      throw error;
+    };
+
+    await expect(
+      runCliCommand({ kind: "start", daemon: true }, services),
+    ).rejects.toThrow(/did not publish runtime state/i);
+  });
+
   test("start --daemon forwards the configured runtime wait timeout", async () => {
     const services = createBaseServices();
     let receivedTimeoutMs: number | undefined;

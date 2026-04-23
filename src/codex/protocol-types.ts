@@ -63,6 +63,8 @@ export type ThreadListParams = {
 
 export type ResumeThreadParams = {
   threadId: string;
+  model?: string | null;
+  config?: Record<string, unknown> | null;
 };
 
 export type StartTurnParams = {
@@ -91,11 +93,20 @@ export type ModelListParams = {
   limit?: number | null;
 };
 
+export type ModelReasoningEffortOption = {
+  reasoningEffort: string;
+  description: string;
+} & Record<string, unknown>;
+
+export type ModelReasoningEffortCatalogEntry =
+  | string
+  | ModelReasoningEffortOption;
+
 export type ModelCatalogEntry = {
   model: string;
   displayName: string;
   description: string;
-  supportedReasoningEfforts: string[];
+  supportedReasoningEfforts: ModelReasoningEffortCatalogEntry[];
   defaultReasoningEffort: string;
   isDefault: boolean;
 } & Record<string, unknown>;
@@ -104,6 +115,18 @@ export type ModelListResult = {
   data: ModelCatalogEntry[];
   nextCursor: string | null;
 } & Record<string, unknown>;
+
+export const getModelReasoningEffortValue = (
+  effort: ModelReasoningEffortCatalogEntry,
+) => {
+  return typeof effort === "string" ? effort : effort.reasoningEffort;
+};
+
+export const getModelReasoningEffortDescription = (
+  effort: ModelReasoningEffortCatalogEntry,
+) => {
+  return typeof effort === "string" ? undefined : effort.description;
+};
 
 export type ReplyToServerRequestParams = {
   requestId: JsonRpcId;
@@ -321,11 +344,15 @@ export type CodexThread = {
 export type ThreadStartResult = {
   thread: CodexThread;
   cwd: string;
+  model?: string | null;
+  reasoningEffort?: string | null;
 } & Record<string, unknown>;
 
 export type ThreadResumeResult = {
   thread: CodexThread;
   cwd: string;
+  model?: string | null;
+  reasoningEffort?: string | null;
 } & Record<string, unknown>;
 
 export type ThreadReadResult = {

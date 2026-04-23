@@ -1,5 +1,7 @@
 # Discord Managed Session Command Surface Implementation Plan
 
+> Note 2026-04-23: This plan reflects an earlier implementation scope. `/model` was later removed from the live Discord managed-session command surface and is no longer supported. Keep it as historical implementation context only; current supported managed-session commands are `/status` and `/interrupt`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add Discord-native `/status`, `/model`, and `/interrupt` controls for managed session threads, make running owner messages steer the active turn, and persist model plus reasoning-effort overrides per session.

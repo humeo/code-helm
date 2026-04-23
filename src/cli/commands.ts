@@ -767,7 +767,14 @@ const startInBackground = async (
   });
 
   if (!runtime) {
-    services.signalProcess(child.pid, "SIGTERM");
+    try {
+      services.signalProcess(child.pid, "SIGTERM");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
+        throw error;
+      }
+    }
+
     throw new Error("Background CodeHelm daemon did not publish runtime state.");
   }
 

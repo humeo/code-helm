@@ -2,14 +2,18 @@
 
 Date: 2026-04-22
 
+> Status note 2026-04-23: `/model` has been removed from the live Discord managed-session command surface and is no longer supported.
+>
+> Current supported managed-session commands are `/status` and `/interrupt`, and the implementation is the source of truth for what is live. Any `/model` references that remain below are historical design notes only and should not be read as current product behavior. Legacy `msm|...` components should degrade with an ephemeral removal notice.
+
 ## Summary
 
 CodeHelm should add a Discord-native managed-session command surface that reproduces the most important `codex remote-cli` controls without pretending Discord is a terminal UI.
 
-This design adds three guild slash commands for managed session threads:
+At the time this design was written, it proposed three guild slash commands for managed session threads:
 
 - `/status`
-- `/model`
+- `/model` (historical only; later removed)
 - `/interrupt`
 
 It also changes how owner messages behave while a managed session is already running:
@@ -56,9 +60,9 @@ The existing managed thread surface has lightweight live transcript projection a
 
 The user specifically wants a status output that is terminal-like rather than a generic Discord embed card.
 
-### 4. There is no thread-scoped model and effort picker
+### 4. Historical note: there was no thread-scoped model and effort picker
 
-The user wants to switch model and reasoning effort from Discord in a way that feels like Codex CLI `/model`.
+This section describes a historical design direction that is no longer supported in the live product.
 
 This is not only a display problem.
 
@@ -71,6 +75,8 @@ It requires:
 The user chose current-session-only scope.
 
 ## User-Approved Decisions
+
+Note: the model-related bullets in this section are historical and no longer describe the live product surface.
 
 This design locks in the decisions confirmed during brainstorming.
 
@@ -105,14 +111,14 @@ This design locks in the decisions confirmed during brainstorming.
 - while the session is `waiting-approval`, ordinary owner thread messages are rejected
 - those messages are not queued as steer input
 
-### Model Scope
+### Historical Model Scope
 
 - `/model` changes only the current managed session
 - the selected model and reasoning effort apply to future turns in that session
 - `/model` does not change global bot defaults
 - `/model` is only available while the session is `idle`
 
-### Model Picker Scope
+### Historical Model Picker Scope
 
 - `/model` must support both model and reasoning effort
 - it should feel like CLI `Select Model and Effort`, adapted to Discord interaction constraints
@@ -121,7 +127,7 @@ This design locks in the decisions confirmed during brainstorming.
 
 ### 1. Minimal protocol bridge only
 
-- add missing `turn/interrupt`, `turn/steer`, and `model/list`
+- add missing `turn/interrupt`, `turn/steer`, and `model/list` for the then-planned `/model` flow
 - wire those into a few direct handlers
 - keep the rest of the managed thread behavior mostly unchanged
 
@@ -177,7 +183,7 @@ Drawbacks:
 - make running owner thread messages steer the active managed-session turn
 - add a true managed-session interrupt command
 - add a CLI-like `/status` snapshot for managed session threads
-- add a model and reasoning effort picker for the current managed session
+- historical at draft time: add a model and reasoning effort picker for the current managed session
 - keep command semantics explicit and predictable
 - preserve clear ownership and session safety boundaries
 - keep the implementation narrow enough to ship without redesigning the entire Discord session surface
@@ -196,10 +202,10 @@ Drawbacks:
 
 ### Command Set
 
-CodeHelm should add three guild-only slash commands that are valid only inside managed session threads:
+This design originally proposed three guild-only slash commands that would be valid only inside managed session threads:
 
 - `/status`
-- `/model`
+- `/model` (historical only; not currently supported)
 - `/interrupt`
 
 These commands are guild-registered in the same broad style as the existing control-channel commands, but they are conceptually a separate command family:
@@ -223,14 +229,14 @@ The validation rules are:
 
 - `/status` returns a normal thread-visible reply
 - `/interrupt` returns a normal thread-visible reply when accepted or when it fails in a user-visible way
-- `/model` uses ephemeral UI for selection flow, then emits one short thread-visible confirmation after a successful save
+- historical `/model` flow: use ephemeral UI for selection flow, then emit one short thread-visible confirmation after a successful save
 
 This preserves visible operational history in the thread without forcing every intermediate picker step into transcript history.
 
 ### Permission Rules
 
 - `/status` is read-only and may be used by thread participants
-- `/model` is owner-only
+- historical `/model` flow: owner-only
 - `/interrupt` is owner-only
 
 This keeps visibility broad for inspection while preserving tight control over state-changing commands.
@@ -357,9 +363,9 @@ Instead:
 - clear local steer queue
 - wait for real upstream status and turn-completion signals to settle the thread state
 
-## Session-Scoped Model Override
+## Historical Session-Scoped Model Override
 
-### Persistence Model
+### Historical Persistence Model
 
 Model selection for Discord managed sessions should be durable per session.
 
@@ -376,14 +382,14 @@ This belongs in:
 - [src/db/repos/sessions.ts](/Users/koltenluca/code-github/code-helm/src/db/repos/sessions.ts)
 - any session type definitions that surface the stored values
 
-### Scope Rules
+### Historical Scope Rules
 
 - overrides apply to future `turn/start` submissions from that managed session
 - overrides do not rewrite global config
 - overrides do not modify currently running turns
 - `turn/steer` continues to operate inside the already-running turn and therefore does not use newly selected model settings
 
-### `/model` Interaction Flow
+### Historical `/model` Interaction Flow
 
 `/model` should be available only while the session is `idle`.
 
@@ -398,7 +404,7 @@ The command flow is:
 
 If the chosen model supports exactly one effort option, the second step is skipped.
 
-### Discord Component Constraints
+### Historical Discord Component Constraints
 
 Model selection components should use compact custom-id tokens rather than long descriptive identifiers.
 
@@ -436,8 +442,6 @@ This gives `/status` better remote-cli-like accuracy without turning it into a c
 
 Examples of strong candidates:
 
-- current model override or effective model when known
-- current reasoning effort override or effective effort when known
 - workdir
 - Codex thread id
 - Discord thread reference
@@ -526,7 +530,7 @@ When the session is `waiting-approval`, the user-facing message should clearly s
 
 This prevents the user from assuming their message has already been queued.
 
-### Stale Model Picker
+### Historical Stale Model Picker
 
 Because `/model` uses an ephemeral multi-step picker, the session may change state between step one and final selection.
 
@@ -546,7 +550,7 @@ The implementation should be split into focused pieces where practical:
 
 - managed-thread slash command definitions and interaction routing
 - session turn control semantics for `start`, `steer`, and `interrupt`
-- session-scoped model override persistence and selection flow
+- historical session-scoped model override persistence and selection flow
 - CLI-like status text renderer for Discord
 
 The existing [src/discord/thread-handler.ts](/Users/koltenluca/code-github/code-helm/src/discord/thread-handler.ts) remains the right home for message-to-turn decision logic, but it should stop flattening `running` into a generic busy noop.
@@ -561,9 +565,11 @@ Add coverage for command registration and interaction behavior in:
 
 Key cases:
 
-- `/status`, `/model`, and `/interrupt` command definitions
+- `/status` and `/interrupt` command definitions
+- historical coverage from the original draft also included `/model`
 - command rejection outside managed session threads
-- owner-only restrictions for `/model` and `/interrupt`
+- owner-only restrictions for `/interrupt`
+- historical coverage from the original draft also included owner-only `/model`
 
 ### Thread Handler Tests
 
@@ -594,7 +600,7 @@ Key cases:
 - interrupt failure preserves queued steer
 - `/status` renders compact CLI-like output
 - `/status` prefers live snapshot data when available
-- `/model` session override applies to future turns only
+- historical draft coverage also included `/model` session override application to future turns only
 
 ### Session Repo And Migration Tests
 
@@ -629,7 +635,7 @@ Recommended baseline:
 
 - no extra success message for accepted steer input
 - one short message for successful interrupt
-- one short message for successful model save
+- historical `/model` flow: one short message for successful model save
 - one visible monospace block per `/status` call
 
 ### 2. Prefer evidence-backed state over local invention

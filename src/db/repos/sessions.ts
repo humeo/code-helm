@@ -23,6 +23,8 @@ export type InsertSessionInput = {
   ownerDiscordUserId: string;
   cwd: string;
   state: SessionState;
+  modelOverride?: string | null;
+  reasoningEffortOverride?: string | null;
 };
 
 type SessionRow = {
@@ -85,9 +87,11 @@ export const createSessionRepo = (db: Database) => {
       cwd,
       state,
       degradation_reason,
+      model_override,
+      reasoning_effort_override,
       created_at,
       updated_at
-    ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)`,
   );
   const getByDiscordThreadIdStatement = db.prepare(
     "SELECT * FROM sessions WHERE discord_thread_id = ?",
@@ -145,6 +149,8 @@ export const createSessionRepo = (db: Database) => {
         input.ownerDiscordUserId,
         input.cwd,
         input.state,
+        input.modelOverride ?? null,
+        input.reasoningEffortOverride ?? null,
         timestamp,
         timestamp,
       );
