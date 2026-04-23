@@ -1208,6 +1208,24 @@ describe("runCliCommand", () => {
     }
   });
 
+  test("start renders plain certificate verification startup failures with targeted guidance", async () => {
+    const services = createBaseServices();
+
+    services.startForeground = async () => {
+      throw new Error("unknown certificate verification error");
+    };
+
+    await expect(
+      runCliCommand({ kind: "start", daemon: false }, services),
+    ).rejects.toThrow(/certificate verification failure during startup/i);
+    await expect(
+      runCliCommand({ kind: "start", daemon: false }, services),
+    ).rejects.toThrow(/certificate trust setup/i);
+    await expect(
+      runCliCommand({ kind: "start", daemon: false }, services),
+    ).rejects.toThrow(/unknown certificate verification error/i);
+  });
+
   test("start keeps non-certificate tls failures on generic startup-failed guidance", async () => {
     const services = createBaseServices();
 

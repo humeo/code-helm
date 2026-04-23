@@ -463,6 +463,33 @@ const trimDiagnostics = (diagnostics?: string) => {
   return trimmed;
 };
 
+const renderCertificateStartupFailure = (
+  options: {
+    env: Record<string, string | undefined>;
+    diagnostics?: string;
+    headline: string;
+  },
+) => {
+  return renderErrorPanel({
+    title: "Startup Failed",
+    headline: options.headline,
+    sections: [
+      {
+        kind: "steps",
+        title: "Try next",
+        items: [
+          "Review network and proxy settings for CodeHelm and the services it reaches during startup.",
+          "Verify certificate trust setup and TLS interception policies on this machine.",
+          "After fixing trust settings, try running the command again.",
+          "code-helm start",
+        ],
+      },
+    ],
+    diagnostics: options.diagnostics,
+    env: options.env,
+  });
+};
+
 const classifyStartupFailure = (message: string) => {
   if (
     /certificate|x509|cert chain|self[-\s]?signed|unknown ca|local issuer|hostname mismatch|unable to verify|depth_zero_self_signed_cert|self_signed_cert_in_chain|cert_has_expired|unable_to_get_issuer_cert_locally|err_tls_cert_altname_invalid/i.test(
@@ -480,54 +507,57 @@ const formatStartupFailure = (
   options: { env: Record<string, string | undefined> },
 ) => {
   if (
-    !(error instanceof CodexSupervisorError)
-    || error.code !== "CODEX_APP_SERVER_FAILED_TO_START"
+    error instanceof CodexSupervisorError
+    && error.code === "CODEX_APP_SERVER_FAILED_TO_START"
   ) {
-    return null;
-  }
+    if (error.startupDisposition === "delayed") {
+      return renderWarningPanel({
+        title: "Startup Delayed",
+        headline: "Managed Codex App Server startup is taking longer than expected.",
+        sections: [
+          {
+            title: "Status",
+            lines: [
+              "Codex requests are not ready yet.",
+              "This startup attempt did not complete.",
+              "If this appears transient, try running the command again.",
+            ],
+          },
+          {
+            kind: "steps",
+            title: "Try next",
+            items: ["code-helm start"],
+          },
+        ],
+        diagnostics: trimDiagnostics(error.diagnostics),
+        env: options.env,
+      });
+    }
 
-  if (error.startupDisposition === "delayed") {
-    return renderWarningPanel({
-      title: "Startup Delayed",
-      headline: "Managed Codex App Server startup is taking longer than expected.",
-      sections: [
-        {
-          title: "Status",
-          lines: [
-            "Codex requests are not ready yet.",
-            "This startup attempt did not complete.",
-            "If this appears transient, try running the command again.",
-          ],
-        },
-        {
-          kind: "steps",
-          title: "Try next",
-          items: ["code-helm start"],
-        },
-      ],
-      diagnostics: trimDiagnostics(error.diagnostics),
-      env: options.env,
-    });
-  }
+    if (error.startupDisposition === "failed") {
+      const diagnostics = trimDiagnostics(error.diagnostics ?? error.message);
+      const classification = classifyStartupFailure(
+        `${error.message}\n${diagnostics ?? ""}`,
+      );
 
-  if (error.startupDisposition === "failed") {
-    const diagnostics = trimDiagnostics(error.diagnostics ?? error.message);
-    const classification = classifyStartupFailure(
-      `${error.message}\n${diagnostics ?? ""}`,
-    );
+      if (classification === "certificate") {
+        return renderCertificateStartupFailure({
+          env: options.env,
+          diagnostics,
+          headline: "Managed Codex App Server failed certificate verification during startup.",
+        });
+      }
 
-    if (classification === "certificate") {
       return renderErrorPanel({
         title: "Startup Failed",
-        headline: "Managed Codex App Server failed certificate verification during startup.",
+        headline: "Managed Codex App Server failed to start.",
         sections: [
           {
             kind: "steps",
             title: "Try next",
             items: [
-              "Review network and proxy settings between CodeHelm and Codex App Server.",
-              "Verify certificate trust setup and TLS interception policies on this machine.",
-              "After fixing trust settings, try running the command again.",
+              "CodeHelm could not finish startup.",
+              "Inspect the diagnostics below, resolve the startup issue, then try running the command again.",
               "code-helm start",
             ],
           },
@@ -536,23 +566,17 @@ const formatStartupFailure = (
         env: options.env,
       });
     }
+  }
 
-    return renderErrorPanel({
-      title: "Startup Failed",
-      headline: "Managed Codex App Server failed to start.",
-      sections: [
-        {
-          kind: "steps",
-          title: "Try next",
-          items: [
-            "CodeHelm could not finish startup.",
-            "Inspect the diagnostics below, resolve the startup issue, then try running the command again.",
-            "code-helm start",
-          ],
-        },
-      ],
-      diagnostics,
+  const diagnostics = trimDiagnostics(
+    error instanceof Error ? error.message : String(error),
+  );
+
+  if (diagnostics && classifyStartupFailure(diagnostics) === "certificate") {
+    return renderCertificateStartupFailure({
       env: options.env,
+      diagnostics,
+      headline: "CodeHelm hit a certificate verification failure during startup.",
     });
   }
 

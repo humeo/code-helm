@@ -1,12 +1,11 @@
 import { expect, test } from "bun:test";
-import { REST, type RESTOptions } from "discord.js";
+import { DefaultRestOptions, type RESTOptions } from "discord.js";
 import { buildDiscordRestOptions } from "../../src/discord/rest";
 
-test("buildDiscordRestOptions overrides the default REST request strategy", () => {
-  const rest = new REST({ version: "10" });
+test("buildDiscordRestOptions preserves the discord.js default REST request strategy", () => {
   const options = buildDiscordRestOptions();
 
-  expect(options.makeRequest).not.toBe(rest.options.makeRequest);
+  expect(options.makeRequest).toBe(DefaultRestOptions.makeRequest);
 });
 
 test("buildDiscordRestOptions preserves an explicit request strategy override", () => {

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { Client, Events, GatewayIntentBits, type RESTOptions } from "discord.js";
+import { DefaultRestOptions, Events, type RESTOptions } from "discord.js";
 import { createDiscordBot } from "../../src/discord/bot";
 
 const createServices = () => {
@@ -27,20 +27,14 @@ const logger = {
   error() {},
 };
 
-test("createDiscordBot overrides discord.js default REST request strategy", () => {
-  const defaultClient = new Client({
-    intents: [GatewayIntentBits.Guilds],
-  });
-
+test("createDiscordBot preserves the discord.js default REST request strategy", () => {
   const bot = createDiscordBot({
     token: "token",
     services: createServices().services,
     logger,
   });
 
-  expect(bot.client.options.rest?.makeRequest).not.toBe(
-    defaultClient.options.rest?.makeRequest,
-  );
+  expect(bot.client.options.rest?.makeRequest).toBe(DefaultRestOptions.makeRequest);
 });
 
 test("createDiscordBot preserves an explicit REST request strategy override", () => {
