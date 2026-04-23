@@ -15,6 +15,7 @@ import {
   type JsonRpcSuccess,
   type ModelListParams,
   type ModelListResult,
+  type GetAccountRateLimitsResult,
   type ThreadListParams,
   type ThreadListResult,
   type ThreadReadParams,
@@ -283,6 +284,11 @@ export class JsonRpcClient {
   async listModels(params: ModelListParams = {}) {
     await this.initialize();
     return this.sendRequest<ModelListResult>("model/list", params);
+  }
+
+  async getAccountRateLimits() {
+    await this.initialize();
+    return this.sendRequest<GetAccountRateLimitsResult>("account/rateLimits/read");
   }
 
   async replyToServerRequest({

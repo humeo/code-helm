@@ -310,7 +310,7 @@ test("queued steer helpers keep start-turn inputs and remove only queued steers"
   expect(getPendingLocalInputTexts(runtime)).toEqual(["Start a new task"]);
 });
 
-test("managed session status command prefers fresh snapshot state and queued steer previews", async () => {
+test("managed session status command prefers fresh snapshot state and Codex-style footer summaries", async () => {
   const db = createDatabaseClient(":memory:");
   applyMigrations(db);
   const sessionRepo = createSessionRepo(db);
@@ -320,6 +320,23 @@ test("managed session status command prefers fresh snapshot state and queued ste
       { kind: "steer" as const, text: "Please continue." },
     ],
     activeTurnId: undefined as string | undefined,
+    threadTokenUsage: {
+      total: {
+        totalTokens: 2_902_000,
+        inputTokens: 2_640_000,
+        cachedInputTokens: 0,
+        outputTokens: 262_000,
+        reasoningOutputTokens: 0,
+      },
+      last: {
+        totalTokens: 130_000,
+        inputTokens: 100_000,
+        cachedInputTokens: 0,
+        outputTokens: 30_000,
+        reasoningOutputTokens: 0,
+      },
+      modelContextWindow: 258_000,
+    },
   };
 
   sessionRepo.insert({
@@ -352,8 +369,34 @@ test("managed session status command prefers fresh snapshot state and queued ste
     sessionRepo,
     approvalRepo,
     codexClient: {
+      async getAccountRateLimits() {
+        return {
+          rateLimits: {
+            limitId: null,
+            limitName: null,
+            primary: null,
+            secondary: null,
+            credits: null,
+            planType: null,
+          },
+          rateLimitsByLimitId: null,
+        };
+      },
       async listModels() {
         return { data: [], nextCursor: null };
+      },
+      async resumeThread() {
+        return {
+          thread: {
+            id: "codex-thread-1",
+            cwd: "/tmp/workspace/api",
+            preview: "",
+            status: { type: "idle" },
+            turns: [],
+          },
+          model: "gpt-5.4",
+          reasoningEffort: "xhigh",
+        };
       },
       async turnInterrupt() {
         return {};
@@ -391,9 +434,11 @@ test("managed session status command prefers fresh snapshot state and queued ste
   });
 
   expect(result.reply.content).toContain("Runtime:            running");
-  expect(result.reply.content).toContain("Queued steer:       1");
-  expect(result.reply.content).toContain("Pending approvals:  1");
-  expect(result.reply.content).toContain("Please continue.");
+  expect(result.reply.content).toContain("Token usage:      2.9M total  (2.64M input + 262K output)");
+  expect(result.reply.content).toContain("Context window:   52% left (130K used / 258K)");
+  expect(result.reply.content).toContain("Limits:           not available for this account");
+  expect(result.reply.content).not.toContain("Queued steer:");
+  expect(result.reply.content).not.toContain("Pending approvals:");
   expect(runtime.activeTurnId).toBe("turn-1");
 
   db.close();
@@ -422,6 +467,19 @@ test("managed session status command backfills missing live model metadata from 
     sessionRepo,
     approvalRepo,
     codexClient: {
+      async getAccountRateLimits() {
+        return {
+          rateLimits: {
+            limitId: null,
+            limitName: null,
+            primary: null,
+            secondary: null,
+            credits: null,
+            planType: null,
+          },
+          rateLimitsByLimitId: null,
+        };
+      },
       async listModels() {
         return { data: [], nextCursor: null };
       },
@@ -479,6 +537,9 @@ test("managed session status command backfills missing live model metadata from 
   ]);
   expect(result.reply.content).toContain("Model:              gpt-5.4");
   expect(result.reply.content).toContain("Reasoning effort:   low");
+  expect(result.reply.content).toContain("Token usage:      data not available yet");
+  expect(result.reply.content).toContain("Context window:   data not available yet");
+  expect(result.reply.content).toContain("Limits:           not available for this account");
   expect(sessionRepo.getByDiscordThreadId("discord-thread-1")).toMatchObject({
     modelOverride: "gpt-5.4",
     reasoningEffortOverride: "low",

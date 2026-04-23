@@ -122,7 +122,12 @@ import {
 import {
   parseManagedModelCustomId,
 } from "./discord/managed-session-model-ui";
-import { renderManagedSessionStatus } from "./discord/managed-session-status";
+import {
+  formatManagedSessionContextWindowSummary,
+  formatManagedSessionTokenUsageSummary,
+  renderManagedSessionStatus,
+  summarizeManagedSessionRateLimits,
+} from "./discord/managed-session-status";
 import { buildDiscordRestOptions } from "./discord/rest";
 import {
   renderDegradationActionText,
@@ -361,6 +366,7 @@ type TranscriptRuntime = {
   statusCommand?: string;
   attemptedStatusRecovery: boolean;
   pendingStatusUpdate?: Promise<EditableStatusCardMessage | undefined>;
+  threadTokenUsage?: import("./codex/protocol-types").ThreadTokenUsage;
 };
 
 const sessionSnapshotPollIntervalMs = 15_000;
@@ -1902,7 +1908,20 @@ const buildTranscriptRuntime = (): TranscriptRuntime => {
     statusCommand: undefined,
     attemptedStatusRecovery: false,
     pendingStatusUpdate: undefined,
+    threadTokenUsage: undefined,
   };
+};
+
+const isUnavailableAccountRateLimitsError = (error: unknown) => {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  const normalizedMessage = error.message.toLowerCase();
+
+  return normalizedMessage.includes("authentication required")
+    || normalizedMessage.includes("chatgpt auth")
+    || normalizedMessage.includes("rate limits");
 };
 
 export const getPendingLocalInputTexts = (
@@ -4302,7 +4321,7 @@ const createAttachedSessionThread = async ({
 type CreateManagedSessionCommandServicesDeps = {
   sessionRepo: ReturnType<typeof createSessionRepo>;
   approvalRepo: ReturnType<typeof createApprovalRepo>;
-  codexClient: Pick<JsonRpcClient, "listModels" | "resumeThread" | "turnInterrupt">;
+  codexClient: Pick<JsonRpcClient, "getAccountRateLimits" | "listModels" | "resumeThread" | "turnInterrupt">;
   getDiscordClient: () => Client;
   ensureTranscriptRuntime: (codexThreadId: string) => TranscriptRuntime;
   readThreadForSnapshotReconciliation: (input: {
@@ -4394,11 +4413,8 @@ export const createManagedSessionCommandServices = ({
 
       let session = resolved.session;
       const runtime = ensureTranscriptRuntime(session.codexThreadId);
-      const queuedSteers = getQueuedSteerInputs(runtime).map((input) => input.text);
-      const pendingApprovalCount = approvalRepo.listPendingByDiscordThreadId(
-        session.discordThreadId,
-      ).length;
       let effectiveState = session.state;
+      let limitsSummary = "data not available yet";
 
       try {
         session = await hydrateSessionModelMetadataFromResume({
@@ -4421,13 +4437,28 @@ export const createManagedSessionCommandServices = ({
         effectiveState = session.state;
       }
 
+      try {
+        limitsSummary = summarizeManagedSessionRateLimits(
+          await codexClient.getAccountRateLimits(),
+        );
+      } catch (error) {
+        limitsSummary = isUnavailableAccountRateLimitsError(error)
+          ? "not available for this account"
+          : "data not available yet";
+      }
+
       return {
         reply: {
           content: renderManagedSessionStatus({
             session,
             effectiveState,
-            queuedSteers,
-            pendingApprovalCount,
+            tokenUsageSummary: formatManagedSessionTokenUsageSummary(
+              runtime.threadTokenUsage,
+            ),
+            contextWindowSummary: formatManagedSessionContextWindowSummary(
+              runtime.threadTokenUsage,
+            ),
+            limitsSummary,
           }),
         },
       };
@@ -7119,6 +7150,23 @@ const startCodeHelmRuntime = async (
     })().catch((error) => {
       logger.error("Failed to process item/agentMessage/delta event", error);
     });
+  });
+
+  codexClient.on("thread/tokenUsage/updated", (params) => {
+    const codexThreadId = readThreadIdFromEvent(params);
+
+    if (!codexThreadId || !params.tokenUsage) {
+      return;
+    }
+
+    const session = sessionRepo.getByCodexThreadId(codexThreadId);
+
+    if (!session) {
+      return;
+    }
+
+    const runtime = ensureTranscriptRuntime(session.codexThreadId);
+    runtime.threadTokenUsage = params.tokenUsage;
   });
 
   codexClient.on("turn/completed", (params) => {

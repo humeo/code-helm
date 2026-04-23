@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { renderManagedSessionStatus } from "../../src/discord/managed-session-status";
 
-test("managed session status renderer returns compact monospace text with queued steer preview", () => {
+test("managed session status renderer includes Codex-style footer summaries", () => {
   const text = renderManagedSessionStatus({
     session: {
       discordThreadId: "discord-1",
@@ -12,23 +12,20 @@ test("managed session status renderer returns compact monospace text with queued
       reasoningEffortOverride: "xhigh",
     },
     effectiveState: "running",
-    queuedSteers: [
-      "Please continue.",
-      "Then update the tests.",
-    ],
-    pendingApprovalCount: 1,
+    tokenUsageSummary: "2.9M total  (2.64M input + 262K output)",
+    contextWindowSummary: "52% left (130K used / 258K)",
+    limitsSummary: "not available for this account",
   });
 
   expect(text).toContain("CodeHelm /status");
   expect(text).toContain("Model:");
   expect(text).toContain("Reasoning effort:");
-  expect(text).toContain("Queued steer:");
-  expect(text).toContain("Pending approvals:");
-  expect(text).toContain("Please continue.");
-  expect(text).toContain("Then update the tests.");
+  expect(text).toContain("Token usage:      2.9M total  (2.64M input + 262K output)");
+  expect(text).toContain("Context window:   52% left (130K used / 258K)");
+  expect(text).toContain("Limits:           not available for this account");
 });
 
-test("managed session status renderer omits queued preview section when there are no queued steers", () => {
+test("managed session status renderer no longer includes queued-steer internals", () => {
   const text = renderManagedSessionStatus({
     session: {
       discordThreadId: "discord-1",
@@ -39,11 +36,14 @@ test("managed session status renderer omits queued preview section when there ar
       reasoningEffortOverride: null,
     },
     effectiveState: "idle",
-    queuedSteers: [],
-    pendingApprovalCount: 0,
+    tokenUsageSummary: "data not available yet",
+    contextWindowSummary: "data not available yet",
+    limitsSummary: "data not available yet",
   });
 
-  expect(text).toContain("Queued steer:       0");
-  expect(text).not.toContain("Queued steer preview:");
-  expect(text).toContain("not available");
+  expect(text).not.toContain("Queued steer:");
+  expect(text).not.toContain("Pending approvals:");
+  expect(text).toContain("Token usage:      data not available yet");
+  expect(text).toContain("Context window:   data not available yet");
+  expect(text).toContain("Limits:           data not available yet");
 });

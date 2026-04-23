@@ -152,6 +152,51 @@ test("routes agentMessage delta events to subscribers", () => {
   unsubscribe();
 });
 
+test("routes thread token-usage updates to subscribers", () => {
+  const client = new JsonRpcClient("ws://example.test");
+  const seen: Array<{ threadId?: string; totalTokens?: number }> = [];
+  const unsubscribe = client.on("thread/tokenUsage/updated", (event) => {
+    seen.push({
+      threadId: event.threadId,
+      totalTokens: event.tokenUsage?.total.totalTokens,
+    });
+  });
+
+  client.handleMessage({
+    method: "thread/tokenUsage/updated",
+    params: {
+      threadId: "t1",
+      turnId: "turn1",
+      tokenUsage: {
+        total: {
+          totalTokens: 2048,
+          inputTokens: 1024,
+          cachedInputTokens: 24,
+          outputTokens: 1000,
+          reasoningOutputTokens: 0,
+        },
+        last: {
+          totalTokens: 2048,
+          inputTokens: 1024,
+          cachedInputTokens: 24,
+          outputTokens: 1000,
+          reasoningOutputTokens: 0,
+        },
+        modelContextWindow: 272000,
+      },
+    },
+  });
+
+  expect(seen).toEqual([
+    {
+      threadId: "t1",
+      totalTokens: 2048,
+    },
+  ]);
+
+  unsubscribe();
+});
+
 test("initialize sends initialize request before initialized notification", async () => {
   const stub = createTransportStub();
   const client = new JsonRpcClient("ws://example.test", {
@@ -636,5 +681,51 @@ test("listModels requests model/list", async () => {
       },
     ],
     nextCursor: null,
+  });
+});
+
+test("getAccountRateLimits requests account/rateLimits/read", async () => {
+  const stub = createTransportStub();
+  const client = new JsonRpcClient("ws://example.test", {
+    transport: stub.transport,
+  });
+
+  const rateLimitsPromise = client.getAccountRateLimits();
+
+  await Promise.resolve();
+  stub.receive({ id: 1, result: {} });
+  await Bun.sleep(0);
+
+  expect(JSON.parse(stub.sent[2])).toMatchObject({
+    jsonrpc: "2.0",
+    id: 2,
+    method: "account/rateLimits/read",
+  });
+
+  stub.receive({
+    id: 2,
+    result: {
+      rateLimits: {
+        limitId: null,
+        limitName: null,
+        primary: null,
+        secondary: null,
+        credits: null,
+        planType: null,
+      },
+      rateLimitsByLimitId: null,
+    },
+  });
+
+  await expect(rateLimitsPromise).resolves.toEqual({
+    rateLimits: {
+      limitId: null,
+      limitName: null,
+      primary: null,
+      secondary: null,
+      credits: null,
+      planType: null,
+    },
+    rateLimitsByLimitId: null,
   });
 });

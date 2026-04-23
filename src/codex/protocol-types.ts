@@ -93,6 +93,46 @@ export type ModelListParams = {
   limit?: number | null;
 };
 
+export type TokenUsageBreakdown = {
+  totalTokens: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  reasoningOutputTokens: number;
+} & Record<string, unknown>;
+
+export type ThreadTokenUsage = {
+  total: TokenUsageBreakdown;
+  last: TokenUsageBreakdown;
+  modelContextWindow: number | null;
+} & Record<string, unknown>;
+
+export type CreditsSnapshot = {
+  hasCredits: boolean;
+  unlimited: boolean;
+  balance: string | null;
+} & Record<string, unknown>;
+
+export type RateLimitWindow = {
+  usedPercent: number;
+  windowDurationMins: number | null;
+  resetsAt: number | null;
+} & Record<string, unknown>;
+
+export type RateLimitSnapshot = {
+  limitId: string | null;
+  limitName: string | null;
+  primary: RateLimitWindow | null;
+  secondary: RateLimitWindow | null;
+  credits: CreditsSnapshot | null;
+  planType: string | null;
+} & Record<string, unknown>;
+
+export type GetAccountRateLimitsResult = {
+  rateLimits: RateLimitSnapshot;
+  rateLimitsByLimitId: Record<string, RateLimitSnapshot> | null;
+} & Record<string, unknown>;
+
 export type ModelReasoningEffortOption = {
   reasoningEffort: string;
   description: string;
@@ -397,6 +437,11 @@ export type RoutedEventMap = {
     itemId?: string;
     delta?: string;
   } & Record<string, unknown>;
+  "thread/tokenUsage/updated": {
+    threadId?: string;
+    turnId?: string;
+    tokenUsage?: ThreadTokenUsage;
+  } & Record<string, unknown>;
   "item/commandExecution/requestApproval": ApprovalRequestEvent;
   "item/fileChange/requestApproval": ApprovalRequestEvent;
   "item/permissions/requestApproval": ApprovalRequestEvent;
@@ -410,6 +455,7 @@ export const routedEventMethods = [
   "item/started",
   "item/completed",
   "item/agentMessage/delta",
+  "thread/tokenUsage/updated",
   "item/commandExecution/requestApproval",
   "item/fileChange/requestApproval",
   "item/permissions/requestApproval",
