@@ -4574,7 +4574,29 @@ export const createManagedSessionCommandServices = ({
         };
       }
 
-      if (session.state !== "running" && session.state !== "waiting-approval") {
+      const runtime = ensureTranscriptRuntime(session.codexThreadId);
+      let effectiveState: SessionRuntimeState = coercePersistedSessionRuntimeState(session.state);
+      let activeTurnId: string | undefined;
+      let snapshotRecovered = false;
+
+      try {
+        const snapshot = await readThreadForSnapshotReconciliation({
+          threadId: session.codexThreadId,
+        });
+
+        effectiveState = inferSessionStateFromThreadStatus(snapshot.thread.status);
+        activeTurnId = readActiveTurnIdFromThreadReadResult(snapshot);
+        runtime.activeTurnId = activeTurnId;
+        snapshotRecovered = true;
+
+        if (session.state !== "degraded") {
+          sessionRepo.updateState(session.discordThreadId, effectiveState);
+        }
+      } catch {
+        activeTurnId = runtime.activeTurnId;
+      }
+
+      if (effectiveState !== "running" && effectiveState !== "waiting-approval") {
         return {
           reply: {
             content: "Session is not currently running.",
@@ -4582,15 +4604,14 @@ export const createManagedSessionCommandServices = ({
         };
       }
 
-      const runtime = ensureTranscriptRuntime(session.codexThreadId);
-      let activeTurnId: string | undefined;
-
-      try {
+      if (!activeTurnId && !snapshotRecovered) {
         activeTurnId = await resolveActiveTurnId({
           session,
           runtime,
         });
-      } catch {
+      }
+
+      if (!activeTurnId) {
         activeTurnId = undefined;
       }
 

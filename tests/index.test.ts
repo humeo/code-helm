@@ -589,7 +589,15 @@ test("managed session interrupt clears queued steer only after interrupt succeed
       return runtime as never;
     },
     async readThreadForSnapshotReconciliation() {
-      throw new Error("interrupt should not need a snapshot when turn id is present");
+      return {
+        thread: {
+          id: "codex-thread-1",
+          cwd: "/tmp/workspace/api",
+          preview: "",
+          status: { type: "active", activeFlags: [] },
+          turns: [{ id: "turn-1", items: [] }],
+        },
+      };
     },
     async resolveActiveTurnId() {
       return "turn-1";
@@ -655,7 +663,15 @@ test("managed session interrupt preserves queued steer when the upstream interru
       return runtime as never;
     },
     async readThreadForSnapshotReconciliation() {
-      throw new Error("interrupt should not need a snapshot when turn id is present");
+      return {
+        thread: {
+          id: "codex-thread-1",
+          cwd: "/tmp/workspace/api",
+          preview: "",
+          status: { type: "active", activeFlags: [] },
+          turns: [{ id: "turn-1", items: [] }],
+        },
+      };
     },
     async resolveActiveTurnId() {
       return "turn-1";
@@ -675,6 +691,153 @@ test("managed session interrupt preserves queued steer when the upstream interru
   expect(getQueuedSteerInputs(runtime).map((input) => input.text)).toEqual([
     "Please continue.",
   ]);
+
+  db.close();
+});
+
+test("managed session interrupt prefers the latest snapshot turn id over stale runtime state", async () => {
+  const db = createDatabaseClient(":memory:");
+  applyMigrations(db);
+  const sessionRepo = createSessionRepo(db);
+  const approvalRepo = createApprovalRepo(db);
+  const runtime = {
+    pendingLocalInputs: [],
+    activeTurnId: "stale-turn",
+  };
+  const turnInterruptCalls: Array<Record<string, string>> = [];
+
+  sessionRepo.insert({
+    discordThreadId: "discord-thread-1",
+    codexThreadId: "codex-thread-1",
+    ownerDiscordUserId: "owner-1",
+    cwd: "/tmp/workspace/api",
+    state: "running",
+  });
+
+  const services = createManagedSessionCommandServices({
+    sessionRepo,
+    approvalRepo,
+    codexClient: {
+      async listModels() {
+        return { data: [], nextCursor: null };
+      },
+      async turnInterrupt(input: { threadId: string; turnId: string }) {
+        turnInterruptCalls.push(input as Record<string, string>);
+        return {};
+      },
+    } as never,
+    getDiscordClient() {
+      throw new Error("interrupt should not need a Discord client");
+    },
+    ensureTranscriptRuntime() {
+      return runtime as never;
+    },
+    async readThreadForSnapshotReconciliation() {
+      return {
+        thread: {
+          id: "codex-thread-1",
+          cwd: "/tmp/workspace/api",
+          preview: "",
+          status: { type: "active", activeFlags: [] },
+          turns: [{ id: "fresh-turn", items: [] }],
+        },
+      };
+    },
+    async resolveActiveTurnId() {
+      throw new Error("interrupt should not fall back to stale turn resolution when snapshot is fresh");
+    },
+    async sendTextToChannel() {
+      return undefined;
+    },
+  });
+
+  const result = await services.interrupt({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "discord-thread-1",
+  });
+
+  expect(turnInterruptCalls).toEqual([
+    {
+      threadId: "codex-thread-1",
+      turnId: "fresh-turn",
+    },
+  ]);
+  expect(result.reply.content).toBe("Interrupted current turn.");
+  expect(runtime.activeTurnId).toBe("fresh-turn");
+
+  db.close();
+});
+
+test("managed session interrupt can recover from stale persisted idle state using a fresh snapshot", async () => {
+  const db = createDatabaseClient(":memory:");
+  applyMigrations(db);
+  const sessionRepo = createSessionRepo(db);
+  const approvalRepo = createApprovalRepo(db);
+  const runtime = {
+    pendingLocalInputs: [],
+    activeTurnId: undefined as string | undefined,
+  };
+  const turnInterruptCalls: Array<Record<string, string>> = [];
+
+  sessionRepo.insert({
+    discordThreadId: "discord-thread-1",
+    codexThreadId: "codex-thread-1",
+    ownerDiscordUserId: "owner-1",
+    cwd: "/tmp/workspace/api",
+    state: "idle",
+  });
+
+  const services = createManagedSessionCommandServices({
+    sessionRepo,
+    approvalRepo,
+    codexClient: {
+      async listModels() {
+        return { data: [], nextCursor: null };
+      },
+      async turnInterrupt(input: { threadId: string; turnId: string }) {
+        turnInterruptCalls.push(input as Record<string, string>);
+        return {};
+      },
+    } as never,
+    getDiscordClient() {
+      throw new Error("interrupt should not need a Discord client");
+    },
+    ensureTranscriptRuntime() {
+      return runtime as never;
+    },
+    async readThreadForSnapshotReconciliation() {
+      return {
+        thread: {
+          id: "codex-thread-1",
+          cwd: "/tmp/workspace/api",
+          preview: "",
+          status: { type: "active", activeFlags: [] },
+          turns: [{ id: "turn-from-snapshot", items: [] }],
+        },
+      };
+    },
+    async resolveActiveTurnId() {
+      throw new Error("interrupt should resolve active turn from the fresh snapshot");
+    },
+    async sendTextToChannel() {
+      return undefined;
+    },
+  });
+
+  const result = await services.interrupt({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "discord-thread-1",
+  });
+
+  expect(turnInterruptCalls).toEqual([
+    {
+      threadId: "codex-thread-1",
+      turnId: "turn-from-snapshot",
+    },
+  ]);
+  expect(result.reply.content).toBe("Interrupted current turn.");
 
   db.close();
 });
