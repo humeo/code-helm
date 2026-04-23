@@ -1543,6 +1543,108 @@ test("resume session autocomplete keeps the workdir hint row even when no sessio
   ]);
 });
 
+test("resume session autocomplete falls back to local matching when provider search misses thread ids", async () => {
+  const baseTimestamp = 1_700_000_000_000;
+  const targetThread = createResumePickerThread({
+    id: "019dba79-b3db-7493-960e-3a5df74e5b63",
+    preview: "hi",
+    updatedAt: baseTimestamp + 5_000,
+    createdAt: baseTimestamp + 5_000,
+  });
+  const otherThread = createResumePickerThread({
+    id: "019db9c7-25d0-77c0-90a1-3eafaae7e40a",
+    preview: "reply ok",
+    updatedAt: baseTimestamp + 4_000,
+    createdAt: baseTimestamp + 4_000,
+  });
+  const calls: Array<Record<string, unknown>> = [];
+
+  const choices = await buildResumeSessionAutocompleteChoices({
+    codexClient: {
+      async listThreads(params: ThreadListParams) {
+        calls.push(params as Record<string, unknown>);
+
+        if (params.searchTerm === "019dba79") {
+          return {
+            data: [],
+            nextCursor: null,
+          };
+        }
+
+        if (params.archived) {
+          return {
+            data: [],
+            nextCursor: null,
+          };
+        }
+
+        if (params.cursor === "active-page-2") {
+          return {
+            data: [otherThread],
+            nextCursor: null,
+          };
+        }
+
+        return {
+          data: [targetThread],
+          nextCursor: "active-page-2",
+        };
+      },
+    } as never,
+    query: "019dba79",
+    cwd: defaultSessionPath,
+    homeDir: "/Users/tester",
+    now: baseTimestamp + 7_200_000,
+  });
+
+  expect(choices).toEqual([
+    {
+      name: "Current workdir: /tmp/workspace/api · Use /workdir to switch directories",
+      value: RESUME_WORKDIR_HINT_VALUE,
+    },
+    {
+      name: "1 hour ago · hi · 019dba79-b3db-7493-960e-3a5df74e5b63",
+      value: "019dba79-b3db-7493-960e-3a5df74e5b63",
+    },
+  ]);
+  expect(calls).toContainEqual({
+    cwd: defaultSessionPath,
+    searchTerm: "019dba79",
+    limit: 25,
+    sortKey: "updated_at",
+    archived: false,
+  });
+  expect(calls).toContainEqual({
+    cwd: defaultSessionPath,
+    searchTerm: "019dba79",
+    limit: 25,
+    sortKey: "updated_at",
+    archived: true,
+  });
+  expect(calls).toContainEqual({
+    cwd: defaultSessionPath,
+    searchTerm: null,
+    limit: 100,
+    sortKey: "updated_at",
+    archived: false,
+  });
+  expect(calls).toContainEqual({
+    cwd: defaultSessionPath,
+    searchTerm: null,
+    limit: 100,
+    sortKey: "updated_at",
+    archived: false,
+    cursor: "active-page-2",
+  });
+  expect(calls).toContainEqual({
+    cwd: defaultSessionPath,
+    searchTerm: null,
+    limit: 100,
+    sortKey: "updated_at",
+    archived: true,
+  });
+});
+
 test("resume session autocomplete labels include updated time, preview or name, and the full thread id when it fits", () => {
   const baseTimestamp = 1_700_000_000_000;
   expect(
@@ -2045,6 +2147,15 @@ test("/session-resume autocomplete scopes Codex threads by the stored current wo
   const homeRoot = createTestHomeRoot();
   const { services, calls } = createControlChannelServicesFixture({
     homeDir: homeRoot,
+    listThreadsData: {
+      active: [
+        createResumePickerThread({
+          id: "codex-thread-scope-test",
+          cwd: join(homeRoot, "code-github/code-helm"),
+        }),
+      ],
+      archived: [],
+    },
   });
   const expectedPath = join(homeRoot, "code-github/code-helm");
 

@@ -3916,6 +3916,89 @@ const formatResumeThreadTitle = (thread: CodexThread) => {
   return preview || name || thread.id;
 };
 
+const resumeAutocompleteLocalSearchPageSize = 100;
+
+const matchesResumeSessionQuery = (thread: CodexThread, query: string) => {
+  const normalizedQuery = query.trim().toLowerCase();
+
+  if (!normalizedQuery) {
+    return true;
+  }
+
+  const preview = thread.preview.trim().toLowerCase();
+  const name = typeof thread.name === "string"
+    ? thread.name.trim().toLowerCase()
+    : "";
+
+  return (
+    thread.id.toLowerCase().includes(normalizedQuery)
+    || preview.includes(normalizedQuery)
+    || name.includes(normalizedQuery)
+  );
+};
+
+const listAllResumeThreadsForSearch = async ({
+  codexClient,
+  cwd,
+  archived,
+}: {
+  codexClient: Pick<JsonRpcClient, "listThreads">;
+  cwd: string;
+  archived: boolean;
+}) => {
+  const threads: CodexThread[] = [];
+  const seenCursors = new Set<string>();
+  let cursor: string | null = null;
+
+  while (true) {
+    const page = await codexClient.listThreads({
+      cwd,
+      archived,
+      searchTerm: null,
+      limit: resumeAutocompleteLocalSearchPageSize,
+      sortKey: "updated_at",
+      ...(cursor ? { cursor } : {}),
+    });
+
+    threads.push(...page.data);
+
+    if (page.data.length === 0 || !page.nextCursor || seenCursors.has(page.nextCursor)) {
+      return threads;
+    }
+
+    seenCursors.add(page.nextCursor);
+    cursor = page.nextCursor;
+  }
+};
+
+const searchResumeThreadsLocally = async ({
+  codexClient,
+  cwd,
+  query,
+}: {
+  codexClient: Pick<JsonRpcClient, "listThreads">;
+  cwd: string;
+  query: string;
+}) => {
+  const [activeThreads, archivedThreads] = await Promise.all([
+    listAllResumeThreadsForSearch({
+      codexClient,
+      cwd,
+      archived: false,
+    }),
+    listAllResumeThreadsForSearch({
+      codexClient,
+      cwd,
+      archived: true,
+    }),
+  ]);
+
+  return [
+    ...activeThreads,
+    ...archivedThreads,
+  ].filter((thread) => matchesResumeSessionQuery(thread, query));
+};
+
 const truncateWithEllipsis = (value: string, maxLength: number) => {
   if (maxLength <= 0) {
     return "";
@@ -4129,6 +4212,13 @@ export const buildResumeSessionAutocompleteChoices = async ({
     ...activeThreads.data,
     ...archivedThreads.data,
   ];
+  const searchedThreads = searchTerm && threads.length === 0
+    ? await searchResumeThreadsLocally({
+        codexClient,
+        cwd,
+        query: searchTerm,
+      })
+    : threads;
   const hintChoice = formatResumeWorkdirHintChoice({
     cwd,
     homeDir,
@@ -4136,7 +4226,7 @@ export const buildResumeSessionAutocompleteChoices = async ({
 
   return [
     hintChoice,
-    ...sortResumePickerThreads(threads)
+    ...sortResumePickerThreads(searchedThreads)
       .slice(0, 24)
       .map((thread) => formatResumeSessionAutocompleteChoice(thread, now)),
   ];
