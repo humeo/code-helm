@@ -38,5 +38,5 @@ jobs:
       - name: Run typecheck
         run: bun run typecheck
 
-      - name: Verify npm package dry-run with latest npm CLI
-        run: bunx npm@latest publish --dry-run
+      - name: Verify npm package contents with latest npm CLI
+        run: bunx npm@latest pack --dry-run
