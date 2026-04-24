@@ -2,6 +2,14 @@
 
 Use this script to record a short CodeHelm demo for the README or release notes.
 
+## Current Demo Asset
+
+The current repo video lives at:
+
+- `docs/demo/04-23-code-helm.mp4`
+
+If you replace it with a newer cut later, keep the README demo link in sync.
+
 ## Target Length
 
 - 60 to 90 seconds for a README video
