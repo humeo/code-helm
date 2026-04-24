@@ -9,7 +9,7 @@ Core runtime code lives in [`src/`](/Users/koltenluca/code-github/code-helm/src)
 - `src/db/` holds migrations, SQLite client setup, and repos.
 - `src/domain/` contains product rules such as session ownership and approval semantics.
 
-Tests mirror runtime areas under [`tests/`](/Users/koltenluca/code-github/code-helm/tests). User-facing docs live under [`docs/`](/Users/koltenluca/code-github/code-helm/docs), including setup and demo-support guides such as [`docs/discord-bot-setup.md`](/Users/koltenluca/code-github/code-helm/docs/discord-bot-setup.md) and [`docs/demo-storyboard.md`](/Users/koltenluca/code-github/code-helm/docs/demo-storyboard.md). Design docs and plans live in [`docs/superpowers/specs/`](/Users/koltenluca/code-github/code-helm/docs/superpowers/specs) and [`docs/superpowers/plans/`](/Users/koltenluca/code-github/code-helm/docs/superpowers/plans).
+Tests mirror runtime areas under [`tests/`](/Users/koltenluca/code-github/code-helm/tests). User-facing docs live under [`docs/`](/Users/koltenluca/code-github/code-helm/docs), including setup guides such as [`docs/discord-bot-setup.md`](/Users/koltenluca/code-github/code-helm/docs/discord-bot-setup.md). Design docs and plans live in [`docs/superpowers/specs/`](/Users/koltenluca/code-github/code-helm/docs/superpowers/specs) and [`docs/superpowers/plans/`](/Users/koltenluca/code-github/code-helm/docs/superpowers/plans).
 
 ## Build, Test, and Development Commands
 

@@ -1,0 +1,19 @@
+<svg width="1280" height="720" viewBox="0 0 1280 720" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">CodeHelm product graphic</title>
+  <desc id="desc">CodeHelm wordmark with overlapping terminal and Discord thread symbols.</desc>
+  <rect width="1280" height="720" fill="white"/>
+  <g stroke="black" stroke-width="10" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M207 248V176C207 150.595 227.595 130 253 130H372C397.405 130 418 150.595 418 176V323C418 348.405 397.405 369 372 369H272"/>
+    <path d="M256 179L286 198L256 217"/>
+    <path d="M305 216H338"/>
+    <path d="M102 254C102 228.595 122.595 208 148 208H263C288.405 208 309 228.595 309 254V332C309 357.405 288.405 378 263 378H226L205 411L184 378H148C122.595 378 102 357.405 102 332V254Z"/>
+    <path d="M182 272L212 291L182 310"/>
+    <path d="M231 309H264"/>
+  </g>
+  <text x="480" y="378"
+        fill="black"
+        font-family="Arial Rounded MT Bold, SF Pro Rounded, Nunito, Inter, system-ui, sans-serif"
+        font-size="136"
+        font-weight="400"
+        letter-spacing="0">CodeHelm</text>
+</svg>
