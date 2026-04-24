@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/assets/codehelm-product.svg" alt="CodeHelm" width="760" />
+<img src="docs/assets/codehelm-product.png" alt="CodeHelm" width="760" />
 
 <h2>Control your local Codex sessions remotely through Discord on your phone or browser.</h2>
 
@@ -31,7 +31,7 @@ and follow progress in one Discord thread instead of bouncing between tools.
 
 ## Demo
 
-<video src="docs/demo/04-23-code-helm.mp4" controls preload="metadata"></video>
+<img src="docs/demo/04-23-code-helm.gif" alt="CodeHelm Discord remote-control demo" width="100%" />
 
 ## Workflow
 
@@ -50,7 +50,7 @@ leave and come back later without starting from scratch.
 
 ## Quick Start
 
-### Option 1: Global Package Installation (Recommended)
+### Install
 
 #### Prerequisites
 
@@ -75,23 +75,6 @@ bun add -g code-helm
 ```
 
 Bun is still required at runtime even if you install the package with `npm`.
-
-> [!IMPORTANT]
-> CodeHelm stores its state locally and does not require a hosted CodeHelm
-> control plane.
->
-> It writes local files under:
->
-> - `~/.config/code-helm/config.toml`
-> - `~/.config/code-helm/secrets.toml`
-> - `~/.local/share/code-helm/codehelm.sqlite`
-> - `~/.local/state/code-helm/`
-> - `~/.codehelm/workdir`
->
-> CodeHelm connects to Discord APIs for bot messages, slash commands, threads,
-> and approvals. `code-helm check` and `code-helm update` query npm. To inspect
-> the daemon, use `code-helm status`. To stop it, use `code-helm stop`. To
-> remove local state, use `code-helm uninstall`.
 
 #### 2. Onboard Discord
 
@@ -154,79 +137,21 @@ Managed-thread commands and actions:
 | `/status`                    | Show the current managed session status |
 | `/interrupt`                 | Interrupt the current Codex turn        |
 
-### Option 2: Local Repository Development
+## Commands
 
-```bash
-bun install
-bun run dev
-```
-
-Development checks:
-
-```bash
-bun test
-bun run typecheck
-```
-
-Useful development commands:
-
-```bash
-bun run migrate
-```
-
-## Operational Commands
-
-```bash
-code-helm status
-code-helm stop
-code-helm check
-code-helm update
-code-helm version
-```
-
-<details>
-<summary><b>More Operations</b></summary>
-
-### Autostart
-
-On macOS, CodeHelm can install a LaunchAgent that starts the daemon at login:
-
-```bash
-code-helm autostart enable
-```
-
-To remove it:
-
-```bash
-code-helm autostart disable
-```
-
-Unsupported platforms return an explicit unsupported result.
-
-### Uninstall
-
-To remove the local CodeHelm installation state:
-
-```bash
-code-helm uninstall
-```
-
-That command stops the background daemon if one is running, disables autostart
-when supported, and removes the local config, secrets, database, and
-runtime-state files.
-
-To remove the global package too, use the same package manager you used to
-install it:
-
-```bash
-npm uninstall -g code-helm
-```
-
-```bash
-bun remove -g code-helm
-```
-
-</details>
+| Command                         | Purpose                                      |
+| ------------------------------- | -------------------------------------------- |
+| `code-helm onboard`             | Configure the Discord bot and control channel |
+| `code-helm start`               | Run CodeHelm in the foreground               |
+| `code-helm start --daemon`      | Run CodeHelm in the background               |
+| `code-helm status`              | Show daemon state and the Codex remote URL   |
+| `code-helm stop`                | Stop the background daemon                   |
+| `code-helm check`               | Check whether a newer package is available   |
+| `code-helm update`              | Update the installed package                 |
+| `code-helm autostart enable`    | Start the daemon at login on macOS           |
+| `code-helm autostart disable`   | Remove the login-startup entry on macOS      |
+| `code-helm uninstall`           | Remove local CodeHelm config, state, and db  |
+| `code-helm version`             | Print the installed version                  |
 
 ## Development
 
