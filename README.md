@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/assets/codehelm-product.png" alt="CodeHelm" width="760" />
+<img src="docs/assets/codehelm-product-banner.png" alt="CodeHelm" width="760" />
 
 <h2>Control your local Codex sessions remotely through Discord on your phone or browser.</h2>
 
