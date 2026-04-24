@@ -11,6 +11,10 @@
 
 <br />
 
+[English](README.md) · [中文](README.zh-CN.md)
+
+<br />
+
 [Demo](#demo) · [Quick Start](#quick-start) · [Workflow](#workflow) · [Discord Setup](docs/discord-bot-setup.md) · [Development](#development)
 
 </div>
