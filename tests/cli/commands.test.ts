@@ -66,7 +66,7 @@ const createBaseServices = (): CommandServices => {
   };
 
   return {
-    backgroundRuntimeTimeoutMs: 15_000,
+    backgroundRuntimeTimeoutMs: 60_000,
     env: {},
     loadConfigStore: () => ({
       config: {
@@ -1292,6 +1292,64 @@ describe("runCliCommand", () => {
     expect(result.output).not.toContain("CodeHelm running\nMode:");
     expect(spawnedEnv?.CODE_HELM_CONFIG).toBeTruthy();
     expect(spawnedEnv?.CODE_HELM_SECRETS).toBeTruthy();
+  });
+
+  test("start --daemon gives cold session restore enough time by default", async () => {
+    const paths = createPaths();
+    let receivedTimeoutMs: number | undefined;
+
+    await runCliCommand(
+      { kind: "start", daemon: true },
+      {
+        env: {},
+        loadConfigStore: () => ({
+          config: {
+            discord: {
+              guildId: "guild-1",
+              controlChannelId: "channel-1",
+            },
+            codex: {
+              appServerMode: "managed",
+            },
+            database: {
+              path: paths.databasePath,
+            },
+          },
+          secrets: {
+            discord: {
+              botToken: "token-1",
+            },
+          },
+          paths,
+        }),
+        readRuntimeSummary: () => undefined,
+        spawnBackgroundProcess: () => ({
+          pid: 4321,
+          unref() {},
+        }),
+        waitForBackgroundRuntime: async ({ timeoutMs }) => {
+          receivedTimeoutMs = timeoutMs;
+
+          return {
+            pid: 4321,
+            mode: "background",
+            discord: {
+              guildId: "guild-1",
+              controlChannelId: "channel-1",
+              connected: true,
+            },
+            codex: {
+              appServerAddress: "ws://127.0.0.1:4100",
+              running: true,
+              startupState: "ready",
+            },
+            startedAt: "2026-04-16T00:00:00.000Z",
+          };
+        },
+      },
+    );
+
+    expect(receivedTimeoutMs).toBe(60_000);
   });
 
   test("start --daemon stops the child when runtime state never appears", async () => {
