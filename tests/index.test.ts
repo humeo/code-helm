@@ -260,6 +260,21 @@ type IsManagedDiscordThreadProjectableForTest = (input: {
   threadId: string;
 }) => Promise<boolean>;
 
+type ManagedDiscordThreadProjectabilityForTest =
+  | {
+      projectable: true;
+    }
+  | {
+      projectable: false;
+      reason: "archived" | "not_sendable" | "fetch_failed";
+      error?: unknown;
+    };
+
+type GetManagedDiscordThreadProjectabilityForTest = (input: {
+  client: Client;
+  threadId: string;
+}) => Promise<ManagedDiscordThreadProjectabilityForTest>;
+
 const getIsManagedDiscordThreadProjectableForTest = () => {
   const helper = (codeHelmIndex as typeof codeHelmIndex & {
     isManagedDiscordThreadProjectable?: IsManagedDiscordThreadProjectableForTest;
@@ -267,6 +282,15 @@ const getIsManagedDiscordThreadProjectableForTest = () => {
 
   expect(typeof helper).toBe("function");
   return helper as IsManagedDiscordThreadProjectableForTest;
+};
+
+const getManagedDiscordThreadProjectabilityForTest = () => {
+  const helper = (codeHelmIndex as typeof codeHelmIndex & {
+    getManagedDiscordThreadProjectability?: GetManagedDiscordThreadProjectabilityForTest;
+  }).getManagedDiscordThreadProjectability;
+
+  expect(typeof helper).toBe("function");
+  return helper as GetManagedDiscordThreadProjectabilityForTest;
 };
 
 type ShouldProjectCodexRemoteEventToDiscordForTest = (input: {
@@ -345,6 +369,20 @@ const getApplyRemoteTurnCompletionRuntimeCleanupForTest = () => {
   return helper as ApplyRemoteTurnCompletionRuntimeCleanupForTest;
 };
 
+type InvalidateRuntimeTrustForSkippedRemoteProjectionForTest = (input: {
+  runtime: ReturnType<typeof createRelayTranscriptRuntime>;
+  turnId?: string;
+}) => void;
+
+const getInvalidateRuntimeTrustForSkippedRemoteProjectionForTest = () => {
+  const helper = (codeHelmIndex as typeof codeHelmIndex & {
+    invalidateRuntimeTrustForSkippedRemoteProjection?: InvalidateRuntimeTrustForSkippedRemoteProjectionForTest;
+  }).invalidateRuntimeTrustForSkippedRemoteProjection;
+
+  expect(typeof helper).toBe("function");
+  return helper as InvalidateRuntimeTrustForSkippedRemoteProjectionForTest;
+};
+
 type HandleActiveManagedThreadDiscordInputForTest = (input: {
   session: SessionRecord;
   authorId: string;
@@ -394,6 +432,7 @@ const createRelayTranscriptRuntime = () => ({
   pendingDiscordInputReplyMessageIds: [],
   turnReplyMessageIds: new Map<string, string>(),
   trustedExternalTurnIds: new Set<string>(),
+  trustedForDiscordInput: false,
   closedTurnIds: new Set<string>(),
   typingActive: false,
   typingTimeout: undefined as ReturnType<typeof setTimeout> | undefined,
@@ -2193,6 +2232,61 @@ test("trusted runtime skips recent snapshot read and continues as before", async
   expect(result).toMatchObject({ ok: true, session });
   expect(readCount).toBe(0);
   expect(syncCount).toBe(0);
+});
+
+test("skipped remote projection invalidates input trust so next owner input reconciles", async () => {
+  const reconcile = getReconcileManagedSessionBeforeDiscordInputForTest();
+  const invalidateTrust = getInvalidateRuntimeTrustForSkippedRemoteProjectionForTest();
+  const events: string[] = [];
+  let storedSession = createSessionRecord({ state: "idle" });
+  const runtime = createRelayTranscriptRuntime();
+  runtime.trustedForDiscordInput = true;
+  noteTrustedLiveExternalTurnStart({
+    runtime,
+    turnId: "remote-turn",
+  });
+
+  invalidateTrust({
+    runtime,
+    turnId: "remote-turn",
+  });
+
+  expect(runtime.trustedForDiscordInput).toBe(false);
+  expect(runtime.trustedExternalTurnIds.has("remote-turn")).toBe(false);
+
+  const result = await reconcile({
+    session: storedSession,
+    runtime,
+    reconcileFailedThreadIds: new Set<string>(),
+    readRecentThreadForRuntimeSnapshotReconciliation: async (threadId) => {
+      events.push(`read:${threadId}`);
+      return createThreadReadResult({
+        status: { type: "idle" },
+        turns: [],
+      });
+    },
+    syncTranscriptSnapshotFromReadResult: async () => {
+      events.push("sync");
+    },
+    getSessionByCodexThreadId: () => storedSession,
+    persistReconciledSessionState: async (_session, state) => {
+      events.push(`persist:${state}`);
+      storedSession = createSessionRecord({ state });
+    },
+    markRuntimeTrustedForDiscordInput: (codexThreadId) => {
+      events.push(`trust:${codexThreadId}`);
+      runtime.trustedForDiscordInput = true;
+    },
+  });
+
+  expect(result).toMatchObject({ ok: true });
+  expect(events).toEqual([
+    "read:codex-thread-1",
+    "sync",
+    "persist:idle",
+    "trust:codex-thread-1",
+  ]);
+  expect(runtime.trustedForDiscordInput).toBe(true);
 });
 
 test("untrusted runtime states and prior failed reconciles still read recent snapshot", async () => {
@@ -6042,6 +6136,55 @@ test("remote live projection skips archived or unavailable Discord threads witho
       threadId: "unavailable-thread",
     }),
   ).resolves.toBe(false);
+});
+
+test("remote live projectability result distinguishes archived non-sendable and fetch failure", async () => {
+  const getProjectability = getManagedDiscordThreadProjectabilityForTest();
+  const setArchivedCalls: unknown[] = [];
+  const archivedThread = {
+    archived: true,
+    send: async () => undefined,
+    setArchived: async (...args: unknown[]) => {
+      setArchivedCalls.push(args);
+    },
+  };
+
+  await expect(
+    getProjectability({
+      client: createProjectableThreadTestClient(archivedThread),
+      threadId: "archived-thread",
+    }),
+  ).resolves.toEqual({
+    projectable: false,
+    reason: "archived",
+  });
+  expect(setArchivedCalls).toEqual([]);
+  await expect(
+    getProjectability({
+      client: createProjectableThreadTestClient({ archived: false }),
+      threadId: "non-sendable-thread",
+    }),
+  ).resolves.toEqual({
+    projectable: false,
+    reason: "not_sendable",
+  });
+
+  const result = await getProjectability({
+    client: {
+      channels: {
+        fetch: async () => {
+          throw new Error("Discord channel unavailable");
+        },
+      },
+    } as never,
+    threadId: "unavailable-thread",
+  });
+
+  expect(result).toMatchObject({
+    projectable: false,
+    reason: "fetch_failed",
+  });
+  expect((result as { error?: unknown }).error).toBeInstanceOf(Error);
 });
 
 test("remote live event handlers do not read snapshots for projection decisions", () => {

@@ -2171,6 +2171,20 @@ export const noteTrustedLiveExternalTurnStart = ({
   runtime.trustedExternalTurnIds.add(turnId);
 };
 
+export const invalidateRuntimeTrustForSkippedRemoteProjection = ({
+  runtime,
+  turnId,
+}: {
+  runtime: Pick<TranscriptRuntime, "trustedExternalTurnIds" | "trustedForDiscordInput">;
+  turnId?: string;
+}) => {
+  runtime.trustedForDiscordInput = false;
+
+  if (turnId) {
+    runtime.trustedExternalTurnIds.delete(turnId);
+  }
+};
+
 export const markTranscriptItemsSeen = ({
   runtime,
   turns,
@@ -6206,6 +6220,60 @@ const isManagedDiscordThreadUsable = async ({
   }
 };
 
+export type ManagedDiscordThreadProjectabilityFailureReason =
+  | "archived"
+  | "not_sendable"
+  | "fetch_failed";
+
+export type ManagedDiscordThreadProjectability =
+  | {
+      projectable: true;
+    }
+  | {
+      projectable: false;
+      reason: ManagedDiscordThreadProjectabilityFailureReason;
+      error?: unknown;
+    };
+
+export const getManagedDiscordThreadProjectability = async ({
+  client,
+  threadId,
+}: {
+  client: Client;
+  threadId: string;
+}): Promise<ManagedDiscordThreadProjectability> => {
+  try {
+    const channel = await client.channels.fetch(threadId);
+
+    if (!isSendableChannel(channel)) {
+      return {
+        projectable: false,
+        reason: "not_sendable",
+      };
+    }
+
+    if (
+      "archived" in channel
+      && (channel as { archived?: unknown }).archived === true
+    ) {
+      return {
+        projectable: false,
+        reason: "archived",
+      };
+    }
+
+    return {
+      projectable: true,
+    };
+  } catch (error) {
+    return {
+      projectable: false,
+      reason: "fetch_failed",
+      error,
+    };
+  }
+};
+
 export const isManagedDiscordThreadProjectable = async ({
   client,
   threadId,
@@ -6213,24 +6281,12 @@ export const isManagedDiscordThreadProjectable = async ({
   client: Client;
   threadId: string;
 }) => {
-  try {
-    const channel = await client.channels.fetch(threadId);
+  const projectability = await getManagedDiscordThreadProjectability({
+    client,
+    threadId,
+  });
 
-    if (!isSendableChannel(channel)) {
-      return false;
-    }
-
-    if (
-      "archived" in channel
-      && (channel as { archived?: unknown }).archived === true
-    ) {
-      return false;
-    }
-
-    return true;
-  } catch {
-    return false;
-  }
+  return projectability.projectable;
 };
 
 const recoverStatusCardMessage = async (
@@ -6722,36 +6778,105 @@ const startCodeHelmRuntime = async (
     sessionRepo.updateState(session.discordThreadId, nextState);
   };
 
+  const loggedRemoteProjectionSkips = new Set<string>();
+
+  const logSkippedCodexRemoteProjection = ({
+    session,
+    operation,
+    reason,
+    error,
+  }: {
+    session: SessionRecord;
+    operation: string;
+    reason: ManagedDiscordThreadProjectabilityFailureReason | "session_lifecycle";
+    error?: unknown;
+  }) => {
+    const logKey = [
+      session.discordThreadId,
+      operation,
+      reason,
+    ].join(":");
+
+    if (loggedRemoteProjectionSkips.has(logKey)) {
+      return;
+    }
+
+    loggedRemoteProjectionSkips.add(logKey);
+
+    const metadata = {
+      operation,
+      discordThreadId: session.discordThreadId,
+      codexThreadId: session.codexThreadId,
+      sessionState: session.state,
+      lifecycleState: session.lifecycleState,
+      discordThreadProjectable: false,
+      projectionSkipReason: reason,
+    };
+
+    if (reason === "fetch_failed") {
+      logger.warn("Skipping Codex remote Discord projection because the Discord thread could not be fetched", {
+        ...metadata,
+        error,
+      });
+      return;
+    }
+
+    logger.debug("Skipping Codex remote Discord projection", metadata);
+  };
+
   const shouldProjectCodexRemoteEventForSession = async ({
     discord,
     session,
     operation,
+    runtime,
+    turnId,
   }: {
     discord: Client;
     session: SessionRecord;
     operation: string;
+    runtime?: Pick<TranscriptRuntime, "trustedExternalTurnIds" | "trustedForDiscordInput">;
+    turnId?: string;
   }) => {
     if (!shouldProjectManagedSessionDiscordSurface(session)) {
+      if (runtime) {
+        invalidateRuntimeTrustForSkippedRemoteProjection({
+          runtime,
+          turnId,
+        });
+      }
+      logSkippedCodexRemoteProjection({
+        session,
+        operation,
+        reason: "session_lifecycle",
+      });
       return false;
     }
 
-    const discordThreadProjectable = await isManagedDiscordThreadProjectable({
+    const discordThreadProjectability = await getManagedDiscordThreadProjectability({
       client: discord,
       threadId: session.discordThreadId,
     });
     const shouldProject = shouldProjectCodexRemoteEventToDiscord({
       session,
-      discordThreadProjectable,
+      discordThreadProjectable: discordThreadProjectability.projectable,
     });
 
     if (!shouldProject) {
-      logger.debug("Skipping Codex remote Discord projection", {
+      if (runtime) {
+        invalidateRuntimeTrustForSkippedRemoteProjection({
+          runtime,
+          turnId,
+        });
+      }
+      logSkippedCodexRemoteProjection({
+        session,
         operation,
-        discordThreadId: session.discordThreadId,
-        codexThreadId: session.codexThreadId,
-        sessionState: session.state,
-        lifecycleState: session.lifecycleState,
-        discordThreadProjectable,
+        reason: discordThreadProjectability.projectable
+          ? "session_lifecycle"
+          : discordThreadProjectability.reason,
+        error: discordThreadProjectability.projectable
+          ? undefined
+          : discordThreadProjectability.error,
       });
     }
 
@@ -6774,6 +6899,9 @@ const startCodeHelmRuntime = async (
     const runtime = ensureTranscriptRuntime(session.codexThreadId);
 
     if (!shouldProjectManagedSessionDiscordSurface(session)) {
+      invalidateRuntimeTrustForSkippedRemoteProjection({
+        runtime,
+      });
       stopDiscordTypingPulse(runtime);
       return;
     }
@@ -6782,6 +6910,9 @@ const startCodeHelmRuntime = async (
     const nextState = state ?? currentSessionState;
 
     if (currentSessionState === "degraded" || nextState === "degraded") {
+      invalidateRuntimeTrustForSkippedRemoteProjection({
+        runtime,
+      });
       stopDiscordTypingPulse(runtime);
       return;
     }
@@ -6804,6 +6935,7 @@ const startCodeHelmRuntime = async (
         discord,
         session,
         operation: "status-card-update",
+        runtime,
       })
     ) {
       stopDiscordTypingPulse(runtime);
@@ -7494,11 +7626,15 @@ const startCodeHelmRuntime = async (
     turnId: string;
     deleteIfEmpty?: boolean;
   }) => {
+    const runtime = ensureTranscriptRuntime(session.codexThreadId);
+
     if (session.state === "degraded" || !shouldProjectManagedSessionDiscordSurface(session)) {
+      invalidateRuntimeTrustForSkippedRemoteProjection({
+        runtime,
+        turnId,
+      });
       return;
     }
-
-    const runtime = ensureTranscriptRuntime(session.codexThreadId);
 
     if (shouldSkipStaleLiveTurnProcessUpdate({
       activeTurnId: runtime.activeTurnId,
@@ -7520,6 +7656,8 @@ const startCodeHelmRuntime = async (
         discord,
         session,
         operation: "live-process-update",
+        runtime,
+        turnId,
       })
     ) {
       return;
@@ -7594,8 +7732,16 @@ const startCodeHelmRuntime = async (
         discord,
         session,
         operation: "live-process-finalize",
+        runtime,
+        turnId,
       })
     ) {
+      if (session.state === "degraded") {
+        invalidateRuntimeTrustForSkippedRemoteProjection({
+          runtime,
+          turnId,
+        });
+      }
       runtime.seenItemIds.delete(getProcessTranscriptEntryId(turnId));
       runtime.turnProcessMessages.delete(turnId);
       return;
@@ -7643,6 +7789,10 @@ const startCodeHelmRuntime = async (
       ?? runtime.activeTurnId;
 
     if (!shouldProjectManagedSessionDiscordSurface(session)) {
+      invalidateRuntimeTrustForSkippedRemoteProjection({
+        runtime,
+        turnId: resolvedTurnId,
+      });
       runtime.itemTurnIds.delete(item.id);
       return;
     }
@@ -7657,6 +7807,8 @@ const startCodeHelmRuntime = async (
         discord,
         session,
         operation: "assistant-transcript-finalize",
+        runtime,
+        turnId: resolvedTurnId,
       })
     ) {
       runtime.itemTurnIds.delete(item.id);
@@ -7980,12 +8132,24 @@ const startCodeHelmRuntime = async (
         turnId,
       });
 
+      updateSessionStateIfWritable(session, "running");
+      if (
+        !await shouldProjectCodexRemoteEventForSession({
+          discord: bot.client,
+          session,
+          operation: "turn-started",
+          runtime,
+          turnId,
+        })
+      ) {
+        return;
+      }
+
       noteTrustedLiveExternalTurnStart({
         runtime,
         turnId,
       });
 
-      updateSessionStateIfWritable(session, "running");
       await updateStatusCard({
         discord: bot.client,
         session,
@@ -8108,6 +8272,12 @@ const startCodeHelmRuntime = async (
         if (isAgentMessageItem(item)) {
           runtime.itemTurnIds.delete(item.id);
         }
+        if (isUserMessageItem(item)) {
+          invalidateRuntimeTrustForSkippedRemoteProjection({
+            runtime,
+            turnId,
+          });
+        }
         return;
       }
 
@@ -8136,14 +8306,13 @@ const startCodeHelmRuntime = async (
         if (hasItemId(item)) {
           runtime.seenItemIds.add(item.id);
         }
+        if (isUserMessageItem(item)) {
+          invalidateRuntimeTrustForSkippedRemoteProjection({
+            runtime,
+            turnId,
+          });
+        }
         return;
-      }
-
-      if (isUserMessageItem(item)) {
-        noteTrustedLiveExternalTurnStart({
-          runtime,
-          turnId,
-        });
       }
 
       if (!shouldRelayLiveCompletedItemToTranscript(item)) {
@@ -8155,9 +8324,18 @@ const startCodeHelmRuntime = async (
           discord: bot.client,
           session,
           operation: "live-transcript-relay",
+          runtime,
+          turnId,
         })
       ) {
         return;
+      }
+
+      if (isUserMessageItem(item)) {
+        noteTrustedLiveExternalTurnStart({
+          runtime,
+          turnId,
+        });
       }
 
       const shouldTrackAsFinalizing =
@@ -8273,6 +8451,8 @@ const startCodeHelmRuntime = async (
           discord: bot.client,
           session,
           operation: "turn-completed",
+          runtime,
+          turnId,
         })
       ) {
         return;
