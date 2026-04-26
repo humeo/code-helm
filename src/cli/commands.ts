@@ -257,7 +257,7 @@ const defaultConfirmUpdate: CommandServices["confirmUpdate"] = async () => {
 const createDefaultServices = (
   env: Record<string, string | undefined>,
 ): CommandServices => ({
-  backgroundRuntimeTimeoutMs: 60_000,
+  backgroundRuntimeTimeoutMs: 15_000,
   disableAutostart: async () => disableAutostart(),
   enableAutostart: async () => enableAutostart({
     bunExecutablePath: process.execPath,

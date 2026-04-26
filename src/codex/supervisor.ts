@@ -74,6 +74,7 @@ export type StartManagedCodexAppServerOptions = {
 };
 
 export type StopManagedCodexAppServerOptions = {
+  killProcess?: (pid: number, signal: NodeJS.Signals) => void;
   timeoutMs?: number;
 };
 
@@ -206,7 +207,12 @@ const waitForChildExit = async (child: ChildProcessLike, timeoutMs: number) => {
       timeoutPromise,
     ]);
 
-    if (code !== 0 && signal !== "SIGTERM" && signal !== "SIGINT") {
+    if (
+      code !== 0
+      && signal !== "SIGTERM"
+      && signal !== "SIGINT"
+      && signal !== "SIGKILL"
+    ) {
       throw new CodexSupervisorError(
         "CODEX_APP_SERVER_FAILED_TO_STOP",
         `Managed Codex App Server exited uncleanly (code: ${String(code)}, signal: ${String(signal)}).`,
@@ -355,6 +361,7 @@ export const startManagedCodexAppServer = async (
       ["app-server", "--listen", address],
       {
         cwd: options.cwd,
+        detached: process.platform !== "win32",
         stdio: ["ignore", "pipe", "pipe"],
       },
     );
@@ -443,8 +450,23 @@ export const stopManagedCodexAppServer = async (
   }
 
   const timeoutMs = options.timeoutMs ?? 5_000;
-  const waitForExit = waitForChildExit(server.child, timeoutMs);
-  const didSignal = server.child.kill("SIGTERM");
+  const killProcess = options.killProcess ?? process.kill;
+  const signalServer = (signal: NodeJS.Signals) => {
+    if (process.platform !== "win32") {
+      try {
+        killProcess(-server.pid, signal);
+        return true;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
+          throw error;
+        }
+      }
+    }
+
+    return server.child.kill(signal);
+  };
+  const waitForTermExit = waitForChildExit(server.child, timeoutMs);
+  const didSignal = signalServer("SIGTERM");
 
   if (!didSignal) {
     throw new CodexSupervisorError(
@@ -453,5 +475,20 @@ export const stopManagedCodexAppServer = async (
     );
   }
 
-  await waitForExit;
+  try {
+    await waitForTermExit;
+  } catch (error) {
+    if (!(error instanceof CodexSupervisorError) || error.code !== "CODEX_APP_SERVER_STOP_TIMEOUT") {
+      throw error;
+    }
+
+    const waitForKillExit = waitForChildExit(server.child, timeoutMs);
+    const didForceSignal = signalServer("SIGKILL");
+
+    if (!didForceSignal) {
+      throw error;
+    }
+
+    await waitForKillExit;
+  }
 };

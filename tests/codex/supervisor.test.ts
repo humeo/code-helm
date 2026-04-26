@@ -196,11 +196,7 @@ test("stopManagedCodexAppServer sends SIGTERM and waits for a clean exit", async
 
 test("stopManagedCodexAppServer still succeeds when the child exits immediately on SIGTERM", async () => {
   const child = new ChildProcessStub(4242);
-  child.kill = (signal?: NodeJS.Signals | number) => {
-    child.killedSignals.push(signal ?? "SIGTERM");
-    child.emit("exit", 0, "SIGTERM");
-    return true;
-  };
+  const signals: Array<NodeJS.Signals | number> = [];
 
   const server = await startManagedCodexAppServer({
     resolveBinary: async () => "/usr/local/bin/codex",
@@ -212,9 +208,30 @@ test("stopManagedCodexAppServer still succeeds when the child exits immediately 
   await expect(
     stopManagedCodexAppServer(server, {
       timeoutMs: 100,
+      killProcess: (_pid, signal) => {
+        signals.push(signal);
+        child.emit("exit", 0, "SIGTERM");
+      },
     }),
   ).resolves.toBeUndefined();
-  expect(child.killedSignals).toEqual(["SIGTERM"]);
+  expect(signals).toEqual(["SIGTERM"]);
+});
+
+test("startManagedCodexAppServer starts the app-server in its own process group on Unix", async () => {
+  const child = new ChildProcessStub(4242);
+  let detached: boolean | undefined;
+
+  await startManagedCodexAppServer({
+    resolveBinary: async () => "/usr/local/bin/codex",
+    allocatePort: async () => 4511,
+    spawnProcess: (_command, _args, options) => {
+      detached = options.detached;
+      return child;
+    },
+    waitForReady: async () => {},
+  });
+
+  expect(detached).toBe(process.platform !== "win32");
 });
 
 test("stopManagedCodexAppServer returns a clear failure when the child does not exit", async () => {
@@ -229,8 +246,36 @@ test("stopManagedCodexAppServer returns a clear failure when the child does not 
   await expect(
     stopManagedCodexAppServer(server, {
       timeoutMs: 10,
+      killProcess: () => {},
     }),
   ).rejects.toMatchObject({
     code: "CODEX_APP_SERVER_STOP_TIMEOUT",
   } satisfies Partial<CodexSupervisorError>);
+});
+
+test("stopManagedCodexAppServer escalates to SIGKILL when SIGTERM does not exit", async () => {
+  const child = new ChildProcessStub(4242);
+  const signals: Array<NodeJS.Signals | number> = [];
+  const server = await startManagedCodexAppServer({
+    resolveBinary: async () => "/usr/local/bin/codex",
+    allocatePort: async () => 4511,
+    spawnProcess: () => child,
+    waitForReady: async () => {},
+  });
+
+  const stopPromise = stopManagedCodexAppServer(server, {
+    timeoutMs: 1,
+    killProcess: (_pid, signal) => {
+      signals.push(signal);
+
+      if (signal === "SIGKILL") {
+        queueMicrotask(() => {
+          child.emit("exit", null, "SIGKILL");
+        });
+      }
+    },
+  });
+
+  await expect(stopPromise).resolves.toBeUndefined();
+  expect(signals).toEqual(["SIGTERM", "SIGKILL"]);
 });

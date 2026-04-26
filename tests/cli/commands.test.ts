@@ -66,7 +66,7 @@ const createBaseServices = (): CommandServices => {
   };
 
   return {
-    backgroundRuntimeTimeoutMs: 60_000,
+    backgroundRuntimeTimeoutMs: 15_000,
     env: {},
     loadConfigStore: () => ({
       config: {
@@ -1294,7 +1294,7 @@ describe("runCliCommand", () => {
     expect(spawnedEnv?.CODE_HELM_SECRETS).toBeTruthy();
   });
 
-  test("start --daemon gives cold session restore enough time by default", async () => {
+  test("start --daemon keeps the parent readiness wait bounded by default", async () => {
     const paths = createPaths();
     let receivedTimeoutMs: number | undefined;
 
@@ -1349,7 +1349,7 @@ describe("runCliCommand", () => {
       },
     );
 
-    expect(receivedTimeoutMs).toBe(60_000);
+    expect(receivedTimeoutMs).toBe(15_000);
   });
 
   test("start --daemon stops the child when runtime state never appears", async () => {

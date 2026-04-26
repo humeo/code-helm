@@ -370,6 +370,8 @@ type TranscriptRuntime = {
 };
 
 const sessionSnapshotPollIntervalMs = 15_000;
+const startupSessionWarmupTimeoutMs = 10_000;
+const managedCodexAppServerStopTimeoutMs = 1_000;
 const discordTypingPulseIntervalMs = 8_000;
 const approvalAllowedMentions = {
   parse: [],
@@ -2990,13 +2992,42 @@ export const shouldProjectManagedSessionDiscordSurface = (
   return session.lifecycleState === "active";
 };
 
+const withStartupSessionTimeout = async <TResult>(
+  operation: Promise<TResult>,
+  timeoutMs: number | undefined,
+  message: string,
+) => {
+  if (timeoutMs === undefined) {
+    return operation;
+  }
+
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => {
+          reject(new Error(message));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  }
+};
+
 export const restoreManagedSessionSubscriptions = async ({
   sessions,
+  perSessionTimeoutMs,
   resumeThread,
   onThreadMissing,
   onWarning,
 }: {
   sessions: Array<Pick<SessionRecord, "codexThreadId" | "lifecycleState">>;
+  perSessionTimeoutMs?: number;
   resumeThread: (params: { threadId: string }) => Promise<unknown>;
   onThreadMissing?: (
     session: Pick<SessionRecord, "codexThreadId" | "lifecycleState">,
@@ -3012,16 +3043,28 @@ export const restoreManagedSessionSubscriptions = async ({
     }
 
     try {
-      await resumeThread({
-        threadId: session.codexThreadId,
-      });
+      await withStartupSessionTimeout(
+        (async () => {
+          try {
+            await resumeThread({
+              threadId: session.codexThreadId,
+            });
+          } catch (error) {
+            const disposition = getSnapshotReconciliationFailureDisposition(error);
+
+            if (disposition === "degrade-thread-missing") {
+              await onThreadMissing?.(session);
+              return;
+            }
+
+            throw error;
+          }
+        })(),
+        perSessionTimeoutMs,
+        `Startup restore timed out for managed session ${session.codexThreadId}.`,
+      );
     } catch (error) {
       const disposition = getSnapshotReconciliationFailureDisposition(error);
-
-      if (disposition === "degrade-thread-missing") {
-        await onThreadMissing?.(session);
-        continue;
-      }
 
       if (disposition === "warn") {
         await onWarning?.(session, error);
@@ -5813,6 +5856,7 @@ export type StartCodeHelmOptions = {
     options: {
       installSignalHandlers?: boolean;
       legacyWorkspaceBootstrap?: ReturnType<typeof resolveLegacyWorkspaceBootstrap>;
+      onCoreReady?: () => Promise<void> | void;
     },
   ) => Promise<StartedCodeHelmHandle>;
   stateDir?: string;
@@ -5833,6 +5877,7 @@ const startCodeHelmRuntime = async (
   options: {
     installSignalHandlers?: boolean;
     legacyWorkspaceBootstrap?: ReturnType<typeof resolveLegacyWorkspaceBootstrap>;
+    onCoreReady?: () => Promise<void> | void;
   } = {},
 ) => {
   const installSignalHandlers = options.installSignalHandlers ?? true;
@@ -7631,60 +7676,77 @@ const startCodeHelmRuntime = async (
   );
   await bot.start();
 
-  await restoreManagedSessionSubscriptions({
-    sessions: sessionRepo.listAll(),
-    resumeThread: async ({ threadId }) =>
-      codexClient.resumeThread({
-        threadId,
-      }),
-    onThreadMissing: async (session) => {
-      const refreshedSession = sessionRepo.getByCodexThreadId(session.codexThreadId);
+  await options.onCoreReady?.();
 
-      if (!refreshedSession) {
+  const warmManagedSessionsAtStartup = async () => {
+    await restoreManagedSessionSubscriptions({
+      sessions: sessionRepo.listAll(),
+      perSessionTimeoutMs: startupSessionWarmupTimeoutMs,
+      resumeThread: async ({ threadId }) =>
+        codexClient.resumeThread({
+          threadId,
+        }),
+      onThreadMissing: async (session) => {
+        const refreshedSession = sessionRepo.getByCodexThreadId(session.codexThreadId);
+
+        if (!refreshedSession || shuttingDown) {
+          return;
+        }
+
+        await degradeSessionToReadOnly({
+          discord: bot.client,
+          session: refreshedSession,
+          reason: "thread_missing",
+        });
+      },
+      onWarning: async (session, error) => {
+        logger.warn(
+          `Failed to restore thread event subscription for managed session ${session.codexThreadId}`,
+          error,
+        );
+      },
+    });
+
+    for (const session of sessionRepo.listAll()) {
+      if (shuttingDown) {
         return;
       }
 
-      await degradeSessionToReadOnly({
-        discord: bot.client,
-        session: refreshedSession,
-        reason: "thread_missing",
-      });
-    },
-    onWarning: async (session, error) => {
-      logger.warn(
-        `Failed to restore thread event subscription for managed session ${session.codexThreadId}`,
-        error,
-      );
-    },
-  });
-
-  for (const session of sessionRepo.listAll()) {
-    if (!shouldProjectManagedSessionDiscordSurface(session)) {
-      continue;
-    }
-
-    try {
-      await seedTranscriptRuntimeFromSnapshot(session);
-    } catch (error) {
-      const disposition = getSnapshotReconciliationFailureDisposition(error);
-
-      if (disposition === "degrade-thread-missing") {
-        await degradeSessionToReadOnly({
-          discord: bot.client,
-          session,
-          reason: "thread_missing",
-        });
+      if (!shouldProjectManagedSessionDiscordSurface(session)) {
         continue;
       }
 
-      if (disposition === "warn") {
-        logger.warn(
-          `Failed to seed transcript runtime for mapped session ${session.codexThreadId}`,
-          error,
+      try {
+        await withStartupSessionTimeout(
+          seedTranscriptRuntimeFromSnapshot(session),
+          startupSessionWarmupTimeoutMs,
+          `Startup transcript seed timed out for managed session ${session.codexThreadId}.`,
         );
+      } catch (error) {
+        const disposition = getSnapshotReconciliationFailureDisposition(error);
+
+        if (disposition === "degrade-thread-missing") {
+          await degradeSessionToReadOnly({
+            discord: bot.client,
+            session,
+            reason: "thread_missing",
+          });
+          continue;
+        }
+
+        if (disposition === "warn") {
+          logger.warn(
+            `Failed to seed transcript runtime for mapped session ${session.codexThreadId}`,
+            error,
+          );
+        }
       }
     }
-  }
+  };
+
+  void warmManagedSessionsAtStartup().catch((error) => {
+    logger.error("Managed session startup warmup failed", error);
+  });
 
   const snapshotPoll = setInterval(() => {
     void (async () => {
@@ -7810,7 +7872,35 @@ export const startCodeHelm = async (
   let runtimeConfig = config;
   let managedCodexAppServer: ManagedCodexAppServer | undefined;
   let runtimeHandle: StartedCodeHelmHandle | undefined;
+  let didPublishRuntimeSummary = false;
   let shuttingDown = false;
+
+  const publishReadyRuntimeSummary = () => {
+    if (!options.stateDir || didPublishRuntimeSummary) {
+      return;
+    }
+
+    publishRuntimeSummary({
+      stateDir: options.stateDir,
+      summary: {
+        pid: process.pid,
+        mode,
+        discord: {
+          guildId: runtimeConfig.discord.guildId,
+          controlChannelId: runtimeConfig.discord.controlChannelId,
+          connected: true,
+        },
+        codex: {
+          appServerAddress: runtimeConfig.codex.appServerUrl,
+          pid: managedCodexAppServer?.pid,
+          running: true,
+          startupState: "ready",
+        },
+        startedAt: new Date().toISOString(),
+      },
+    });
+    didPublishRuntimeSummary = true;
+  };
 
   if (options.stateDir) {
     acquireLock({
@@ -7840,29 +7930,10 @@ export const startCodeHelm = async (
     runtimeHandle = await startRuntime(runtimeConfig, {
       installSignalHandlers: false,
       legacyWorkspaceBootstrap: options.legacyWorkspaceBootstrap,
+      onCoreReady: publishReadyRuntimeSummary,
     });
 
-    if (options.stateDir) {
-      publishRuntimeSummary({
-        stateDir: options.stateDir,
-        summary: {
-          pid: process.pid,
-          mode,
-          discord: {
-            guildId: runtimeConfig.discord.guildId,
-            controlChannelId: runtimeConfig.discord.controlChannelId,
-            connected: true,
-          },
-          codex: {
-            appServerAddress: runtimeConfig.codex.appServerUrl,
-            pid: managedCodexAppServer?.pid,
-            running: true,
-            startupState: "ready",
-          },
-          startedAt: new Date().toISOString(),
-        },
-      });
-    }
+    publishReadyRuntimeSummary();
   } catch (error) {
     if (runtimeHandle) {
       await runtimeHandle.stop().catch((stopError) => {
@@ -7894,7 +7965,9 @@ export const startCodeHelm = async (
       await runtimeHandle?.stop();
     } finally {
       if (managedCodexAppServer) {
-        await managedCodexAppServer.stop().catch((error) => {
+        await managedCodexAppServer.stop({
+          timeoutMs: managedCodexAppServerStopTimeoutMs,
+        }).catch((error) => {
           logger.error("Failed to stop managed Codex App Server cleanly", error);
         });
       }

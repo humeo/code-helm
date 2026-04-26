@@ -82,6 +82,7 @@ import {
   recoverStatusCardMessageFromHistory,
   resolveResumeAttachmentKind,
   readActiveTurnIdFromThreadReadResult,
+  restoreManagedSessionSubscriptions,
   getPendingLocalInputTexts,
   getQueuedSteerInputs,
   shouldPollSnapshotForSessionState,
@@ -1033,6 +1034,47 @@ test("startCodeHelm stops the started runtime when runtime-state publication fai
   expect(clearedStateDirs).toEqual(["/tmp/codehelm-state"]);
 });
 
+test("startCodeHelm publishes runtime state when the runtime core is ready", async () => {
+  const writes: Array<{ stateDir: string }> = [];
+  let releaseRuntime: () => void = () => {};
+  const runtimeCanReturn = new Promise<void>((resolve) => {
+    releaseRuntime = resolve;
+  });
+
+  const startPromise = startCodeHelm(createAppConfig(), {
+    installSignalHandlers: false,
+    stateDir: "/tmp/codehelm-state",
+    acquireInstanceLock: () => ({
+      pid: process.pid,
+      cleanedStaleState: false,
+    }),
+    writeRuntimeSummary: ({ stateDir }) => {
+      writes.push({ stateDir });
+    },
+    startRuntime: async (config, options) => {
+      await (options as {
+        onCoreReady?: () => Promise<void> | void;
+      }).onCoreReady?.();
+      await runtimeCanReturn;
+
+      return {
+        config,
+        stop: async () => {},
+      };
+    },
+  });
+
+  await Bun.sleep(0);
+
+  try {
+    expect(writes).toEqual([{ stateDir: "/tmp/codehelm-state" }]);
+  } finally {
+    releaseRuntime();
+    const handle = await startPromise;
+    await handle.stop();
+  }
+});
+
 test("startCodeHelm does not enter a running runtime when managed Codex startup stays delayed", async () => {
   const clearedStateDirs: string[] = [];
   let startedRuntime = false;
@@ -1138,6 +1180,34 @@ test("startCodeHelm starts managed Codex App Server in background using dedicate
   await handle.stop();
 
   expect(receivedCwd).toBe(resolveCodeHelmPaths().appServerWorkdir);
+});
+
+test("startCodeHelm stops the managed Codex App Server within the CLI stop window", async () => {
+  let receivedStopTimeoutMs: number | undefined;
+
+  const handle = await startCodeHelm({
+    ...createAppConfig(),
+    codex: {
+      appServerUrl: DEFAULT_CODEX_APP_SERVER_URL,
+    },
+  }, {
+    installSignalHandlers: false,
+    startManagedCodexAppServer: async () => ({
+      pid: 999,
+      address: "ws://127.0.0.1:4511",
+      stop: async (options = {}) => {
+        receivedStopTimeoutMs = options.timeoutMs;
+      },
+    }),
+    startRuntime: async (config) => ({
+      config,
+      stop: async () => {},
+    }),
+  });
+
+  await handle.stop();
+
+  expect(receivedStopTimeoutMs).toBe(1_000);
 });
 
 test("applyDiscordReplyReference leaves non-reply payloads unchanged", () => {
@@ -4293,6 +4363,38 @@ test("managed session thread input is blocked for archived and deleted lifecycle
       }),
     ),
   ).toBe(false);
+});
+
+test("startup session subscription restore warns and continues after a per-session timeout", async () => {
+  const calls: string[] = [];
+  const warnings: string[] = [];
+
+  await restoreManagedSessionSubscriptions({
+    sessions: [
+      createSessionRecord({
+        codexThreadId: "slow-thread",
+      }),
+      createSessionRecord({
+        codexThreadId: "next-thread",
+      }),
+    ],
+    perSessionTimeoutMs: 1,
+    resumeThread: async ({ threadId }) => {
+      calls.push(threadId);
+
+      if (threadId === "slow-thread") {
+        await new Promise(() => {});
+      }
+    },
+    onWarning: (session, error) => {
+      warnings.push(`${session.codexThreadId}:${(error as Error).message}`);
+    },
+  });
+
+  expect(calls).toEqual(["slow-thread", "next-thread"]);
+  expect(warnings).toHaveLength(1);
+  expect(warnings[0]).toContain("slow-thread");
+  expect(warnings[0]).toContain("timed out");
 });
 
 test("archived owner message resumes first and only forwards when the synced session is ready", async () => {
