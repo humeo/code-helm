@@ -55,6 +55,7 @@ describe("resolveCodeHelmPaths", () => {
       secretsPath: join(homeDir, ".config", "code-helm", "secrets.toml"),
       databasePath: join(homeDir, ".local", "share", "code-helm", "codehelm.sqlite"),
       stateDir: `${join(homeDir, ".local", "state", "code-helm")}/`,
+      logDir: join(homeDir, ".local", "state", "code-helm", "logs"),
       appServerWorkdir: join(homeDir, ".codehelm", "workdir"),
     });
   });
@@ -68,6 +69,17 @@ describe("resolveCodeHelmPaths", () => {
       },
       homeDir,
     }).databasePath).toBe(join(homeDir, "custom", "codehelm.sqlite"));
+  });
+
+  test("honors CODE_HELM_LOG_DIR overrides", () => {
+    const homeDir = createTempDir();
+
+    expect(resolveCodeHelmPaths({
+      env: {
+        CODE_HELM_LOG_DIR: "~/custom/codehelm-logs",
+      },
+      homeDir,
+    }).logDir).toBe(join(homeDir, "custom", "codehelm-logs"));
   });
 });
 

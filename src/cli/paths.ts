@@ -14,6 +14,7 @@ export type CodeHelmPaths = {
   secretsPath: string;
   databasePath: string;
   stateDir: string;
+  logDir: string;
   appServerWorkdir: string;
 };
 
@@ -38,11 +39,14 @@ export const resolveCodeHelmPaths = (
   const env = options.env ?? {};
   const homeDir = options.homeDir ?? homedir();
 
+  const stateDir = expandHomePath(DEFAULT_STATE_DIR, homeDir);
+
   return {
     configPath: expandHomePath(env.CODE_HELM_CONFIG ?? DEFAULT_CONFIG_PATH, homeDir),
     secretsPath: expandHomePath(env.CODE_HELM_SECRETS ?? DEFAULT_SECRETS_PATH, homeDir),
     databasePath: expandHomePath(env.CODE_HELM_DATABASE_PATH ?? DEFAULT_DATABASE_PATH, homeDir),
-    stateDir: expandHomePath(DEFAULT_STATE_DIR, homeDir),
+    stateDir,
+    logDir: expandHomePath(env.CODE_HELM_LOG_DIR ?? join(stateDir, "logs"), homeDir),
     appServerWorkdir: expandHomePath(DEFAULT_APP_SERVER_WORKDIR, homeDir),
   };
 };

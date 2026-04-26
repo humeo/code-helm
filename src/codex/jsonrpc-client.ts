@@ -1,5 +1,5 @@
 import { EventRouter } from "./event-router";
-import { logger } from "../logger";
+import { logger, type CodeHelmLogger } from "../logger";
 import { readPackageMetadata } from "../package-metadata";
 import {
   isApprovalRequestMethod,
@@ -180,6 +180,7 @@ export class JsonRpcClient {
   private readonly eventRouter = new EventRouter<RoutedEventMap>();
   private readonly pendingRequests = new Map<JsonRpcId, PendingRequest>();
   private readonly pendingApprovalRequests = new Map<JsonRpcId, ApprovalRequestEvent>();
+  private readonly log: CodeHelmLogger;
 
   private nextRequestId = 1;
   private initializePromise: Promise<void> | undefined;
@@ -192,17 +193,26 @@ export class JsonRpcClient {
     private readonly url: string,
     options: JsonRpcClientOptions = {},
   ) {
+    this.log = logger.child({
+      component: "codex",
+      operation: "jsonrpc",
+      appServerAddress: url,
+    });
     this.transport = options.transport ?? new WebSocketTransport(url);
     this.transport.setHandlers({
       onMessage: (message) => {
         this.handleRawMessage(message);
       },
       onClose: () => {
+        this.log.warn("JSON-RPC transport closed", {
+          pendingRequestCount: this.pendingRequests.size,
+        });
         this.rejectPendingRequests(new Error("JSON-RPC transport closed"));
         this.isInitialized = false;
         this.initializePromise = undefined;
       },
       onError: (error) => {
+        this.log.error("JSON-RPC transport error", error);
         this.rejectPendingRequests(
           error instanceof Error
             ? error
@@ -235,12 +245,14 @@ export class JsonRpcClient {
       await this.sendRequest("initialize", initializeParams);
       this.sendNotification("initialized", {});
       this.isInitialized = true;
+      this.log.info("JSON-RPC client initialized");
     })();
 
     try {
       await this.initializePromise;
       this.initializePromise = undefined;
     } catch (error) {
+      this.log.error("JSON-RPC client initialization failed", error);
       this.initializePromise = undefined;
       throw error;
     }
@@ -340,6 +352,10 @@ export class JsonRpcClient {
       }
 
       this.pendingRequests.delete(failure.id);
+      this.log.warn("JSON-RPC request failed", {
+        requestId: failure.id,
+        error: failure.error,
+      });
       pendingRequest.reject(new Error(failure.error.message));
     }
   }

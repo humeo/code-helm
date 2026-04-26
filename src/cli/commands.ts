@@ -24,6 +24,7 @@ import {
 import { CodexSupervisorError } from "../codex/supervisor";
 import { loadAppConfig, type AppConfig } from "../config";
 import { resolveLegacyWorkspaceBootstrap, startCodeHelm } from "../index";
+import { initializeLogger, logger, shutdownLogger } from "../logger";
 import {
   createDefaultDiscoveryServices,
   createOnboardingUi,
@@ -168,10 +169,32 @@ const defaultStartForeground: CommandServices["startForeground"] = ({
   legacyWorkspaceBootstrap,
   stateDir,
 }) => {
+  initializeLogger({
+    env: process.env as Record<string, string | undefined>,
+    console: "pretty",
+  });
+
   return startCodeHelm(config, {
     legacyWorkspaceBootstrap,
     mode: "foreground",
     stateDir,
+  }).then((handle) => {
+    const stop = handle.stop;
+
+    return {
+      ...handle,
+      stop: async () => {
+        try {
+          await stop();
+        } finally {
+          shutdownLogger();
+        }
+      },
+    };
+  }).catch((error) => {
+    logger.error("CodeHelm foreground startup failed", error);
+    shutdownLogger();
+    throw error;
   });
 };
 

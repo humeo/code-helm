@@ -33,6 +33,7 @@ const createPaths = () => {
     secretsPath: join(root, "config", "secrets.toml"),
     databasePath: join(root, "data", "codehelm.sqlite"),
     stateDir: join(root, "state"),
+    logDir: join(root, "state", "logs"),
     appServerWorkdir: join(root, ".codehelm", "workdir"),
   };
 };

@@ -3,6 +3,7 @@ import { once } from "node:events";
 import { mkdirSync } from "node:fs";
 import { createServer } from "node:net";
 import { promisify } from "node:util";
+import { logger } from "../logger";
 
 const execFileAsync = promisify(execFile);
 
@@ -341,6 +342,10 @@ export const detectCodexBinary = async (
 export const startManagedCodexAppServer = async (
   options: StartManagedCodexAppServerOptions = {},
 ): Promise<ManagedCodexAppServer> => {
+  const log = logger.child({
+    component: "codex",
+    operation: "managed-app-server",
+  });
   const binaryPath = await detectCodexBinary({
     resolveBinary: options.resolveBinary,
   });
@@ -350,6 +355,11 @@ export const startManagedCodexAppServer = async (
   const port = await allocatePort();
   const address = `ws://127.0.0.1:${port}`;
   let child: ChildProcessLike;
+
+  log.info("Starting managed Codex App Server", {
+    appServerAddress: address,
+    cwd: options.cwd,
+  });
 
   if (options.cwd) {
     mkdirSync(options.cwd, { recursive: true });
@@ -367,6 +377,11 @@ export const startManagedCodexAppServer = async (
     );
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
+    log.error("Managed Codex App Server spawn failed", {
+      appServerAddress: address,
+      cwd: options.cwd,
+      error,
+    });
 
     throw createStartupFailureError({
       message: `Managed Codex App Server failed before becoming ready: ${detail}`,
@@ -382,6 +397,9 @@ export const startManagedCodexAppServer = async (
   });
 
   if (!child.pid) {
+    log.error("Managed Codex App Server did not expose a child pid", {
+      appServerAddress: address,
+    });
     throw createStartupFailureError({
       message: "Managed Codex App Server did not expose a child pid.",
       startupDisposition: "failed",
@@ -401,6 +419,12 @@ export const startManagedCodexAppServer = async (
       getDiagnostics,
     });
   } catch (error) {
+    log.error("Managed Codex App Server readiness failed", {
+      appServerAddress: address,
+      appServerPid: child.pid,
+      diagnostics: getDiagnostics(),
+      error,
+    });
     await stopManagedCodexAppServer(
       {
         pid: child.pid,
@@ -424,6 +448,11 @@ export const startManagedCodexAppServer = async (
       diagnostics: getDiagnostics() ?? detail,
     });
   }
+
+  log.info("Managed Codex App Server ready", {
+    appServerAddress: address,
+    appServerPid: child.pid,
+  });
 
   return {
     pid: child.pid,

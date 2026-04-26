@@ -157,7 +157,7 @@ import {
   type CodexTurnInput,
   type StartThreadTurnDecision,
 } from "./discord/thread-handler";
-import { logger } from "./logger";
+import { initializeLogger, logger, shutdownLogger } from "./logger";
 
 const approvalButtonPrefix = "approval";
 const approvalComponentRowLimit = 5;
@@ -6614,7 +6614,11 @@ const startCodeHelmRuntime = async (
   const bot = createDiscordBot({
     token: config.discord.botToken,
     services,
-    logger,
+    logger: logger.child({
+      component: "discord",
+      discordGuildId: config.discord.guildId,
+      discordChannelId: config.discord.controlChannelId,
+    }),
     onUnhandledInteraction: async (interaction) => {
       await handleManagedSessionCommand(interaction, managedSessionServices);
     },
@@ -7874,6 +7878,11 @@ export const startCodeHelm = async (
   let runtimeHandle: StartedCodeHelmHandle | undefined;
   let didPublishRuntimeSummary = false;
   let shuttingDown = false;
+  const runtimeLogger = logger.child({
+    component: "runtime",
+    operation: "start",
+    mode,
+  });
 
   const publishReadyRuntimeSummary = () => {
     if (!options.stateDir || didPublishRuntimeSummary) {
@@ -7900,13 +7909,23 @@ export const startCodeHelm = async (
       },
     });
     didPublishRuntimeSummary = true;
+    runtimeLogger.info("CodeHelm runtime summary published", {
+      stateDir: options.stateDir,
+      appServerAddress: runtimeConfig.codex.appServerUrl,
+      appServerPid: managedCodexAppServer?.pid,
+    });
   };
 
   if (options.stateDir) {
-    acquireLock({
+    const lock = acquireLock({
       stateDir: options.stateDir,
       pid: process.pid,
       isPidAlive,
+    });
+    runtimeLogger.info("CodeHelm instance lock acquired", {
+      stateDir: options.stateDir,
+      pid: lock.pid,
+      cleanedStaleState: lock.cleanedStaleState,
     });
   }
 
@@ -7915,8 +7934,15 @@ export const startCodeHelm = async (
       const managedAppServerCwd = mode === "background"
         ? resolveCodeHelmPaths().appServerWorkdir
         : process.cwd();
+      runtimeLogger.info("Starting managed Codex App Server", {
+        cwd: managedAppServerCwd,
+      });
       managedCodexAppServer = await startManagedServer({
         cwd: managedAppServerCwd,
+      });
+      runtimeLogger.info("Managed Codex App Server ready", {
+        appServerAddress: managedCodexAppServer.address,
+        appServerPid: managedCodexAppServer.pid,
       });
       runtimeConfig = {
         ...runtimeConfig,
@@ -7934,7 +7960,15 @@ export const startCodeHelm = async (
     });
 
     publishReadyRuntimeSummary();
+    runtimeLogger.info("CodeHelm runtime ready", {
+      discordGuildId: runtimeConfig.discord.guildId,
+      discordChannelId: runtimeConfig.discord.controlChannelId,
+      appServerAddress: runtimeConfig.codex.appServerUrl,
+      appServerPid: managedCodexAppServer?.pid,
+    });
   } catch (error) {
+    runtimeLogger.error("CodeHelm runtime startup failed", error);
+
     if (runtimeHandle) {
       await runtimeHandle.stop().catch((stopError) => {
         logger.error("Failed to stop CodeHelm runtime after startup failure", stopError);
@@ -7960,6 +7994,7 @@ export const startCodeHelm = async (
     }
 
     shuttingDown = true;
+    runtimeLogger.info("Stopping CodeHelm runtime");
 
     try {
       await runtimeHandle?.stop();
@@ -7975,6 +8010,7 @@ export const startCodeHelm = async (
       if (options.stateDir) {
         clearState({ stateDir: options.stateDir });
       }
+      runtimeLogger.info("CodeHelm runtime stopped");
     }
   };
 
@@ -7998,18 +8034,37 @@ export const startCodeHelm = async (
 export const loadAndStartCodeHelmFromProcess = async (
   env: Record<string, string | undefined> = Bun.env,
 ) => {
+  const mode = env.CODE_HELM_DAEMON_MODE === "background" ? "background" : "foreground";
+
+  initializeLogger({
+    env,
+    console: mode === "background" ? false : "pretty",
+  });
+
   const config = parseConfig(env);
 
   if (config.DISCORD_APP_ID === DEFAULT_DISCORD_APP_ID) {
     throw new Error("CodeHelm configuration is not ready for daemon startup: DISCORD_APP_ID is unresolved");
   }
 
-  return startCodeHelm(config, {
+  const handle = await startCodeHelm(config, {
     installSignalHandlers: true,
     legacyWorkspaceBootstrap: resolveLegacyWorkspaceBootstrap(env),
-    mode: env.CODE_HELM_DAEMON_MODE === "background" ? "background" : "foreground",
+    mode,
     stateDir: resolveCodeHelmPaths({ env }).stateDir,
   });
+  const stop = handle.stop;
+
+  return {
+    ...handle,
+    stop: async () => {
+      try {
+        await stop();
+      } finally {
+        shutdownLogger();
+      }
+    },
+  };
 };
 
 if (import.meta.main) {
@@ -8019,6 +8074,12 @@ if (import.meta.main) {
     })
     .catch((error) => {
       logger.error("CodeHelm failed to start", error);
+      if (error instanceof Error) {
+        console.error(error.message);
+      } else {
+        console.error(String(error));
+      }
+      shutdownLogger();
       process.exitCode = 1;
     });
 }
