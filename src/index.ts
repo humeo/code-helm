@@ -1956,6 +1956,41 @@ const buildTranscriptRuntime = (): TranscriptRuntime => {
   };
 };
 
+export const applyRemoteTurnCompletionRuntimeCleanup = ({
+  runtime,
+  turnId,
+}: {
+  runtime: Pick<
+    TranscriptRuntime,
+    | "activeTurnId"
+    | "closedTurnIds"
+    | "statusActivity"
+    | "statusCommand"
+    | "turnReplyMessageIds"
+    | "typingActive"
+    | "typingTimeout"
+  >;
+  turnId?: string;
+}) => {
+  if (turnId) {
+    runtime.closedTurnIds.add(turnId);
+    runtime.turnReplyMessageIds.delete(turnId);
+
+    if (runtime.activeTurnId === turnId) {
+      runtime.activeTurnId = undefined;
+    }
+  }
+
+  runtime.statusActivity = undefined;
+  runtime.statusCommand = undefined;
+  runtime.typingActive = false;
+
+  if (runtime.typingTimeout) {
+    clearTimeout(runtime.typingTimeout);
+    runtime.typingTimeout = undefined;
+  }
+};
+
 const isUnavailableAccountRateLimitsError = (error: unknown) => {
   if (!(error instanceof Error)) {
     return false;
@@ -3975,6 +4010,7 @@ export const reconcileResumedApprovalState = async ({
 export const reconcileApprovalResolutionSurface = async ({
   approval,
   session,
+  discordThreadProjectable = true,
   currentThreadMessage,
   currentThreadMessagePromise,
   recoverThreadMessage,
@@ -3996,11 +4032,64 @@ export const reconcileApprovalResolutionSurface = async ({
     | "resolvedElsewhere"
   >;
   session?: Pick<SessionRecord, "lifecycleState"> | null;
+  discordThreadProjectable?: boolean;
   currentThreadMessage?: ApprovalLifecycleMessage;
   currentThreadMessagePromise?: Promise<ApprovalLifecycleMessage | undefined>;
   recoverThreadMessage: () => Promise<ApprovalLifecycleMessage | undefined>;
   sendThreadMessage: (payload: DiscordChannelMessagePayload) => Promise<ApprovalLifecycleMessage | undefined>;
 }) => {
+  return projectApprovalLifecycleMessage({
+    approval,
+    session,
+    discordThreadProjectable,
+    currentThreadMessage,
+    currentThreadMessagePromise,
+    recoverThreadMessage,
+    sendThreadMessage,
+  });
+};
+
+export const projectApprovalLifecycleMessage = async ({
+  approval,
+  session,
+  discordThreadProjectable,
+  currentThreadMessage,
+  currentThreadMessagePromise,
+  recoverThreadMessage,
+  sendThreadMessage,
+}: {
+  approval: Pick<
+    ApprovalRecord,
+    | "approvalKey"
+    | "requestId"
+    | "status"
+    | "displayTitle"
+    | "commandPreview"
+    | "justification"
+    | "cwd"
+    | "requestKind"
+    | "decisionCatalog"
+    | "resolvedProviderDecision"
+    | "resolvedBySurface"
+    | "resolvedElsewhere"
+  >;
+  session?: Pick<SessionRecord, "lifecycleState"> | null;
+  discordThreadProjectable: boolean;
+  currentThreadMessage?: ApprovalLifecycleMessage;
+  currentThreadMessagePromise?: Promise<ApprovalLifecycleMessage | undefined>;
+  recoverThreadMessage: () => Promise<ApprovalLifecycleMessage | undefined>;
+  sendThreadMessage: (payload: DiscordChannelMessagePayload) => Promise<ApprovalLifecycleMessage | undefined>;
+}) => {
+  if (
+    !session
+    || !shouldProjectCodexRemoteEventToDiscord({
+      session,
+      discordThreadProjectable,
+    })
+  ) {
+    return undefined;
+  }
+
   return upsertApprovalLifecycleMessage({
     currentMessage: currentThreadMessage,
     currentMessagePromise: currentThreadMessagePromise,
@@ -4009,10 +4098,7 @@ export const reconcileApprovalResolutionSurface = async ({
       approvalKey: approval.approvalKey,
       approval,
     }),
-    sendMessage:
-      session && shouldProjectManagedSessionDiscordSurface(session)
-        ? sendThreadMessage
-        : async () => undefined,
+    sendMessage: sendThreadMessage,
   });
 };
 
@@ -8162,15 +8248,12 @@ const startCodeHelmRuntime = async (
       }
 
       const runtime = ensureTranscriptRuntime(session.codexThreadId);
+      applyRemoteTurnCompletionRuntimeCleanup({
+        runtime,
+        turnId,
+      });
 
       if (turnId) {
-        runtime.closedTurnIds.add(turnId);
-        runtime.turnReplyMessageIds.delete(turnId);
-
-        if (runtime.activeTurnId === turnId) {
-          runtime.activeTurnId = undefined;
-        }
-
         await finalizeTurnProcessState({
           discord: bot.client,
           session,
@@ -8308,23 +8391,22 @@ const startCodeHelmRuntime = async (
       if (!isReadOnlySession) {
         updateSessionStateIfWritable(session, "waiting-approval");
       }
-      if (!shouldProjectManagedSessionDiscordSurface(session)) {
-        logger.debug("Skipping approval Discord projection for non-projectable session", {
-          method,
-          requestId: approval.requestId,
-          approvalKey,
-          discordThreadId: session.discordThreadId,
-          sessionState: session.state,
-          lifecycleState: session.lifecycleState,
-        });
-        return;
-      }
 
       const runtime = ensureTranscriptRuntime(session.codexThreadId);
       const approvalTurnId = event.turnId ?? runtime.activeTurnId;
 
       if (approvalTurnId) {
         runtime.activeTurnId = approvalTurnId;
+      }
+
+      if (
+        !await shouldProjectCodexRemoteEventForSession({
+          discord: bot.client,
+          session,
+          operation: "approval-request",
+        })
+      ) {
+        return;
       }
 
       if (!isReadOnlySession) {
@@ -8336,10 +8418,13 @@ const startCodeHelmRuntime = async (
       }
       const lifecycleState = approvalThreadMessages.get(approvalKey) ?? {};
       try {
-        const pendingMessagePromise = upsertApprovalLifecycleMessage({
-          currentMessage: lifecycleState.message,
-          currentMessagePromise: lifecycleState.pendingMessage,
-          recoverMessage: async () =>
+        const pendingMessagePromise = projectApprovalLifecycleMessage({
+          approval,
+          session,
+          discordThreadProjectable: true,
+          currentThreadMessage: lifecycleState.message,
+          currentThreadMessagePromise: lifecycleState.pendingMessage,
+          recoverThreadMessage: async () =>
             recoverApprovalLifecycleMessage(
               bot.client,
               session.discordThreadId,
@@ -8349,11 +8434,7 @@ const startCodeHelmRuntime = async (
                 threadMessageId: approval.threadMessageId,
               },
             ),
-          payload: renderApprovalLifecyclePayload({
-            approvalKey,
-            approval,
-          }),
-          sendMessage: async (payload) =>
+          sendThreadMessage: async (payload) =>
             sendTextToChannel(
               bot.client,
               session.discordThreadId,
@@ -8474,6 +8555,17 @@ const startCodeHelmRuntime = async (
 
       const session = sessionRepo.getByDiscordThreadId(storedApproval.discordThreadId);
 
+      if (
+        !session
+        || !await shouldProjectCodexRemoteEventForSession({
+          discord: bot.client,
+          session,
+          operation: "approval-resolution",
+        })
+      ) {
+        return;
+      }
+
       const lifecycleState = approvalThreadMessages.get(storedApproval.approvalKey) ?? {};
       const allowRequestIdFallback = shouldAllowLegacyApprovalRequestIdFallback({
         approvalRepo,
@@ -8482,6 +8574,7 @@ const startCodeHelmRuntime = async (
       const resolvedMessagePromise = reconcileApprovalResolutionSurface({
         approval: storedApproval,
         session,
+        discordThreadProjectable: true,
         currentThreadMessage: lifecycleState.message,
         currentThreadMessagePromise: lifecycleState.pendingMessage,
         recoverThreadMessage: async () =>

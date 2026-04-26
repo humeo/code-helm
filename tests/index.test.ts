@@ -291,6 +291,60 @@ const createProjectableThreadTestClient = (
   },
 }) as never;
 
+type ProjectApprovalLifecycleMessageForTest = (input: {
+  approval: ApprovalRecord;
+  session?: Pick<SessionRecord, "lifecycleState"> | null;
+  discordThreadProjectable: boolean;
+  currentThreadMessage?: {
+    content: string;
+    edit(payload: unknown): Promise<unknown>;
+  };
+  currentThreadMessagePromise?: Promise<
+    | {
+        content: string;
+        edit(payload: unknown): Promise<unknown>;
+      }
+    | undefined
+  >;
+  recoverThreadMessage: () => Promise<
+    | {
+        content: string;
+        edit(payload: unknown): Promise<unknown>;
+      }
+    | undefined
+  >;
+  sendThreadMessage: (payload: unknown) => Promise<
+    | {
+        content: string;
+        edit(payload: unknown): Promise<unknown>;
+      }
+    | undefined
+  >;
+}) => Promise<unknown>;
+
+const getProjectApprovalLifecycleMessageForTest = () => {
+  const helper = (codeHelmIndex as typeof codeHelmIndex & {
+    projectApprovalLifecycleMessage?: ProjectApprovalLifecycleMessageForTest;
+  }).projectApprovalLifecycleMessage;
+
+  expect(typeof helper).toBe("function");
+  return helper as ProjectApprovalLifecycleMessageForTest;
+};
+
+type ApplyRemoteTurnCompletionRuntimeCleanupForTest = (input: {
+  runtime: ReturnType<typeof createRelayTranscriptRuntime>;
+  turnId?: string;
+}) => void;
+
+const getApplyRemoteTurnCompletionRuntimeCleanupForTest = () => {
+  const helper = (codeHelmIndex as typeof codeHelmIndex & {
+    applyRemoteTurnCompletionRuntimeCleanup?: ApplyRemoteTurnCompletionRuntimeCleanupForTest;
+  }).applyRemoteTurnCompletionRuntimeCleanup;
+
+  expect(typeof helper).toBe("function");
+  return helper as ApplyRemoteTurnCompletionRuntimeCleanupForTest;
+};
+
 type HandleActiveManagedThreadDiscordInputForTest = (input: {
   session: SessionRecord;
   authorId: string;
@@ -342,13 +396,13 @@ const createRelayTranscriptRuntime = () => ({
   trustedExternalTurnIds: new Set<string>(),
   closedTurnIds: new Set<string>(),
   typingActive: false,
-  typingTimeout: undefined,
+  typingTimeout: undefined as ReturnType<typeof setTimeout> | undefined,
   turnProcessMessages: new Map(),
   itemTurnIds: new Map<string, string>(),
   activeTurnId: undefined as string | undefined,
   statusMessage: undefined,
-  statusActivity: undefined,
-  statusCommand: undefined,
+  statusActivity: undefined as string | undefined,
+  statusCommand: undefined as string | undefined,
   attemptedStatusRecovery: false,
   pendingStatusUpdate: undefined,
   threadTokenUsage: undefined,
@@ -6002,6 +6056,126 @@ test("remote live event handlers do not read snapshots for projection decisions"
   expect(remoteHandlersBlock).not.toContain("readRecentThreadForRuntimeSnapshotReconciliation");
 });
 
+test("approval request projection skips non-projectable Discord threads after persistence and runtime mapping", async () => {
+  const db = createDatabaseClient(":memory:");
+  applyMigrations(db);
+  const sessionRepo = createSessionRepo(db);
+  const approvalRepo = createApprovalRepo(db);
+  const runtimeApprovalKeysByRequestId = new Map<string, Set<string>>();
+  const runtimeProviderRequestIdsByApprovalKey = new Map<string, string | number>();
+  const calls: string[] = [];
+  const projectApprovalLifecycleMessage =
+    getProjectApprovalLifecycleMessageForTest();
+
+  sessionRepo.insert({
+    discordThreadId: "discord-thread-1",
+    codexThreadId: "codex-1",
+    ownerDiscordUserId: "owner-1",
+    cwd: "/tmp/ws1/app",
+    state: "waiting-approval",
+  });
+
+  const approval = persistApprovalRequestSnapshot({
+    approvalRepo,
+    session: createSessionRecord({
+      codexThreadId: "codex-1",
+      discordThreadId: "discord-thread-1",
+      lifecycleState: "active",
+    }),
+    method: "item/commandExecution/requestApproval",
+    event: {
+      requestId: "req-7",
+      threadId: "codex-1",
+      turnId: "turn-1",
+      itemId: "call-1",
+      cmd: "touch c.txt",
+      cwd: "/tmp/ws1/app",
+    },
+  });
+
+  rememberRuntimeApprovalRequest(runtimeApprovalKeysByRequestId, approval, {
+    providerRequestId: "req-7",
+    runtimeProviderRequestIdsByApprovalKey,
+  });
+
+  await projectApprovalLifecycleMessage({
+    approval,
+    session: createSessionRecord({
+      lifecycleState: "active",
+    }),
+    discordThreadProjectable: false,
+    currentThreadMessage: {
+      content: "pending",
+      edit: async () => {
+        calls.push("edit");
+      },
+    },
+    recoverThreadMessage: async () => {
+      calls.push("recover");
+      return undefined;
+    },
+    sendThreadMessage: async () => {
+      calls.push("send");
+      return undefined;
+    },
+  });
+
+  expect(calls).toEqual([]);
+  expect(approvalRepo.getByApprovalKey("turn-1:call-1")).toMatchObject({
+    approvalKey: "turn-1:call-1",
+    requestId: "req-7",
+    status: "pending",
+  });
+  expect(runtimeApprovalKeysByRequestId.get("req-7")?.has(approval.approvalKey)).toBe(true);
+  expect(runtimeProviderRequestIdsByApprovalKey.get(approval.approvalKey)).toBe("req-7");
+
+  db.close();
+});
+
+test("remote turn completion cleanup clears runtime status and typing before projection skip", () => {
+  const applyRemoteTurnCompletionRuntimeCleanup =
+    getApplyRemoteTurnCompletionRuntimeCleanupForTest();
+  const runtime = createRelayTranscriptRuntime();
+  runtime.activeTurnId = "turn-1";
+  runtime.statusActivity = "running tests";
+  runtime.statusCommand = "bun test";
+  runtime.typingActive = true;
+  runtime.typingTimeout = setTimeout(() => {}, 10_000);
+  runtime.turnReplyMessageIds.set("turn-1", "reply-message-1");
+
+  applyRemoteTurnCompletionRuntimeCleanup({
+    runtime,
+    turnId: "turn-1",
+  });
+
+  expect(runtime.closedTurnIds.has("turn-1")).toBe(true);
+  expect(runtime.activeTurnId).toBeUndefined();
+  expect(runtime.turnReplyMessageIds.has("turn-1")).toBe(false);
+  expect(runtime.statusActivity).toBeUndefined();
+  expect(runtime.statusCommand).toBeUndefined();
+  expect(runtime.typingActive).toBe(false);
+  expect(runtime.typingTimeout).toBeUndefined();
+});
+
+test("turn completed handler cleans runtime state before skipping non-projectable Discord projection", () => {
+  const source = readFileSync(join(process.cwd(), "src/index.ts"), "utf8");
+  const handlerStart = source.indexOf("codexClient.on(\"turn/completed\"");
+  const handlerEnd = source.indexOf("const handleApprovalRequestEvent", handlerStart);
+  const handlerBlock = source.slice(handlerStart, handlerEnd);
+  const cleanupIndex = handlerBlock.indexOf("applyRemoteTurnCompletionRuntimeCleanup");
+  const projectabilityIndex = handlerBlock.indexOf("shouldProjectCodexRemoteEventForSession");
+  const statusUpdateIndex = handlerBlock.indexOf("await updateStatusCard");
+  const relayIndex = handlerBlock.indexOf("await relayTranscriptEntries");
+  const titleIndex = handlerBlock.indexOf("await maybeBootstrapManagedThreadTitle");
+
+  expect(cleanupIndex).toBeGreaterThan(-1);
+  expect(projectabilityIndex).toBeGreaterThan(cleanupIndex);
+  expect(statusUpdateIndex).toBeGreaterThan(projectabilityIndex);
+  expect(relayIndex).toBeGreaterThan(projectabilityIndex);
+  expect(titleIndex).toBeGreaterThan(projectabilityIndex);
+  expect(handlerBlock.slice(projectabilityIndex, statusUpdateIndex)).toContain("return;");
+});
+
 test("startup session subscription restore warns and continues after a per-session timeout", async () => {
   const calls: string[] = [];
   const warnings: string[] = [];
@@ -6541,7 +6715,7 @@ test("bootstrap thread title uses the first thread message from snapshot, not a 
   expect(renames).toEqual(["first thread title"]);
 });
 
-test("approval resolution updates the existing lifecycle message in place even while the thread is archived", async () => {
+test("approval resolution skips lifecycle projection for archived and deleted sessions", async () => {
   const calls: string[] = [];
   const pendingApproval = createApprovalRecord();
   const resolvedApproval = createApprovalRecord({
@@ -6566,27 +6740,64 @@ test("approval resolution updates the existing lifecycle message in place even w
     },
   };
 
+  for (const lifecycleState of ["archived", "deleted"] as const) {
+    await reconcileApprovalResolutionSurface({
+      approval: resolvedApproval,
+      session: createSessionRecord({
+        lifecycleState,
+      }),
+      discordThreadProjectable: true,
+      currentThreadMessage: lifecycleMessage,
+      currentThreadMessagePromise: undefined,
+      recoverThreadMessage: async () => {
+        calls.push(`recover:${lifecycleState}`);
+        return undefined;
+      },
+      sendThreadMessage: async (payload) => {
+        calls.push(
+          `send:${payload.embeds?.[0]?.description}:${payload.components?.length ?? 0}`,
+        );
+        return lifecycleMessage;
+      },
+    });
+  }
+
+  expect(calls).toEqual([]);
+  expect(resolvedContent.startsWith("Resolved: touch c.txt")).toBe(true);
+  expect(resolvedContent).not.toContain("Request ID:");
+});
+
+test("approval resolution skips edit, recovery, and send for non-projectable active threads", async () => {
+  const calls: string[] = [];
+  const lifecycleMessage = {
+    content: "Approval `req-7`: pending",
+    async edit() {
+      calls.push("edit");
+      return lifecycleMessage;
+    },
+  };
+
   await reconcileApprovalResolutionSurface({
-    approval: resolvedApproval,
-    session: createSessionRecord({
-      lifecycleState: "archived",
+    approval: createApprovalRecord({
+      status: "resolved",
     }),
+    session: createSessionRecord({
+      lifecycleState: "active",
+    }),
+    discordThreadProjectable: false,
     currentThreadMessage: lifecycleMessage,
-    currentThreadMessagePromise: undefined,
-    recoverThreadMessage: async () => undefined,
-    sendThreadMessage: async (payload) => {
-      calls.push(
-        `send:${payload.embeds?.[0]?.description}:${payload.components?.length ?? 0}`,
-      );
+    currentThreadMessagePromise: Promise.resolve(lifecycleMessage),
+    recoverThreadMessage: async () => {
+      calls.push("recover");
+      return lifecycleMessage;
+    },
+    sendThreadMessage: async () => {
+      calls.push("send");
       return lifecycleMessage;
     },
   });
 
-  expect(calls).toEqual([
-    `thread:${resolvedContent}:0`,
-  ]);
-  expect(resolvedContent.startsWith("Resolved: touch c.txt")).toBe(true);
-  expect(resolvedContent).not.toContain("Request ID:");
+  expect(calls).toEqual([]);
 });
 
 test("managed thread deletion detaches the Discord container without touching unknown threads", () => {
