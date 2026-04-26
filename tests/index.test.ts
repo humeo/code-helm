@@ -1390,6 +1390,59 @@ test("runtime snapshot sync uses capped replay options while live relay keeps de
   expect(liveRelayBlock).not.toContain("maxRenderedEntries");
 });
 
+test("runtime resume and sync helpers reuse initial snapshots before fallback reads", () => {
+  const source = readFileSync(join(process.cwd(), "src/index.ts"), "utf8");
+  const resumeStart = source.indexOf("const resumeManagedSessionIntoDiscordThread = async");
+  const syncStart = source.indexOf("const syncManagedSessionIntoDiscordThread = async");
+  const servicesStart = source.indexOf("const services = createControlChannelServices", syncStart);
+  const resumeBlock = source.slice(resumeStart, syncStart);
+  const syncBlock = source.slice(syncStart, servicesStart);
+
+  expect(resumeStart).toBeGreaterThan(-1);
+  expect(syncStart).toBeGreaterThan(resumeStart);
+  expect(servicesStart).toBeGreaterThan(syncStart);
+  expect(resumeBlock).toContain("initialSnapshot?: ThreadReadResult");
+  expect(syncBlock).toContain("initialSnapshot?: ThreadReadResult");
+  expect(resumeBlock).toContain(
+    "initialSnapshot ?? await readRecentThreadForRuntimeSnapshotReconciliation",
+  );
+  expect(syncBlock).toContain(
+    "initialSnapshot ?? await readRecentThreadForRuntimeSnapshotReconciliation",
+  );
+  expect(resumeBlock).toContain("readThread: async () => snapshot");
+  expect(syncBlock).toContain("readThread: async () => snapshot");
+});
+
+test("runtime resume helper gates unsafe recent snapshots before reopening", () => {
+  const source = readFileSync(join(process.cwd(), "src/index.ts"), "utf8");
+  const resumeStart = source.indexOf("const resumeManagedSessionIntoDiscordThread = async");
+  const syncStart = source.indexOf("const syncManagedSessionIntoDiscordThread = async", resumeStart);
+  const resumeBlock = source.slice(resumeStart, syncStart);
+  const mismatchIndex = resumeBlock.indexOf("shouldDegradeForSnapshotMismatch");
+  const resumeCallIndex = resumeBlock.indexOf("resumeManagedSession({");
+
+  expect(mismatchIndex).toBeGreaterThan(-1);
+  expect(resumeCallIndex).toBeGreaterThan(-1);
+  expect(mismatchIndex).toBeLessThan(resumeCallIndex);
+  expect(resumeBlock).toContain("return {");
+  expect(resumeBlock).toContain('kind: "untrusted"');
+});
+
+test("runtime manual sync accepts remote state before generic sync and blocks pending local input", () => {
+  const source = readFileSync(join(process.cwd(), "src/index.ts"), "utf8");
+  const syncStart = source.indexOf("const syncManagedSessionIntoDiscordThread = async");
+  const servicesStart = source.indexOf("const services = createControlChannelServices", syncStart);
+  const syncBlock = source.slice(syncStart, servicesStart);
+  const acceptIndex = syncBlock.indexOf("acceptManualSyncRecentExternalTurns");
+  const syncCallIndex = syncBlock.indexOf("syncManagedSession({");
+
+  expect(acceptIndex).toBeGreaterThan(-1);
+  expect(syncCallIndex).toBeGreaterThan(-1);
+  expect(acceptIndex).toBeLessThan(syncCallIndex);
+  expect(syncBlock).toContain("Sync blocked for");
+  expect(syncBlock).toContain("local input is still pending");
+});
+
 test("discord input reconcile reads recent snapshot when runtime is missing", async () => {
   const reconcile = getReconcileManagedSessionBeforeDiscordInputForTest();
   const events: string[] = [];
@@ -4736,6 +4789,32 @@ test("/session-sync reports snapshot timeout as a sync failure reply", async () 
     reply: {
       content:
         "Sync failed for `codex-thread-1`: Snapshot reconciliation timed out for managed session codex-thread-1.",
+      ephemeral: true,
+    },
+  });
+});
+
+test("/session-sync returns an explicit blocked reply when local and external inputs overlap", async () => {
+  const { services } = createControlChannelServicesFixture({
+    existingSession: createSessionRecord({
+      state: "degraded",
+      degradationReason: "snapshot_mismatch",
+    }),
+    syncError: new Error(
+      "Sync blocked for `codex-thread-1` because local input is still pending while Codex has recent external input. Send a new message after sync or start a new session.",
+    ),
+  });
+
+  const result = await services.syncSession({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "discord-thread-1",
+  });
+
+  expect(result).toEqual({
+    reply: {
+      content:
+        "Sync blocked for `codex-thread-1` because local input is still pending while Codex has recent external input. Send a new message after sync or start a new session.",
       ephemeral: true,
     },
   });
@@ -10416,17 +10495,42 @@ test("manual sync inspects and replays only the latest ten snapshot turns", asyn
 
 test("manual sync absorbs snapshot mismatch and restores writable control in one pass", async () => {
   const calls: string[] = [];
-  let transcriptTrusted = false;
+  const runtime = createRelayTranscriptRuntime();
+  const snapshot = createThreadReadResult({
+    status: { type: "idle" },
+    turns: [
+      {
+        id: "remote-turn",
+        status: "completed",
+        items: [
+          {
+            type: "userMessage",
+            id: "remote-user",
+            content: [{ type: "text", text: "remote-only input" }],
+          },
+        ],
+      },
+    ],
+  });
+
+  acceptManualSyncRecentExternalTurns({
+    runtime,
+    turns: snapshot.thread.turns,
+  });
 
   const result = await syncManagedSession({
     session: createSessionRecord({
       state: "degraded",
       degradationReason: "snapshot_mismatch",
     }),
-    readThread: async () => createThreadReadResult({
-      status: { type: "idle" },
-    }),
-    detectReadOnlyReason: async () => transcriptTrusted ? null : "snapshot_mismatch",
+    readThread: async () => snapshot,
+    detectReadOnlyReason: async (readResult) =>
+      shouldDegradeForSnapshotMismatch({
+        runtime,
+        turns: readResult.thread.turns,
+      })
+        ? "snapshot_mismatch"
+        : null,
     persistSessionState: async (runtimeState, degradationReason) => {
       calls.push(`persist:${runtimeState}:${degradationReason ?? "null"}`);
     },
@@ -10438,7 +10542,6 @@ test("manual sync absorbs snapshot mismatch and restores writable control in one
     },
     syncTranscriptSnapshot: async () => {
       calls.push("snapshot");
-      transcriptTrusted = true;
     },
   });
 
@@ -10456,6 +10559,65 @@ test("manual sync absorbs snapshot mismatch and restores writable control in one
     "snapshot",
     "persist:idle:null",
     "status",
+  ]);
+});
+
+test("manual sync detects read-only mismatch before replay mutates transcript state", async () => {
+  const calls: string[] = [];
+
+  const result = await syncManagedSession({
+    session: createSessionRecord({
+      state: "degraded",
+      degradationReason: "snapshot_mismatch",
+    }),
+    readThread: async () => createThreadReadResult({
+      status: { type: "idle" },
+      turns: [
+        {
+          id: "remote-turn",
+          status: "completed",
+          items: [
+            {
+              type: "userMessage",
+              id: "remote-user",
+              content: [{ type: "text", text: "remote-only input" }],
+            },
+          ],
+        },
+      ],
+    }),
+    detectReadOnlyReason: async () => {
+      calls.push("detect");
+      return "snapshot_mismatch";
+    },
+    persistSessionState: async (runtimeState, degradationReason) => {
+      calls.push(`persist:${runtimeState}:${degradationReason ?? "null"}`);
+    },
+    syncReadOnlySurface: async () => {
+      calls.push("read-only");
+    },
+    updateStatusCard: async () => {
+      calls.push("status");
+    },
+    syncTranscriptSnapshot: async () => {
+      calls.push("snapshot");
+    },
+  });
+
+  expect(result).toEqual({
+    kind: "read-only",
+    session: {
+      lifecycleState: "active",
+      runtimeState: "idle",
+      accessMode: "read-only",
+    },
+    persistedRuntimeState: "degraded",
+    statusCardState: undefined,
+  });
+  expect(calls).toEqual([
+    "detect",
+    "persist:degraded:snapshot_mismatch",
+    "read-only",
   ]);
 });
 

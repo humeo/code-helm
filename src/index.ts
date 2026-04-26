@@ -3470,6 +3470,11 @@ const isSessionOperationTimeoutError = (error: unknown) => {
     && error.message.toLowerCase().includes("timed out");
 };
 
+const isManualSyncBlockedError = (error: unknown): error is Error => {
+  return error instanceof Error
+    && error.message.startsWith("Sync blocked for ");
+};
+
 const limitSnapshotToRecentReconcileTurns = (
   snapshot: ThreadReadResult,
 ): ThreadReadResult => {
@@ -4110,10 +4115,6 @@ export const syncManagedSession = async ({
 
   const canReconcileWritableState = outcome.kind === "ready" || outcome.kind === "busy";
 
-  if (canReconcileWritableState) {
-    await syncTranscriptSnapshot(readResult);
-  }
-
   const detectedReadOnlyReason = canReconcileWritableState
     ? await detectReadOnlyReason?.(readResult) ?? null
     : null;
@@ -4129,6 +4130,10 @@ export const syncManagedSession = async ({
       persistedRuntimeState: "degraded",
       statusCardState: undefined,
     };
+  }
+
+  if (canReconcileWritableState && !detectedReadOnlyReason) {
+    await syncTranscriptSnapshot(readResult);
   }
 
   await persistSessionState(
@@ -5459,6 +5464,21 @@ export const createControlChannelServices = ({
       try {
         result = await syncManagedSessionIntoDiscordThread(session);
       } catch (error) {
+        if (isManualSyncBlockedError(error)) {
+          commandLogger.warn("Managed session sync blocked", {
+            discordGuildId: guildId,
+            discordThreadId: session.discordThreadId,
+            codexThreadId: session.codexThreadId,
+            error,
+          });
+          return {
+            reply: {
+              content: error.message,
+              ephemeral: true,
+            },
+          };
+        }
+
         commandLogger.warn("Managed session sync failed", {
           discordGuildId: guildId,
           discordThreadId: session.discordThreadId,
@@ -6883,8 +6903,31 @@ const startCodeHelmRuntime = async (
 
   const resumeManagedSessionIntoDiscordThread = async (
     session: NonNullable<ReturnType<typeof sessionRepo.getByCodexThreadId>>,
+    initialSnapshot?: ThreadReadResult,
   ) => {
     const discord = requireDiscordClient(discordClient);
+    const snapshot =
+      initialSnapshot ?? await readRecentThreadForRuntimeSnapshotReconciliation(
+        session.codexThreadId,
+      );
+    const runtime = ensureTranscriptRuntime(session.codexThreadId);
+
+    if (
+      shouldDegradeForSnapshotMismatch({
+        runtime,
+        turns: snapshot.thread.turns,
+      })
+      && shouldDegradeDiscordToReadOnly({ controlSurface: "codex-remote" })
+    ) {
+      logger.warn("Managed session resume blocked by untrusted recent snapshot", {
+        discordThreadId: session.discordThreadId,
+        codexThreadId: session.codexThreadId,
+      });
+      return {
+        kind: "untrusted",
+        reason: "sync_state_untrusted",
+      } satisfies SessionResumeState;
+    }
 
     const result = await resumeManagedSession({
       session,
@@ -6900,8 +6943,7 @@ const startCodeHelmRuntime = async (
           });
         }
       },
-      readThread: async () =>
-        readRecentThreadForRuntimeSnapshotReconciliation(session.codexThreadId),
+      readThread: async () => snapshot,
       archiveThread: async () =>
         setThreadArchivedState({
           client: discord,
@@ -7070,17 +7112,49 @@ const startCodeHelmRuntime = async (
 
   const syncManagedSessionIntoDiscordThread = async (
     session: NonNullable<ReturnType<typeof sessionRepo.getByCodexThreadId>>,
+    initialSnapshot?: ThreadReadResult,
   ) => {
     const discord = requireDiscordClient(discordClient);
+    const snapshot =
+      initialSnapshot ?? await readRecentThreadForRuntimeSnapshotReconciliation(
+        session.codexThreadId,
+      );
+    const runtime = ensureTranscriptRuntime(session.codexThreadId);
+    const isManualSync = initialSnapshot === undefined;
+
+    if (isManualSync) {
+      const acceptance = acceptManualSyncRecentExternalTurns({
+        runtime,
+        turns: snapshot.thread.turns,
+      });
+
+      if (!acceptance.ok) {
+        throw new Error(
+          `Sync blocked for \`${session.codexThreadId}\` because local input is still pending while Codex has recent external input. Send a new message after sync or start a new session.`,
+        );
+      }
+    } else if (
+      shouldDegradeForSnapshotMismatch({
+        runtime,
+        turns: snapshot.thread.turns,
+      })
+      && shouldDegradeDiscordToReadOnly({ controlSurface: "codex-remote" })
+    ) {
+      logger.warn("Managed session sync blocked by untrusted recent snapshot", {
+        discordThreadId: session.discordThreadId,
+        codexThreadId: session.codexThreadId,
+      });
+      return {
+        kind: "untrusted",
+        reason: "sync_state_untrusted",
+      } satisfies SessionResumeState;
+    }
 
     const result = await syncManagedSession({
       session,
-      readThread: async () =>
-        readRecentThreadForRuntimeSnapshotReconciliation(session.codexThreadId),
+      readThread: async () => snapshot,
       detectReadOnlyReason: async (snapshot) => {
-        const runtime = ensureTranscriptRuntime(session.codexThreadId);
-
-        return shouldDegradeForSnapshotMismatch({
+        return !isManualSync && shouldDegradeForSnapshotMismatch({
             runtime,
             turns: snapshot.thread.turns,
           }) && shouldDegradeDiscordToReadOnly({ controlSurface: "codex-remote" })
