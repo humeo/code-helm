@@ -46,6 +46,7 @@ export interface JsonRpcTransport {
 }
 
 type PendingRequest = {
+  method: string;
   resolve: (result: unknown) => void;
   reject: (error: Error) => void;
 };
@@ -334,6 +335,10 @@ export class JsonRpcClient {
       }
 
       this.pendingRequests.delete(message.id);
+      this.log.debug("JSON-RPC request completed", {
+        requestId: message.id,
+        method: pendingRequest.method,
+      });
       pendingRequest.resolve(message.result);
       return;
     }
@@ -354,6 +359,7 @@ export class JsonRpcClient {
       this.pendingRequests.delete(failure.id);
       this.log.warn("JSON-RPC request failed", {
         requestId: failure.id,
+        method: pendingRequest.method,
         error: failure.error,
       });
       pendingRequest.reject(new Error(failure.error.message));
@@ -373,7 +379,15 @@ export class JsonRpcClient {
   }
 
   private handleRawMessage(rawMessage: string) {
-    this.handleMessage(JSON.parse(rawMessage) as JsonRpcIncomingMessage);
+    try {
+      this.handleMessage(JSON.parse(rawMessage) as JsonRpcIncomingMessage);
+    } catch (error) {
+      this.log.error("Failed to parse JSON-RPC message", {
+        messageLength: rawMessage.length,
+        error,
+      });
+      throw error;
+    }
   }
 
   private routeIncomingMethod(message: JsonRpcRequest | JsonRpcNotification) {
@@ -440,6 +454,7 @@ export class JsonRpcClient {
 
     return new Promise<TResult>((resolve, reject) => {
       this.pendingRequests.set(id, {
+        method,
         resolve: (result) => {
           resolve(result as TResult);
         },
@@ -453,8 +468,17 @@ export class JsonRpcClient {
           method,
           params,
         });
+        this.log.debug("JSON-RPC request sent", {
+          requestId: id,
+          method,
+        });
       } catch (error) {
         this.pendingRequests.delete(id);
+        this.log.error("JSON-RPC request send failed", {
+          requestId: id,
+          method,
+          error,
+        });
         reject(error instanceof Error ? error : new Error("Failed to send JSON-RPC request"));
       }
     });

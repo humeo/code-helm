@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { MessageFlags } from "discord.js";
@@ -111,6 +111,7 @@ import {
   resolveStoredApprovalForResolvedEvent,
 } from "../src/index";
 import { renderStatusCardText } from "../src/discord/renderers";
+import { initializeLogger, shutdownLogger } from "../src/logger";
 import {
   collectTranscriptEntries,
   getAssistantTranscriptEntryId,
@@ -1586,6 +1587,14 @@ const createControlChannelServicesFixture = ({
   };
 };
 
+const readLogRecords = (logDir: string) => {
+  return readFileSync(join(logDir, "codehelm-2026-04-26.jsonl"), "utf8")
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+};
+
 test("resume picker threads sort by updatedAt, createdAt, then id", () => {
   const baseTimestamp = 1_700_000_000_000;
   const oldest = createResumePickerThread({
@@ -1970,6 +1979,48 @@ test("create session persists the authoritative cwd and model metadata returned 
       content: `Created session <#discord-thread-new-1> for \`${authoritativeCwd}\`.`,
     },
   });
+});
+
+test("create session logs safe lifecycle metadata", async () => {
+  const logDir = mkdtempSync(join(tmpdir(), "codehelm-control-log-"));
+
+  initializeLogger({
+    env: {
+      CODE_HELM_LOG_DIR: logDir,
+    },
+    console: false,
+    now: () => new Date(2026, 3, 26, 12),
+  });
+
+  try {
+    const { services } = createControlChannelServicesFixture();
+
+    await services.createSession({
+      actorId: "owner-1",
+      guildId: "guild-1",
+      channelId: "control-1",
+      path: `${defaultSessionPath}/../api`,
+    });
+    shutdownLogger();
+
+    const created = readLogRecords(logDir).find((record) =>
+      record.msg === "Managed session created"
+    );
+
+    expect(created).toMatchObject({
+      component: "discord",
+      operation: "control-command",
+      discordThreadId: "discord-thread-new-1",
+      codexThreadId: "codex-thread-1",
+      ownerDiscordUserId: "owner-1",
+      cwd: defaultSessionPath,
+    });
+    expect(created?.content).toBeUndefined();
+    expect(created?.input).toBeUndefined();
+  } finally {
+    shutdownLogger();
+    rmSync(logDir, { recursive: true, force: true });
+  }
 });
 
 test("create session expands ~/ paths before starting Codex", async () => {

@@ -32,6 +32,7 @@ describe("logger sanitization", () => {
       prompt: "full prompt body",
       input: "raw user input",
       text: "discord text",
+      justification: "approval reason can include user context",
     }) as Record<string, { redacted: boolean; length: number; sha256: string }>;
 
     expect(sanitized.content).toEqual({
@@ -42,8 +43,10 @@ describe("logger sanitization", () => {
     expect(sanitized.prompt.length).toBe(16);
     expect(sanitized.input.length).toBe(14);
     expect(sanitized.text.length).toBe(12);
+    expect(sanitized.justification.length).toBe(40);
     expect(JSON.stringify(sanitized)).not.toContain("private file");
     expect(JSON.stringify(sanitized)).not.toContain("full prompt body");
+    expect(JSON.stringify(sanitized)).not.toContain("user context");
   });
 
   test("truncates command previews instead of fully redacting them", () => {

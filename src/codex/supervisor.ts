@@ -480,6 +480,12 @@ export const stopManagedCodexAppServer = async (
 
   const timeoutMs = options.timeoutMs ?? 5_000;
   const killProcess = options.killProcess ?? process.kill;
+  const log = logger.child({
+    component: "codex",
+    operation: "managed-app-server",
+    appServerAddress: server.address,
+    appServerPid: server.pid,
+  });
   const signalServer = (signal: NodeJS.Signals) => {
     if (process.platform !== "win32") {
       try {
@@ -495,6 +501,9 @@ export const stopManagedCodexAppServer = async (
     return server.child.kill(signal);
   };
   const waitForTermExit = waitForChildExit(server.child, timeoutMs);
+  log.info("Stopping managed Codex App Server", {
+    timeoutMs,
+  });
   const didSignal = signalServer("SIGTERM");
 
   if (!didSignal) {
@@ -511,6 +520,9 @@ export const stopManagedCodexAppServer = async (
       throw error;
     }
 
+    log.warn("Managed Codex App Server did not stop after SIGTERM; sending SIGKILL", {
+      timeoutMs,
+    });
     const waitForKillExit = waitForChildExit(server.child, timeoutMs);
     const didForceSignal = signalServer("SIGKILL");
 
@@ -520,4 +532,5 @@ export const stopManagedCodexAppServer = async (
 
     await waitForKillExit;
   }
+  log.info("Managed Codex App Server stopped");
 };

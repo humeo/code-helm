@@ -23,6 +23,7 @@ const sensitiveFieldPattern =
 const userContentFieldNames = new Set([
   "content",
   "input",
+  "justification",
   "messageContent",
   "prompt",
   "text",

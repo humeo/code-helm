@@ -1,4 +1,7 @@
 import { expect, test } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   JsonRpcClient,
   type JsonRpcTransport,
@@ -6,6 +9,7 @@ import {
 } from "../../src/codex/jsonrpc-client";
 import type { StartTurnParams } from "../../src/codex/protocol-types";
 import { SessionController } from "../../src/codex/session-controller";
+import { initializeLogger, shutdownLogger } from "../../src/logger";
 import { readPackageMetadata } from "../../src/package-metadata";
 
 const createTransportStub = () => {
@@ -45,6 +49,14 @@ const createTransportStub = () => {
       transport.close();
     },
   };
+};
+
+const readLogRecords = (logDir: string) => {
+  return readFileSync(join(logDir, "codehelm-2026-04-26.jsonl"), "utf8")
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
 };
 
 test("routes command requestApproval and resolved events to subscribers", async () => {
@@ -231,6 +243,72 @@ test("initialize sends initialize request before initialized notification", asyn
     jsonrpc: "2.0",
     method: "initialized",
   });
+});
+
+test("debug logging records JSON-RPC request lifecycle without payloads", async () => {
+  const logDir = mkdtempSync(join(tmpdir(), "codehelm-jsonrpc-log-"));
+  const stub = createTransportStub();
+
+  initializeLogger({
+    env: {
+      CODE_HELM_LOG_DIR: logDir,
+      CODE_HELM_LOG_LEVEL: "debug",
+    },
+    console: false,
+    now: () => new Date(2026, 3, 26, 12),
+  });
+
+  try {
+    const client = new JsonRpcClient("ws://example.test", {
+      transport: stub.transport,
+    });
+    const startPromise = client.startThread({ cwd: "/tmp/project" });
+
+    await Promise.resolve();
+    stub.receive({ id: 1, result: {} });
+    await Bun.sleep(0);
+    stub.receive({
+      id: 2,
+      result: {
+        thread: {
+          id: "thread-123",
+          cwd: "/tmp/project",
+          preview: "hello",
+          status: { type: "idle" },
+        },
+      },
+    });
+    await startPromise;
+    shutdownLogger();
+
+    const records = readLogRecords(logDir);
+    const sent = records.find((record) =>
+      record.msg === "JSON-RPC request sent"
+      && record.method === "thread/start"
+    );
+    const completed = records.find((record) =>
+      record.msg === "JSON-RPC request completed"
+      && record.method === "thread/start"
+    );
+
+    expect(sent).toMatchObject({
+      component: "codex",
+      operation: "jsonrpc",
+      requestId: 2,
+      method: "thread/start",
+    });
+    expect(completed).toMatchObject({
+      component: "codex",
+      operation: "jsonrpc",
+      requestId: 2,
+      method: "thread/start",
+    });
+    expect(sent?.params).toBeUndefined();
+    expect(completed?.result).toBeUndefined();
+  } finally {
+    shutdownLogger();
+    rmSync(logDir, { recursive: true, force: true });
+  }
 });
 
 test("replies to server requests with the original request id and arbitrary result payloads", async () => {

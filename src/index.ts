@@ -2974,6 +2974,21 @@ export const describeSessionAccessMode = (
   });
 };
 
+const summarizeSessionResumeStateForLog = (result: SessionResumeState) => {
+  if ("session" in result) {
+    return {
+      outcome: result.kind,
+      runtimeState: result.session.runtimeState,
+      accessMode: result.session.accessMode,
+    };
+  }
+
+  return {
+    outcome: result.kind,
+    reason: result.reason,
+  };
+};
+
 export const canAcceptManagedSessionThreadInput = (
   session: Pick<SessionRecord, "lifecycleState">,
 ) => {
@@ -4745,6 +4760,11 @@ export const createControlChannelServices = ({
   isManagedDiscordThreadUsable,
   readThreadForSnapshotReconciliation,
 }: CreateControlChannelServicesDeps): DiscordCommandServices => {
+  const commandLogger = logger.child({
+    component: "discord",
+    operation: "control-command",
+  });
+
   return {
     async setCurrentWorkdir({ actorId, guildId, channelId, path }) {
       const contextError = requireConfiguredControlChannel(config, guildId, channelId);
@@ -4762,6 +4782,12 @@ export const createControlChannelServices = ({
       currentWorkdirRepo.upsert({
         guildId,
         channelId,
+        discordUserId: actorId,
+        cwd: resolvedPath.cwd,
+      });
+      commandLogger.debug("Current workdir updated", {
+        discordGuildId: guildId,
+        discordChannelId: channelId,
         discordUserId: actorId,
         cwd: resolvedPath.cwd,
       });
@@ -4856,6 +4882,15 @@ export const createControlChannelServices = ({
         throw error;
       }
 
+      commandLogger.info("Managed session created", {
+        discordGuildId: guildId,
+        discordChannelId: channelId,
+        discordThreadId: thread.id,
+        codexThreadId,
+        ownerDiscordUserId: actorId,
+        cwd: authoritativeCwd,
+      });
+
       return {
         reply: {
           content: `Created session <#${thread.id}> for \`${displayPath}\`.`,
@@ -4889,6 +4924,12 @@ export const createControlChannelServices = ({
       }
 
       await closeManagedSession(session);
+      commandLogger.info("Managed session archived", {
+        discordGuildId: guildId,
+        discordThreadId: session.discordThreadId,
+        codexThreadId: session.codexThreadId,
+        ownerDiscordUserId: session.ownerDiscordUserId,
+      });
 
       return {
         reply: {
@@ -4926,6 +4967,12 @@ export const createControlChannelServices = ({
       try {
         result = await syncManagedSessionIntoDiscordThread(session);
       } catch (error) {
+        commandLogger.warn("Managed session sync failed", {
+          discordGuildId: guildId,
+          discordThreadId: session.discordThreadId,
+          codexThreadId: session.codexThreadId,
+          error,
+        });
         return {
           reply: {
             content:
@@ -4938,6 +4985,11 @@ export const createControlChannelServices = ({
       }
 
       if (result.kind === "untrusted") {
+        commandLogger.warn("Managed session sync aborted after untrusted view", {
+          discordGuildId: guildId,
+          discordThreadId: session.discordThreadId,
+          codexThreadId: session.codexThreadId,
+        });
         return {
           reply: {
             content:
@@ -4956,6 +5008,13 @@ export const createControlChannelServices = ({
             : result.kind === "error"
               ? "Session remains read-only because Codex reports an error state."
               : "Session remains read-only.";
+
+      commandLogger.info("Managed session synced", {
+        discordGuildId: guildId,
+        discordThreadId: session.discordThreadId,
+        codexThreadId: session.codexThreadId,
+        ...summarizeSessionResumeStateForLog(result),
+      });
 
       return {
         reply: {
@@ -5259,12 +5318,28 @@ export const createControlChannelServices = ({
             ? `Attached session in replacement thread <#${attachedSession.discordThreadId}>.`
             : `Attached session <#${attachedSession.discordThreadId}>.`;
 
+        commandLogger.info("Managed session attached", {
+          discordGuildId: guildId,
+          discordChannelId: channelId,
+          discordThreadId: attachedSession.discordThreadId,
+          codexThreadId,
+          attachmentKind,
+          ...summarizeSessionResumeStateForLog(result),
+        });
+
         return {
           reply: {
             content: `${threadPrefix} ${summary}`,
           },
         };
       } catch (error) {
+        commandLogger.warn("Managed session attach failed", {
+          discordGuildId: guildId,
+          discordChannelId: channelId,
+          codexThreadId,
+          cwd: currentWorkdir,
+          error,
+        });
         return resolveResumeAttachFailure(codexThreadId, error);
       }
     },
@@ -5829,6 +5904,14 @@ export const handleApprovalInteraction = async ({
     if (storedApproval) {
       await afterPersistTerminalDecision?.(storedApproval);
     }
+    logger.info("Approval resolved from Discord", {
+      approvalKey: approvalRecord.approvalKey,
+      codexThreadId: approvalRecord.codexThreadId,
+      discordThreadId: approvalRecord.discordThreadId,
+      status: nextDecision.status,
+      providerDecision: nextDecision.providerDecision,
+      discordUserId: interaction.user.id,
+    });
   } finally {
     inFlightApprovalKeys?.delete(approvalKey);
   }
@@ -5882,9 +5965,20 @@ const startCodeHelmRuntime = async (
 ) => {
   const installSignalHandlers = options.installSignalHandlers ?? true;
   const legacyWorkspaceBootstrap = options.legacyWorkspaceBootstrap ?? null;
+  const coreLogger = logger.child({
+    component: "runtime",
+    operation: "core-start",
+  });
+
+  coreLogger.info("Opening CodeHelm database", {
+    databasePath: config.databasePath,
+  });
   const db = createDatabaseClient(config.databasePath);
 
   applyMigrations(db);
+  coreLogger.info("CodeHelm database ready", {
+    databasePath: config.databasePath,
+  });
   seedLegacyWorkspaceBootstrap(db, config, legacyWorkspaceBootstrap);
 
   const sessionRepo = createSessionRepo(db);
@@ -6047,6 +6141,11 @@ const startCodeHelmRuntime = async (
       return;
     }
 
+    logger.warn("Managed session degraded to read-only", {
+      discordThreadId: session.discordThreadId,
+      codexThreadId: session.codexThreadId,
+      reason,
+    });
     sessionRepo.markExternallyModified(session.discordThreadId, reason);
     await sendTextToChannel(
       discord,
@@ -6197,6 +6296,12 @@ const startCodeHelmRuntime = async (
       } else {
         sessionRepo.updateState(session.discordThreadId, "running");
       }
+      logger.info("Started Codex turn from Discord message", {
+        discordThreadId: session.discordThreadId,
+        codexThreadId: session.codexThreadId,
+        discordMessageId: replyToMessageId,
+        inputLength: content.length,
+      });
     } catch (error) {
       removePendingLocalInput({
         runtime,
@@ -6237,7 +6342,7 @@ const startCodeHelmRuntime = async (
     session,
     content,
   }: {
-    session: Pick<SessionRecord, "codexThreadId">;
+    session: Pick<SessionRecord, "codexThreadId" | "discordThreadId">;
     content: string;
   }) => {
     const runtime = ensureTranscriptRuntime(session.codexThreadId);
@@ -6264,6 +6369,12 @@ const startCodeHelmRuntime = async (
         expectedTurnId: activeTurnId,
         input: [{ type: "text", text: content }],
       });
+      logger.info("Queued Codex turn follow-up from Discord message", {
+        discordThreadId: session.discordThreadId,
+        codexThreadId: session.codexThreadId,
+        activeTurnId,
+        inputLength: content.length,
+      });
     } catch (error) {
       removePendingLocalInput({
         runtime,
@@ -6278,7 +6389,7 @@ const startCodeHelmRuntime = async (
   ) => {
     const discord = requireDiscordClient(discordClient);
 
-    return resumeManagedSession({
+    const result = await resumeManagedSession({
       session,
       materializeThread: async () => {
         const resumed = await codexClient.resumeThread({
@@ -6455,6 +6566,12 @@ const startCodeHelmRuntime = async (
         });
       },
     });
+    logger.info("Managed session resumed into Discord thread", {
+      discordThreadId: session.discordThreadId,
+      codexThreadId: session.codexThreadId,
+      ...summarizeSessionResumeStateForLog(result),
+    });
+    return result;
   };
 
   const syncManagedSessionIntoDiscordThread = async (
@@ -6462,7 +6579,7 @@ const startCodeHelmRuntime = async (
   ) => {
     const discord = requireDiscordClient(discordClient);
 
-    return syncManagedSession({
+    const result = await syncManagedSession({
       session,
       readThread: async () =>
         readThreadForSnapshotReconciliation({
@@ -6548,6 +6665,12 @@ const startCodeHelmRuntime = async (
         });
       },
     });
+    logger.info("Managed session synced into Discord thread", {
+      discordThreadId: session.discordThreadId,
+      codexThreadId: session.codexThreadId,
+      ...summarizeSessionResumeStateForLog(result),
+    });
+    return result;
   };
 
   const services = createControlChannelServices({
@@ -6976,10 +7099,16 @@ const startCodeHelmRuntime = async (
 
   bot.client.on(Events.ThreadDelete, (thread) => {
     void (async () => {
-      handleManagedThreadDeletion({
+      const detached = handleManagedThreadDeletion({
         threadId: thread.id,
         sessionRepo,
       });
+
+      if (detached) {
+        logger.warn("Managed Discord thread was deleted; session detached", {
+          discordThreadId: thread.id,
+        });
+      }
     })().catch((error) => {
       logger.error("Failed to detach deleted managed thread", error);
     });
@@ -7430,21 +7559,35 @@ const startCodeHelmRuntime = async (
         event,
       });
 
-      logger.debug("Received approval request event", {
+      logger.info("Approval request received", {
         method,
         requestId: approval.requestId,
         approvalKey: approval.approvalKey,
-        threadId: event.threadId,
+        codexThreadId: event.threadId,
+        discordThreadId: session.discordThreadId,
+        turnId: event.turnId,
+        itemId: event.itemId,
+        approvalId,
+        sessionState: session.state,
+        requestKind: approval.requestKind,
+      });
+      logger.debug("Approval request details persisted", {
+        method,
+        requestId: approval.requestId,
+        approvalKey: approval.approvalKey,
+        codexThreadId: event.threadId,
+        discordThreadId: session.discordThreadId,
         turnId: event.turnId,
         itemId: event.itemId,
         approvalId,
         sessionState: session.state,
         displayTitle: approval.displayTitle,
         commandPreview: approval.commandPreview,
-        justification: approval.justification,
         cwd: approval.cwd,
         requestKind: approval.requestKind,
-        decisionCatalog: approval.decisionCatalog,
+        decisionCount: approval.decisionCatalog
+          ? parseStoredApprovalDecisions(approval.decisionCatalog)?.length ?? 0
+          : 0,
       });
 
       if (!shouldHandlePersistedApprovalRequestAtRuntime(approval)) {
@@ -7615,6 +7758,15 @@ const startCodeHelmRuntime = async (
         approvalRecord,
         runtimeProviderRequestIdsByApprovalKey,
       );
+      logger.info("Approval resolution received from Codex", {
+        approvalKey: approvalRecord.approvalKey,
+        requestId,
+        codexThreadId: approvalRecord.codexThreadId,
+        discordThreadId: approvalRecord.discordThreadId,
+        status: outcome.approval.status,
+        resolvedElsewhere: outcome.approval.resolvedElsewhere,
+        resolvedBySurface: outcome.approval.resolvedBySurface,
+      });
       const storedApproval = approvalRepo.getByApprovalKey(approvalRecord.approvalKey);
 
       if (!storedApproval) {
@@ -7679,6 +7831,11 @@ const startCodeHelmRuntime = async (
     ],
   );
   await bot.start();
+  coreLogger.info("CodeHelm core services ready", {
+    discordGuildId: config.discord.guildId,
+    discordChannelId: config.discord.controlChannelId,
+    appServerAddress: config.codex.appServerUrl,
+  });
 
   await options.onCoreReady?.();
 

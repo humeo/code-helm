@@ -56,6 +56,51 @@ test("createDiscordBot preserves an explicit REST request strategy override", ()
   expect(bot.client.options.rest?.makeRequest).toBe(customMakeRequest);
 });
 
+test("createDiscordBot logs lifecycle and client warnings without exposing the token", async () => {
+  const logs: Array<{ level: string; args: unknown[] }> = [];
+  const bot = createDiscordBot({
+    token: "discord-secret-token",
+    services: createServices().services,
+    logger: {
+      info(...args: unknown[]) {
+        logs.push({ level: "info", args });
+      },
+      warn(...args: unknown[]) {
+        logs.push({ level: "warn", args });
+      },
+      error(...args: unknown[]) {
+        logs.push({ level: "error", args });
+      },
+    },
+  });
+  let loginToken: string | undefined;
+  let destroyed = false;
+
+  bot.client.login = (async (token?: string) => {
+    loginToken = token;
+    return "logged-in";
+  }) as never;
+  bot.client.destroy = (async () => {
+    destroyed = true;
+  }) as never;
+
+  await bot.start();
+  bot.client.emit(Events.Warn, "gateway warning");
+  bot.client.emit(Events.Error, new Error("gateway failed"));
+  await bot.stop();
+
+  expect(loginToken).toBe("discord-secret-token");
+  expect(destroyed).toBe(true);
+  expect(logs.map((entry) => entry.args[0])).toEqual([
+    "Starting Discord bot",
+    "Discord client warning",
+    "Discord client error",
+    "Stopping Discord bot",
+    "Discord bot stopped",
+  ]);
+  expect(JSON.stringify(logs)).not.toContain("discord-secret-token");
+});
+
 test("createDiscordBot routes autocomplete interactions to the autocomplete handler", async () => {
   const { services } = createServices();
   const bot = createDiscordBot({

@@ -156,7 +156,19 @@ export const createDiscordBot = ({
   });
 
   client.once(Events.ClientReady, (readyClient) => {
-    logger.info(`Discord bot ready as ${readyClient.user.tag}`);
+    logger.info("Discord bot ready", {
+      discordUserId: readyClient.user.id,
+      discordUserTag: readyClient.user.tag,
+    });
+  });
+
+  client.on(Events.Warn, (warning) => {
+    const log = logger.warn ?? logger.info;
+    log("Discord client warning", { warning });
+  });
+
+  client.on(Events.Error, (error) => {
+    logger.error("Discord client error", error);
   });
 
   client.on(Events.InteractionCreate, async (interaction) => {
@@ -193,10 +205,13 @@ export const createDiscordBot = ({
     commands: controlChannelCommands,
     intents: [...discordIntents],
     start() {
+      logger.info("Starting Discord bot");
       return client.login(token);
     },
     async stop() {
+      logger.info("Stopping Discord bot");
       await client.destroy();
+      logger.info("Discord bot stopped");
     },
   };
 };
