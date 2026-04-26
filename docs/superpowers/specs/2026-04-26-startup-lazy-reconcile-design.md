@@ -126,6 +126,7 @@ This path should be lazy. It should run only when a session is about to be used
 or explicitly inspected through Discord:
 
 - user sends a message in a managed Discord thread
+- `/session-resume` attaches, reopens, or rebinds an existing Codex session
 - `/status` requests fresh state
 - `/session-sync` requests reconciliation
 
@@ -221,9 +222,38 @@ The trusted-runtime decision can be conservative. A session is a strong lazy
 reconcile candidate when:
 
 - the daemon has restarted and no transcript runtime exists for the thread
+- a Discord resume flow is about to reopen, reuse, or rebind a session
 - a prior reconcile timed out or failed
 - the persisted session state is stale compared with a fresh status snapshot
 - the session is already degraded for snapshot mismatch
+
+## Resume Flow
+
+`/session-resume` and implicit resume from an archived managed thread are
+Discord actions. They must not bypass recent-window reconciliation.
+
+When resume targets an existing Codex session, CodeHelm should:
+
+1. resolve the selected Codex thread and intended Discord thread binding
+2. run the same latest-10-turn reconciliation used for Discord input
+3. classify the result before reopening, rebinding, or forwarding any user input
+4. only restore writable control when the recent window is safe or the user has
+   explicitly accepted remote state through `/session-sync`
+
+If resume finds unknown recent remote user input, it should not silently reopen
+the Discord thread as writable. It should surface the same out-of-sync/manual
+sync decision used for normal Discord input.
+
+If an archived-thread owner message acts as an implicit resume request, CodeHelm
+should resume first and forward that message to Codex only after the recent-window
+check says safe continuation is allowed. If resume is busy, read-only, untrusted,
+or out-of-sync, the original Discord message remains visible in Discord but must
+not be forwarded to Codex.
+
+Resume should not replay long historical transcript content. If it renders
+anything during the resume sync, it follows the same cap as manual sync: at most
+3 recent assistant/tool messages, no historical user messages rendered by the
+bot, and clear wording that older history was not audited.
 
 ## Codex Remote Event Flow
 
@@ -427,6 +457,10 @@ Behavior-level coverage should include:
 - startup control warmup does not call `thread/read(includeTurns=true)`
 - control warmup is limited to sessions that need live continuity
 - first user input in an untrusted session triggers lazy reconciliation
+- `/session-resume` and implicit archived-thread resume trigger the same
+  latest-10-turn reconciliation before restoring writable control
+- archived-thread implicit resume forwards the owner message only after safe
+  continuation is established
 - lazy reconciliation inspects only the latest 10 turns
 - ambiguous user-item origin is treated as external-origin during automated lazy
   reconciliation
@@ -460,6 +494,8 @@ synthetic live id remapping should remain part of the safety net.
   transcript snapshot seeding
 - returning to an old Discord thread performs bounded recent-window
   reconciliation before continuing
+- resuming an existing Codex session performs bounded recent-window
+  reconciliation before reopening, rebinding, or forwarding user input
 - default sync checks the latest 10 turns and clearly avoids claiming full
   history audit
 - default sync renders at most 3 recent assistant/tool messages
