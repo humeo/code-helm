@@ -778,15 +778,24 @@ export const shouldDegradeForSnapshotMismatch = ({
   };
   turns: CodexTurn[] | undefined;
 }) => {
-  const pendingDiscordInputsProbe = getPendingLocalInputTexts(runtime);
   const trustedExternalTurnIds = runtime.trustedExternalTurnIds ?? new Set<string>();
+  const isUnexpectedSnapshotItem = (itemId: string) =>
+    !shouldSkipTranscriptSnapshotItem(runtime, itemId)
+    && !trustedExternalTurnIds.has(readTurnIdFromTranscriptEntryId(itemId) ?? "");
+  const hasUntrustedExternalUserEntry = collectTranscriptEntries(turns, {
+    pendingDiscordInputs: getPendingLocalInputTexts(runtime),
+  }).some(
+    (entry) => entry.kind === "user" && isUnexpectedSnapshotItem(entry.itemId),
+  );
+
+  if (hasUntrustedExternalUserEntry) {
+    return true;
+  }
+
+  const pendingDiscordInputsProbe = getPendingLocalInputTexts(runtime);
   const unseenItemIds = collectComparableTranscriptItemIds(turns, {
     pendingDiscordInputs: pendingDiscordInputsProbe,
-  }).filter(
-    (itemId) =>
-      !shouldSkipTranscriptSnapshotItem(runtime, itemId)
-      && !trustedExternalTurnIds.has(readTurnIdFromTranscriptEntryId(itemId) ?? ""),
-  );
+  }).filter(isUnexpectedSnapshotItem);
 
   if (unseenItemIds.length === 0) {
     return false;

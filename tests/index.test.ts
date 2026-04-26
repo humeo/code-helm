@@ -8159,6 +8159,51 @@ test("snapshot mismatch does not degrade when snapshot can consume a pending Dis
   ).toBe(false);
 });
 
+test("snapshot mismatch degrades when a pending Discord input is followed by external user input", () => {
+  const runtime = {
+    seenItemIds: new Set<string>(),
+    finalizingItemIds: new Set<string>(),
+    pendingLocalInputs: [{ kind: "start" as const, text: "local from Discord" }],
+  };
+  const turns: CodexTurn[] = [
+    {
+      id: "turn-1",
+      status: "completed",
+      items: [
+        {
+          type: "userMessage",
+          id: "user-1",
+          content: [{ type: "text", text: "local from Discord" }],
+        },
+        {
+          type: "agentMessage",
+          id: "agent-1",
+          text: "local reply",
+          phase: "final_answer",
+        },
+      ],
+    },
+    {
+      id: "turn-2",
+      status: "completed",
+      items: [
+        {
+          type: "userMessage",
+          id: "user-2",
+          content: [{ type: "text", text: "remote from Codex" }],
+        },
+      ],
+    },
+  ];
+
+  expect(
+    shouldDegradeForSnapshotMismatch({
+      runtime,
+      turns,
+    }),
+  ).toBe(true);
+});
+
 test("snapshot mismatch still degrades when unseen items do not match pending Discord inputs", () => {
   const runtime = {
     seenItemIds: new Set<string>(),
