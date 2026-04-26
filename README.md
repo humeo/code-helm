@@ -2,7 +2,14 @@
 
 <img src="docs/assets/codehelm-product-banner.png" alt="CodeHelm" width="760" />
 
-<h2>Control your local Codex sessions remotely through Discord on your phone or browser.</h2>
+<h2>Run Codex locally. Control it from Discord.</h2>
+
+<p><strong>Approve, resume, interrupt, and monitor AI coding work from your phone.</strong></p>
+
+<p>
+CodeHelm lets you start, resume, approve, interrupt, and monitor local Codex
+sessions from a Discord thread.
+</p>
 
 [![npm](https://img.shields.io/npm/v/code-helm?style=flat-square&color=111827)](https://www.npmjs.com/package/code-helm)
 [![Bun](https://img.shields.io/badge/runtime-Bun-000000?style=flat-square&logo=bun&logoColor=white)](https://bun.sh)
@@ -25,6 +32,12 @@ CodeHelm runs a local daemon, manages a local Codex App Server, and turns a
 Discord channel into a control surface for Codex sessions. You can set a
 workdir, start or resume a session, approve requests, interrupt a running turn,
 and follow progress in one Discord thread instead of bouncing between tools.
+
+Perfect for:
+
+- approving Codex actions while away from your terminal
+- keeping AI coding sessions visible to your team
+- resuming long-running sessions without losing context
 
 > You only need to: start CodeHelm locally, connect Codex to the printed remote
 > address, and use the configured Discord channel.

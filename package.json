@@ -1,7 +1,8 @@
 {
   "name": "code-helm",
   "version": "0.2.9",
-  "description": "Run Codex as a local daemon you control from Discord.",
+  "description": "Control local Codex sessions from Discord: approve, resume, interrupt, and monitor AI coding work from your phone.",
+  "license": "MIT",
   "bin": {
     "code-helm": "bin/code-helm"
   },
