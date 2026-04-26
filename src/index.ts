@@ -80,7 +80,11 @@ import {
   resolveSyncSessionState,
   resolveSessionAccessMode,
 } from "./domain/session-service";
-import { shouldWarmManagedSessionControlAtStartup } from "./domain/session-reconciliation";
+import {
+  limitThreadReadResultToRecentTurns,
+  recentReconcileTurnLimit,
+  shouldWarmManagedSessionControlAtStartup,
+} from "./domain/session-reconciliation";
 import {
   buildPathBrowserChoices,
 } from "./domain/session-path-browser";
@@ -371,6 +375,7 @@ type TranscriptRuntime = {
 };
 
 const startupSessionWarmupTimeoutMs = 10_000;
+const sessionReconcileTimeoutMs = 10_000;
 const managedCodexAppServerStopTimeoutMs = 1_000;
 const discordTypingPulseIntervalMs = 8_000;
 const approvalAllowedMentions = {
@@ -3007,7 +3012,7 @@ export const shouldProjectManagedSessionDiscordSurface = (
   return session.lifecycleState === "active";
 };
 
-const withStartupSessionTimeout = async <TResult>(
+export const withSessionOperationTimeout = async <TResult>(
   operation: Promise<TResult>,
   timeoutMs: number | undefined,
   message: string,
@@ -3034,6 +3039,39 @@ const withStartupSessionTimeout = async <TResult>(
   }
 };
 
+const limitSnapshotToRecentReconcileTurns = (
+  snapshot: ThreadReadResult,
+): ThreadReadResult => {
+  const turns = snapshot.thread.turns;
+
+  return turns && turns.length > recentReconcileTurnLimit
+    ? limitThreadReadResultToRecentTurns(snapshot, recentReconcileTurnLimit)
+    : snapshot;
+};
+
+export const readRecentThreadForSnapshotReconciliation = async ({
+  codexClient,
+  threadId,
+  timeoutMs,
+  timeoutMessage = `Snapshot reconciliation timed out for managed session ${threadId}`,
+}: {
+  codexClient: Pick<JsonRpcClient, "readThread" | "resumeThread">;
+  threadId: string;
+  timeoutMs?: number;
+  timeoutMessage?: string;
+}): Promise<ThreadReadResult> => {
+  const snapshot = await withSessionOperationTimeout(
+    readThreadForSnapshotReconciliation({
+      codexClient,
+      threadId,
+    }),
+    timeoutMs,
+    timeoutMessage,
+  );
+
+  return limitThreadReadResultToRecentTurns(snapshot, recentReconcileTurnLimit);
+};
+
 export const restoreManagedSessionSubscriptions = async ({
   sessions,
   perSessionTimeoutMs,
@@ -3058,7 +3096,7 @@ export const restoreManagedSessionSubscriptions = async ({
     }
 
     try {
-      await withStartupSessionTimeout(
+      await withSessionOperationTimeout(
         (async () => {
           try {
             await resumeThread({
@@ -3555,7 +3593,7 @@ export const resumeManagedSession = async ({
   syncTranscriptSnapshot: (readResult: ThreadReadResult) => Promise<void>;
 }): Promise<SessionResumeState> => {
   await materializeThread?.();
-  const readResult = await readThread();
+  const readResult = limitSnapshotToRecentReconcileTurns(await readThread());
   const syncedRuntimeState = inferSyncedSessionRuntimeState(readResult.thread);
   const outcome = resolveResumeSessionState({
     lifecycleState: session.lifecycleState,
@@ -3622,7 +3660,7 @@ export const syncManagedSession = async ({
   ) => Promise<void>;
   syncTranscriptSnapshot: (readResult: ThreadReadResult) => Promise<void>;
 }): Promise<SessionResumeState> => {
-  const readResult = await readThread();
+  const readResult = limitSnapshotToRecentReconcileTurns(await readThread());
   const syncedRuntimeState = inferSyncedSessionRuntimeState(readResult.thread);
   let outcome = resolveSyncSessionState({
     syncedRuntimeState,
@@ -4575,9 +4613,11 @@ export const createManagedSessionCommandServices = ({
       }
 
       try {
-        const snapshot = await readThreadForSnapshotReconciliation({
-          threadId: session.codexThreadId,
-        });
+        const snapshot = limitSnapshotToRecentReconcileTurns(
+          await readThreadForSnapshotReconciliation({
+            threadId: session.codexThreadId,
+          }),
+        );
 
         effectiveState = inferSessionStateFromThreadStatus(snapshot.thread.status);
         runtime.activeTurnId = readActiveTurnIdFromThreadReadResult(snapshot);
@@ -4638,9 +4678,11 @@ export const createManagedSessionCommandServices = ({
       let snapshotRecovered = false;
 
       try {
-        const snapshot = await readThreadForSnapshotReconciliation({
-          threadId: session.codexThreadId,
-        });
+        const snapshot = limitSnapshotToRecentReconcileTurns(
+          await readThreadForSnapshotReconciliation({
+            threadId: session.codexThreadId,
+          }),
+        );
 
         effectiveState = inferSessionStateFromThreadStatus(snapshot.thread.status);
         activeTurnId = readActiveTurnIdFromThreadReadResult(snapshot);
@@ -5128,9 +5170,11 @@ export const createControlChannelServices = ({
       let snapshot: ThreadReadResult;
 
       try {
-        snapshot = await readThreadForSnapshotReconciliation({
-          threadId: codexThreadId,
-        });
+        snapshot = limitSnapshotToRecentReconcileTurns(
+          await readThreadForSnapshotReconciliation({
+            threadId: codexThreadId,
+          }),
+        );
       } catch (error) {
         if (!isMissingCodexThreadError(error)) {
           return resolveResumeAttachFailure(codexThreadId, error);
@@ -6165,6 +6209,21 @@ const startCodeHelmRuntime = async (
     );
   };
 
+  const readRecentThreadForRuntimeSnapshotReconciliation = async (
+    threadId: string,
+  ) =>
+    limitThreadReadResultToRecentTurns(
+      await withSessionOperationTimeout(
+        readThreadForSnapshotReconciliation({
+          codexClient,
+          threadId,
+        }),
+        sessionReconcileTimeoutMs,
+        `Snapshot reconciliation timed out for managed session ${threadId}`,
+      ),
+      recentReconcileTurnLimit,
+    );
+
   const syncTranscriptSnapshotFromReadResult = async ({
     discord,
     session,
@@ -6221,10 +6280,9 @@ const startCodeHelmRuntime = async (
     session: NonNullable<ReturnType<typeof sessionRepo.getByCodexThreadId>>;
     degradeOnUnexpectedItems: boolean;
   }) => {
-    const snapshot = await readThreadForSnapshotReconciliation({
-      codexClient,
-      threadId: session.codexThreadId,
-    });
+    const snapshot = await readRecentThreadForRuntimeSnapshotReconciliation(
+      session.codexThreadId,
+    );
     await syncTranscriptSnapshotFromReadResult({
       discord,
       session,
@@ -6311,10 +6369,9 @@ const startCodeHelmRuntime = async (
       return runtime.activeTurnId;
     }
 
-    const snapshot = await readThreadForSnapshotReconciliation({
-      codexClient,
-      threadId: session.codexThreadId,
-    });
+    const snapshot = await readRecentThreadForRuntimeSnapshotReconciliation(
+      session.codexThreadId,
+    );
     const recoveredTurnId = readActiveTurnIdFromThreadReadResult(snapshot);
 
     if (recoveredTurnId) {
@@ -6390,10 +6447,7 @@ const startCodeHelmRuntime = async (
         }
       },
       readThread: async () =>
-        readThreadForSnapshotReconciliation({
-          codexClient,
-          threadId: session.codexThreadId,
-        }),
+        readRecentThreadForRuntimeSnapshotReconciliation(session.codexThreadId),
       archiveThread: async () =>
         setThreadArchivedState({
           client: discord,
@@ -6568,10 +6622,7 @@ const startCodeHelmRuntime = async (
     const result = await syncManagedSession({
       session,
       readThread: async () =>
-        readThreadForSnapshotReconciliation({
-          codexClient,
-          threadId: session.codexThreadId,
-        }),
+        readRecentThreadForRuntimeSnapshotReconciliation(session.codexThreadId),
       detectReadOnlyReason: async (snapshot) => {
         const runtime = ensureTranscriptRuntime(session.codexThreadId);
 
@@ -6696,10 +6747,7 @@ const startCodeHelmRuntime = async (
     sendTextToChannel,
     isManagedDiscordThreadUsable,
     readThreadForSnapshotReconciliation: ({ threadId }) =>
-      readThreadForSnapshotReconciliation({
-        codexClient,
-        threadId,
-      }),
+      readRecentThreadForRuntimeSnapshotReconciliation(threadId),
   });
   const managedSessionServices = createManagedSessionCommandServices({
     sessionRepo,
@@ -6708,10 +6756,7 @@ const startCodeHelmRuntime = async (
     getDiscordClient: () => requireDiscordClient(discordClient),
     ensureTranscriptRuntime,
     readThreadForSnapshotReconciliation: ({ threadId }) =>
-      readThreadForSnapshotReconciliation({
-        codexClient,
-        threadId,
-      }),
+      readRecentThreadForRuntimeSnapshotReconciliation(threadId),
     resolveActiveTurnId: ({ session, runtime }) =>
       resolveManagedSessionActiveTurnId({
         session,
@@ -7506,10 +7551,9 @@ const startCodeHelmRuntime = async (
             session,
             completedTurn: params.turn,
             readThreadSnapshot: async () =>
-              readThreadForSnapshotReconciliation({
-                codexClient,
-                threadId: session.codexThreadId,
-              }),
+              readRecentThreadForRuntimeSnapshotReconciliation(
+                session.codexThreadId,
+              ),
           });
         },
       });

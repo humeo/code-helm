@@ -44,6 +44,7 @@ import {
   maybeBootstrapManagedThreadTitle,
   pollSessionRecovery,
   readThreadForSnapshotReconciliation,
+  readRecentThreadForSnapshotReconciliation,
   shouldLogSnapshotReconciliationWarning,
   shouldAcceptApprovalInteraction,
   shouldPollRecoveryProbeForSessionState,
@@ -119,7 +120,7 @@ import {
   getUserTranscriptEntryId,
   renderTranscriptMessages,
 } from "../src/discord/transcript";
-import type { CodexTurn } from "../src/codex/protocol-types";
+import type { CodexTurn, ThreadReadResult } from "../src/codex/protocol-types";
 import type {
   InsertSessionInput,
   SessionRecord,
@@ -182,6 +183,15 @@ const createThreadReadResult = ({
     turns,
   },
 });
+
+const createSequentialTurns = (count: number): CodexTurn[] =>
+  Array.from({ length: count }, (_, index) => ({
+    id: `turn-${index + 1}`,
+    items: [],
+  }));
+
+const readTurnIds = (snapshot: ThreadReadResult) =>
+  snapshot.thread.turns?.map((turn) => turn.id) ?? [];
 
 const createResumePickerThread = (
   overrides: Partial<CodexThread> = {},
@@ -442,6 +452,83 @@ test("managed session status command prefers fresh snapshot state and Codex-styl
   expect(result.reply.content).not.toContain("Queued steer:");
   expect(result.reply.content).not.toContain("Pending approvals:");
   expect(runtime.activeTurnId).toBe("turn-1");
+
+  db.close();
+});
+
+test("managed session status command falls back to stored state when snapshot reconciliation times out", async () => {
+  const db = createDatabaseClient(":memory:");
+  applyMigrations(db);
+  const sessionRepo = createSessionRepo(db);
+  const approvalRepo = createApprovalRepo(db);
+  const runtime = {
+    pendingLocalInputs: [],
+    activeTurnId: undefined as string | undefined,
+  };
+
+  sessionRepo.insert({
+    discordThreadId: "discord-thread-1",
+    codexThreadId: "codex-thread-1",
+    ownerDiscordUserId: "owner-1",
+    cwd: "/tmp/workspace/api",
+    state: "waiting-approval",
+  });
+
+  const services = createManagedSessionCommandServices({
+    sessionRepo,
+    approvalRepo,
+    codexClient: {
+      async getAccountRateLimits() {
+        return {
+          rateLimits: null,
+          rateLimitsByLimitId: null,
+        };
+      },
+      async listModels() {
+        return { data: [], nextCursor: null };
+      },
+      async resumeThread() {
+        return {
+          thread: {
+            id: "codex-thread-1",
+            cwd: "/tmp/workspace/api",
+            preview: "",
+            status: { type: "idle" },
+            turns: [],
+          },
+          model: undefined,
+          reasoningEffort: undefined,
+        };
+      },
+      async turnInterrupt() {
+        return {};
+      },
+    } as never,
+    getDiscordClient() {
+      throw new Error("status should not need a Discord client");
+    },
+    ensureTranscriptRuntime() {
+      return runtime as never;
+    },
+    async readThreadForSnapshotReconciliation() {
+      throw new Error("Snapshot reconciliation timed out for managed session codex-thread-1.");
+    },
+    async resolveActiveTurnId() {
+      return undefined;
+    },
+    async sendTextToChannel() {
+      return undefined;
+    },
+  });
+
+  const result = await services.status({
+    actorId: "viewer-1",
+    guildId: "guild-1",
+    channelId: "discord-thread-1",
+  });
+
+  expect(result.reply.content).toContain("Runtime:            waiting-approval");
+  expect(runtime.activeTurnId).toBeUndefined();
 
   db.close();
 });
@@ -1115,6 +1202,25 @@ test("startup does not install idle snapshot polling", () => {
   expect(source).not.toContain("clearInterval(snapshotPoll)");
 });
 
+test("runtime command snapshot reconciliation is wired through recent-window timeout reads", () => {
+  const source = readFileSync(join(process.cwd(), "src/index.ts"), "utf8");
+  const runtimeIndex = source.indexOf("const startCodeHelmRuntime = async");
+  const botIndex = source.indexOf("const bot = createDiscordBot", runtimeIndex);
+  const runtimeSource = source.slice(runtimeIndex, botIndex);
+
+  expect(runtimeSource).toContain("const readRecentThreadForRuntimeSnapshotReconciliation");
+  expect(runtimeSource).toContain("withSessionOperationTimeout");
+  expect(runtimeSource).toContain("limitThreadReadResultToRecentTurns");
+  expect(runtimeSource).toMatch(
+    /readThread:\s*async \(\) =>\s*readRecentThreadForRuntimeSnapshotReconciliation\(session\.codexThreadId\)/,
+  );
+  expect(
+    runtimeSource.match(
+      /readThreadForSnapshotReconciliation:\s*\(\{ threadId \}\) =>\s*readRecentThreadForRuntimeSnapshotReconciliation\(threadId\)/g,
+    ) ?? [],
+  ).toHaveLength(2);
+});
+
 test("startCodeHelm does not enter a running runtime when managed Codex startup stays delayed", async () => {
   const clearedStateDirs: string[] = [];
   let startedRuntime = false;
@@ -1344,6 +1450,7 @@ const createControlChannelServicesFixture = ({
   discordClientError,
   createThreadSendError,
   updateStatusCardError,
+  syncError,
   syncOutcome = createResumeOutcome("ready"),
   resumeOutcome = createResumeOutcome("ready"),
   listThreadsError,
@@ -1364,6 +1471,7 @@ const createControlChannelServicesFixture = ({
   discordClientError?: Error;
   createThreadSendError?: Error;
   updateStatusCardError?: Error;
+  syncError?: Error;
   syncOutcome?: SessionResumeState;
   resumeOutcome?: SessionResumeState;
   listThreadsError?: Error;
@@ -1574,6 +1682,9 @@ const createControlChannelServicesFixture = ({
     closeManagedSession: async () => {},
     syncManagedSessionIntoDiscordThread: async (session) => {
       calls.syncedThreads.push(session.discordThreadId);
+      if (syncError) {
+        throw syncError;
+      }
       return syncOutcome;
     },
     resumeManagedSessionIntoDiscordThread: async (session) => {
@@ -3534,6 +3645,30 @@ test("sync command rejects non-owners and non-degraded sessions", () => {
   });
 });
 
+test("/session-sync reports snapshot timeout as a sync failure reply", async () => {
+  const { services } = createControlChannelServicesFixture({
+    existingSession: createSessionRecord({
+      state: "degraded",
+      degradationReason: "snapshot_mismatch",
+    }),
+    syncError: new Error("Snapshot reconciliation timed out for managed session codex-thread-1"),
+  });
+
+  const result = await services.syncSession({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "discord-thread-1",
+  });
+
+  expect(result).toEqual({
+    reply: {
+      content:
+        "Sync failed for `codex-thread-1`: Snapshot reconciliation timed out for managed session codex-thread-1.",
+      ephemeral: true,
+    },
+  });
+});
+
 test("close session archives the same Discord thread before persisting lifecycle state", async () => {
   const calls: string[] = [];
 
@@ -3690,6 +3825,62 @@ test("resume session materializes the Codex thread before reading the snapshot",
   expect(calls).toEqual([
     "resume-thread",
     "read",
+    "state:idle",
+    "status:idle",
+    "snapshot",
+    "unarchive",
+    "lifecycle:active",
+  ]);
+});
+
+test("resume session syncs only the latest ten snapshot turns", async () => {
+  const calls: string[] = [];
+  const initialSnapshot = createThreadReadResult({
+    status: { type: "idle" },
+    turns: createSequentialTurns(12),
+  });
+  let replayedTurnIds: string[] = [];
+
+  await resumeManagedSession({
+    session: createSessionRecord({
+      lifecycleState: "archived",
+      state: "idle",
+    }),
+    readThread: async () => initialSnapshot,
+    archiveThread: async () => {
+      calls.push("archive");
+    },
+    unarchiveThread: async () => {
+      calls.push("unarchive");
+    },
+    persistLifecycleState: async (lifecycleState) => {
+      calls.push(`lifecycle:${lifecycleState}`);
+    },
+    persistRuntimeState: async (runtimeState) => {
+      calls.push(`state:${runtimeState}`);
+    },
+    updateStatusCard: async (runtimeState) => {
+      calls.push(`status:${runtimeState}`);
+    },
+    syncTranscriptSnapshot: async (snapshot) => {
+      replayedTurnIds = readTurnIds(snapshot);
+      calls.push("snapshot");
+    },
+  });
+
+  expect(replayedTurnIds).toEqual([
+    "turn-3",
+    "turn-4",
+    "turn-5",
+    "turn-6",
+    "turn-7",
+    "turn-8",
+    "turn-9",
+    "turn-10",
+    "turn-11",
+    "turn-12",
+  ]);
+  expect(calls).toEqual([
     "state:idle",
     "status:idle",
     "snapshot",
@@ -8151,6 +8342,56 @@ test("snapshot reconciliation reader resumes thread-not-found threads before ret
   expect(result.thread.status).toEqual({ type: "idle" });
 });
 
+test("recent snapshot reconciliation reader limits turns and times out with a session-local failure", async () => {
+  const result = await readRecentThreadForSnapshotReconciliation({
+    codexClient: {
+      async readThread() {
+        return createThreadReadResult({
+          status: { type: "idle" },
+          turns: createSequentialTurns(12),
+        });
+      },
+      async resumeThread() {
+        throw new Error("resumeThread should not be needed for a loaded thread");
+      },
+    },
+    threadId: "thread-1",
+    timeoutMs: 50,
+  });
+
+  expect(readTurnIds(result)).toEqual([
+    "turn-3",
+    "turn-4",
+    "turn-5",
+    "turn-6",
+    "turn-7",
+    "turn-8",
+    "turn-9",
+    "turn-10",
+    "turn-11",
+    "turn-12",
+  ]);
+
+  await expect(
+    readRecentThreadForSnapshotReconciliation({
+      codexClient: {
+        async readThread() {
+          await new Promise(() => {});
+          return createThreadReadResult({
+            status: { type: "idle" },
+            turns: [],
+          });
+        },
+        async resumeThread() {
+          throw new Error("resumeThread should not be needed for timeout");
+        },
+      },
+      threadId: "thread-2",
+      timeoutMs: 1,
+    }),
+  ).rejects.toThrow("Snapshot reconciliation timed out for managed session thread-2");
+});
+
 test("snapshot reconciliation warning policy suppresses expected pre-materialization failures", () => {
   expect(
     shouldLogSnapshotReconciliationWarning(
@@ -8770,6 +9011,72 @@ test("manual sync clears snapshot-mismatch read-only once the session view is tr
     "snapshot",
     "persist:idle:null",
     "status:idle",
+  ]);
+});
+
+test("manual sync inspects and replays only the latest ten snapshot turns", async () => {
+  const calls: string[] = [];
+  const snapshot = createThreadReadResult({
+    status: { type: "idle" },
+    turns: createSequentialTurns(12),
+  });
+  const observedWindows: string[][] = [];
+
+  await syncManagedSession({
+    session: createSessionRecord({
+      state: "degraded",
+      degradationReason: "snapshot_mismatch",
+    }),
+    readThread: async () => snapshot,
+    detectReadOnlyReason: async (readResult) => {
+      observedWindows.push(readTurnIds(readResult));
+      return null;
+    },
+    persistSessionState: async (runtimeState, degradationReason) => {
+      calls.push(`persist:${runtimeState}:${degradationReason ?? "null"}`);
+    },
+    syncReadOnlySurface: async () => {
+      calls.push("read-only");
+    },
+    updateStatusCard: async () => {
+      calls.push("status");
+    },
+    syncTranscriptSnapshot: async (readResult) => {
+      observedWindows.push(readTurnIds(readResult));
+      calls.push("snapshot");
+    },
+  });
+
+  expect(observedWindows).toEqual([
+    [
+      "turn-3",
+      "turn-4",
+      "turn-5",
+      "turn-6",
+      "turn-7",
+      "turn-8",
+      "turn-9",
+      "turn-10",
+      "turn-11",
+      "turn-12",
+    ],
+    [
+      "turn-3",
+      "turn-4",
+      "turn-5",
+      "turn-6",
+      "turn-7",
+      "turn-8",
+      "turn-9",
+      "turn-10",
+      "turn-11",
+      "turn-12",
+    ],
+  ]);
+  expect(calls).toEqual([
+    "snapshot",
+    "persist:idle:null",
+    "status",
   ]);
 });
 
