@@ -6529,6 +6529,55 @@ test("manual sync snapshot replay caps assistant messages and suppresses histori
   expect(JSON.stringify(sentPayloads)).not.toContain("historical user");
 });
 
+test("snapshot replay caps rendered Discord payloads after long assistant replies split", async () => {
+  const relayTranscriptEntries = getRelayTranscriptEntriesForTest();
+  const sentPayloads: Array<{ content?: string; embeds?: unknown[]; reply?: unknown }> = [];
+  const runtime = createRelayTranscriptRuntime();
+  const turns = createSnapshotReplayTurns(5).map((turn, index) => ({
+    ...turn,
+    items: turn.items?.map((item) =>
+      item.type === "agentMessage"
+        ? {
+            ...item,
+            text: `assistant long reply ${index + 1} ${"x".repeat(2_100)}`,
+          }
+        : item
+    ),
+  }));
+  const snapshot = createThreadReadResult({
+    status: { type: "idle" },
+    turns,
+  });
+
+  await syncManagedSession({
+    session: createSessionRecord({
+      state: "degraded",
+      degradationReason: "snapshot_mismatch",
+    }),
+    readThread: async () => snapshot,
+    detectReadOnlyReason: async () => null,
+    persistSessionState: async () => {},
+    syncReadOnlySurface: async () => {},
+    updateStatusCard: async () => {},
+    syncTranscriptSnapshot: async (readResult) => {
+      await relayTranscriptEntries({
+        client: createRelayClient(sentPayloads),
+        channelId: "discord-thread-1",
+        runtime,
+        turns: readResult.thread.turns,
+        source: "snapshot",
+        suppressUserEntries: true,
+        maxRenderedEntries: 3,
+      });
+    },
+  });
+
+  expect(sentPayloads).toHaveLength(3);
+  expect(JSON.stringify(sentPayloads)).not.toContain("historical user");
+  expect(runtime.seenItemIds.has(getUserTranscriptEntryId("turn-5"))).toBe(true);
+  expect(runtime.seenItemIds.has(getAssistantTranscriptEntryId("turn-5"))).toBe(true);
+});
+
 test("snapshot replay marks the full recent window even when rendering is capped", async () => {
   const relayTranscriptEntries = getRelayTranscriptEntriesForTest();
   const sentPayloads: Array<{ content?: string; embeds?: unknown[]; reply?: unknown }> = [];

@@ -2282,14 +2282,15 @@ export const relayTranscriptEntries = async ({
       runtime,
       itemId: entry.itemId,
       source,
-      })
+    })
   );
   const renderableEntries = suppressUserEntries
     ? collectedEntries.filter((entry) => entry.kind !== "user")
     : collectedEntries;
-  const entries = maxRenderedEntries === undefined
-    ? renderableEntries
-    : renderableEntries.slice(0, Math.max(0, maxRenderedEntries));
+  const renderedMessages = renderTranscriptMessages(renderableEntries);
+  const cappedRenderedMessages = maxRenderedEntries === undefined
+    ? renderedMessages
+    : renderedMessages.slice(0, Math.max(0, maxRenderedEntries));
   const consumedPendingDiscordInputs =
     pendingDiscordInputCount - pendingDiscordInputs.length;
 
@@ -2304,7 +2305,7 @@ export const relayTranscriptEntries = async ({
     });
   }
 
-  for (const renderedMessage of renderTranscriptMessages(entries)) {
+  for (const renderedMessage of cappedRenderedMessages) {
     const rendered = renderedMessage.payload;
     if (!isDiscordMessagePayloadEmpty(rendered)) {
       await sendChannelMessage(client, channelId, rendered, {
