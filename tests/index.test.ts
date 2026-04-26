@@ -213,6 +213,74 @@ const getRelayTranscriptEntriesForTest = () => {
   return relay as RelayTranscriptEntriesForTest;
 };
 
+type DiscordInputReconcileResultForTest = {
+  ok: boolean;
+  session?: SessionRecord | null;
+};
+
+type ReconcileManagedSessionBeforeDiscordInputForTest = (input: {
+  session: SessionRecord;
+  runtime?: unknown;
+  reconcileFailedThreadIds: Set<string>;
+  readRecentThreadForRuntimeSnapshotReconciliation: (
+    threadId: string,
+  ) => Promise<ThreadReadResult>;
+  syncTranscriptSnapshotFromReadResult: (input: {
+    session: SessionRecord;
+    snapshot: ThreadReadResult;
+    degradeOnUnexpectedItems: boolean;
+  }) => Promise<void>;
+  getSessionByCodexThreadId: (codexThreadId: string) => SessionRecord | null;
+}) => Promise<DiscordInputReconcileResultForTest>;
+
+const getReconcileManagedSessionBeforeDiscordInputForTest = () => {
+  const helper = (codeHelmIndex as typeof codeHelmIndex & {
+    reconcileManagedSessionBeforeDiscordInput?: ReconcileManagedSessionBeforeDiscordInputForTest;
+  }).reconcileManagedSessionBeforeDiscordInput;
+
+  expect(typeof helper).toBe("function");
+  return helper as ReconcileManagedSessionBeforeDiscordInputForTest;
+};
+
+type HandleActiveManagedThreadDiscordInputForTest = (input: {
+  session: SessionRecord;
+  authorId: string;
+  content: string;
+  messageId: string;
+  reconcileBeforeDiscordInput: (
+    session: SessionRecord,
+  ) => Promise<DiscordInputReconcileResultForTest>;
+  startTurnFromDiscordInput: (input: {
+    session: SessionRecord;
+    content: string;
+    request: { threadId: string; input: Array<{ type: "text"; text: string }> };
+    replyToMessageId?: string;
+  }) => Promise<void>;
+  steerTurnFromDiscordInput: (input: {
+    session: SessionRecord;
+    content: string;
+  }) => Promise<void>;
+  replyToMessage: (content: string) => Promise<void>;
+  sendReadOnlySurface: (session: SessionRecord) => Promise<void>;
+  onReconcileFailure?: (
+    error: unknown,
+    session: SessionRecord,
+  ) => Promise<void> | void;
+  onSteerError?: (
+    error: unknown,
+    session: SessionRecord,
+  ) => Promise<void> | void;
+}) => Promise<{ kind: string }>;
+
+const getHandleActiveManagedThreadDiscordInputForTest = () => {
+  const helper = (codeHelmIndex as typeof codeHelmIndex & {
+    handleActiveManagedThreadDiscordInput?: HandleActiveManagedThreadDiscordInputForTest;
+  }).handleActiveManagedThreadDiscordInput;
+
+  expect(typeof helper).toBe("function");
+  return helper as HandleActiveManagedThreadDiscordInputForTest;
+};
+
 const createRelayTranscriptRuntime = () => ({
   seenItemIds: new Set<string>(),
   finalizingItemIds: new Set<string>(),
@@ -1304,6 +1372,242 @@ test("runtime snapshot sync uses capped replay options while live relay keeps de
   expect(snapshotSyncBlock).toContain("maxRenderedEntries: syncReplayMessageLimit");
   expect(liveRelayBlock).not.toContain("suppressUserEntries");
   expect(liveRelayBlock).not.toContain("maxRenderedEntries");
+});
+
+test("discord input reconcile reads recent snapshot when runtime is missing", async () => {
+  const reconcile = getReconcileManagedSessionBeforeDiscordInputForTest();
+  const events: string[] = [];
+  let storedSession = createSessionRecord({ state: "idle" });
+  const snapshot = createThreadReadResult({
+    status: { type: "idle" },
+    turns: [],
+  });
+
+  const result = await reconcile({
+    session: storedSession,
+    runtime: undefined,
+    reconcileFailedThreadIds: new Set<string>(),
+    readRecentThreadForRuntimeSnapshotReconciliation: async (threadId) => {
+      events.push(`read:${threadId}`);
+      return snapshot;
+    },
+    syncTranscriptSnapshotFromReadResult: async (input) => {
+      events.push(
+        `sync:${input.session.codexThreadId}:${input.degradeOnUnexpectedItems}`,
+      );
+    },
+    getSessionByCodexThreadId: () => storedSession,
+  });
+
+  expect(result).toMatchObject({ ok: true });
+  expect(result.session).toEqual(storedSession);
+  expect(events).toEqual([
+    "read:codex-thread-1",
+    "sync:codex-thread-1:true",
+  ]);
+});
+
+test("active owner message reconciles missing runtime before starting a turn", async () => {
+  const handleInput = getHandleActiveManagedThreadDiscordInputForTest();
+  const events: string[] = [];
+  const session = createSessionRecord({ state: "idle" });
+
+  const result = await handleInput({
+    session,
+    authorId: "owner-1",
+    content: "hi",
+    messageId: "discord-message-1",
+    reconcileBeforeDiscordInput: async () => {
+      events.push("reconcile");
+      return { ok: true, session };
+    },
+    startTurnFromDiscordInput: async (input) => {
+      events.push(`start:${input.request.threadId}:${input.replyToMessageId}`);
+    },
+    steerTurnFromDiscordInput: async () => {
+      events.push("steer");
+    },
+    replyToMessage: async (content) => {
+      events.push(`reply:${content}`);
+    },
+    sendReadOnlySurface: async () => {
+      events.push("read-only");
+    },
+  });
+
+  expect(result.kind).toBe("start-turn");
+  expect(events).toEqual([
+    "reconcile",
+    "start:codex-thread-1:discord-message-1",
+  ]);
+});
+
+test("unknown recent remote user input degrades and blocks active owner start", async () => {
+  const reconcile = getReconcileManagedSessionBeforeDiscordInputForTest();
+  const handleInput = getHandleActiveManagedThreadDiscordInputForTest();
+  const events: string[] = [];
+  let storedSession = createSessionRecord({ state: "idle" });
+  const snapshot = createThreadReadResult({
+    status: { type: "idle" },
+    turns: [
+      {
+        id: "turn-remote",
+        status: "completed",
+        items: [
+          {
+            type: "userMessage",
+            id: "user-remote",
+            content: [{ type: "text", text: "remote-only input" }],
+          },
+        ],
+      },
+    ],
+  });
+
+  const result = await handleInput({
+    session: storedSession,
+    authorId: "owner-1",
+    content: "hi",
+    messageId: "discord-message-1",
+    reconcileBeforeDiscordInput: async (session) =>
+      reconcile({
+        session,
+        runtime: undefined,
+        reconcileFailedThreadIds: new Set<string>(),
+        readRecentThreadForRuntimeSnapshotReconciliation: async () => {
+          events.push("read");
+          return snapshot;
+        },
+        syncTranscriptSnapshotFromReadResult: async () => {
+          events.push("sync");
+          storedSession = createSessionRecord({
+            state: "degraded",
+            degradationReason: "snapshot_mismatch",
+          });
+        },
+        getSessionByCodexThreadId: () => storedSession,
+      }),
+    startTurnFromDiscordInput: async () => {
+      events.push("start");
+    },
+    steerTurnFromDiscordInput: async () => {
+      events.push("steer");
+    },
+    replyToMessage: async (content) => {
+      events.push(`reply:${content}`);
+    },
+    sendReadOnlySurface: async (session) => {
+      events.push(`read-only:${session.degradationReason}`);
+    },
+  });
+
+  expect(result.kind).toBe("read-only");
+  expect(storedSession).toMatchObject({
+    state: "degraded",
+    degradationReason: "snapshot_mismatch",
+  });
+  expect(events).toEqual(["read", "sync"]);
+});
+
+test("trusted runtime skips recent snapshot read and continues as before", async () => {
+  const reconcile = getReconcileManagedSessionBeforeDiscordInputForTest();
+  const runtime = {};
+  const session = createSessionRecord({ state: "idle" });
+  let readCount = 0;
+  let syncCount = 0;
+
+  const result = await reconcile({
+    session,
+    runtime,
+    reconcileFailedThreadIds: new Set<string>(),
+    readRecentThreadForRuntimeSnapshotReconciliation: async () => {
+      readCount += 1;
+      return createThreadReadResult({ status: { type: "idle" }, turns: [] });
+    },
+    syncTranscriptSnapshotFromReadResult: async () => {
+      syncCount += 1;
+    },
+    getSessionByCodexThreadId: () => session,
+  });
+
+  expect(result).toMatchObject({ ok: true, session });
+  expect(readCount).toBe(0);
+  expect(syncCount).toBe(0);
+});
+
+test("untrusted runtime states and prior failed reconciles still read recent snapshot", async () => {
+  const reconcile = getReconcileManagedSessionBeforeDiscordInputForTest();
+  const runtime = {};
+  const degradedSession = createSessionRecord({
+    state: "degraded",
+    degradationReason: "snapshot_mismatch",
+  });
+  let degradedReadCount = 0;
+
+  const degradedResult = await reconcile({
+    session: degradedSession,
+    runtime,
+    reconcileFailedThreadIds: new Set<string>(),
+    readRecentThreadForRuntimeSnapshotReconciliation: async () => {
+      degradedReadCount += 1;
+      return createThreadReadResult({ status: { type: "idle" }, turns: [] });
+    },
+    syncTranscriptSnapshotFromReadResult: async () => {},
+    getSessionByCodexThreadId: () => degradedSession,
+  });
+
+  const failedReconcileThreadIds = new Set<string>(["codex-thread-1"]);
+  const idleSession = createSessionRecord({ state: "idle" });
+  let failedRetryReadCount = 0;
+
+  const failedRetryResult = await reconcile({
+    session: idleSession,
+    runtime,
+    reconcileFailedThreadIds: failedReconcileThreadIds,
+    readRecentThreadForRuntimeSnapshotReconciliation: async () => {
+      failedRetryReadCount += 1;
+      return createThreadReadResult({ status: { type: "idle" }, turns: [] });
+    },
+    syncTranscriptSnapshotFromReadResult: async () => {},
+    getSessionByCodexThreadId: () => idleSession,
+  });
+
+  expect(degradedResult).toMatchObject({ ok: false });
+  expect(degradedReadCount).toBe(1);
+  expect(failedRetryResult).toMatchObject({ ok: true });
+  expect(failedRetryReadCount).toBe(1);
+  expect(failedReconcileThreadIds.has("codex-thread-1")).toBe(false);
+});
+
+test("non-owner active messages do not trigger lazy snapshot reconciliation", async () => {
+  const handleInput = getHandleActiveManagedThreadDiscordInputForTest();
+  const events: string[] = [];
+
+  const result = await handleInput({
+    session: createSessionRecord({ state: "idle" }),
+    authorId: "viewer-1",
+    content: "hi",
+    messageId: "discord-message-1",
+    reconcileBeforeDiscordInput: async () => {
+      events.push("reconcile");
+      return { ok: true, session: createSessionRecord({ state: "idle" }) };
+    },
+    startTurnFromDiscordInput: async () => {
+      events.push("start");
+    },
+    steerTurnFromDiscordInput: async () => {
+      events.push("steer");
+    },
+    replyToMessage: async () => {
+      events.push("reply");
+    },
+    sendReadOnlySurface: async () => {
+      events.push("read-only");
+    },
+  });
+
+  expect(result.kind).toBe("noop");
+  expect(events).toEqual([]);
 });
 
 test("startCodeHelm does not enter a running runtime when managed Codex startup stays delayed", async () => {

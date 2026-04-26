@@ -3046,6 +3046,241 @@ export const canAcceptManagedSessionThreadInput = (
   return session.lifecycleState === "active";
 };
 
+const writableOrBusyDiscordInputStates = new Set([
+  "idle",
+  "running",
+  "waiting-approval",
+]);
+
+const hasWritableOrBusyDiscordInputState = (
+  session: Pick<SessionRecord, "state" | "lifecycleState">,
+) => {
+  return session.lifecycleState === "active"
+    && writableOrBusyDiscordInputStates.has(session.state);
+};
+
+export const hasTrustedRuntimeForDiscordInput = ({
+  session,
+  runtime,
+  reconcileFailed,
+}: {
+  session: Pick<SessionRecord, "state" | "lifecycleState">;
+  runtime?: unknown;
+  reconcileFailed?: boolean;
+}) => {
+  return Boolean(runtime)
+    && !reconcileFailed
+    && hasWritableOrBusyDiscordInputState(session);
+};
+
+export type DiscordInputReconcileResult =
+  | {
+      ok: true;
+      session: SessionRecord;
+    }
+  | {
+      ok: false;
+      session: SessionRecord | null;
+      surfaceAlreadySent?: boolean;
+    };
+
+export const reconcileManagedSessionBeforeDiscordInput = async ({
+  session,
+  runtime,
+  reconcileFailedThreadIds,
+  readRecentThreadForRuntimeSnapshotReconciliation,
+  syncTranscriptSnapshotFromReadResult,
+  getSessionByCodexThreadId,
+}: {
+  session: SessionRecord;
+  runtime?: unknown;
+  reconcileFailedThreadIds: Set<string>;
+  readRecentThreadForRuntimeSnapshotReconciliation: (
+    threadId: string,
+  ) => Promise<ThreadReadResult>;
+  syncTranscriptSnapshotFromReadResult: (input: {
+    session: SessionRecord;
+    snapshot: ThreadReadResult;
+    degradeOnUnexpectedItems: boolean;
+  }) => Promise<void>;
+  getSessionByCodexThreadId: (codexThreadId: string) => SessionRecord | null;
+}): Promise<DiscordInputReconcileResult> => {
+  if (hasTrustedRuntimeForDiscordInput({
+    session,
+    runtime,
+    reconcileFailed: reconcileFailedThreadIds.has(session.codexThreadId),
+  })) {
+    return {
+      ok: true,
+      session,
+    };
+  }
+
+  try {
+    const snapshot = await readRecentThreadForRuntimeSnapshotReconciliation(
+      session.codexThreadId,
+    );
+
+    await syncTranscriptSnapshotFromReadResult({
+      session,
+      snapshot,
+      degradeOnUnexpectedItems: true,
+    });
+    reconcileFailedThreadIds.delete(session.codexThreadId);
+  } catch (error) {
+    reconcileFailedThreadIds.add(session.codexThreadId);
+    throw error;
+  }
+
+  const refreshedSession = getSessionByCodexThreadId(session.codexThreadId);
+
+  if (!refreshedSession || !hasWritableOrBusyDiscordInputState(refreshedSession)) {
+    return {
+      ok: false,
+      session: refreshedSession,
+      surfaceAlreadySent:
+        session.state !== "degraded"
+        && refreshedSession?.state === "degraded",
+    };
+  }
+
+  return {
+    ok: true,
+    session: refreshedSession,
+  };
+};
+
+const getDiscordInputDecisionState = (
+  state: string,
+): SessionRuntimeState => {
+  return state === "running"
+    || state === "waiting-approval"
+    || state === "degraded"
+    ? (state as SessionRuntimeState)
+    : "idle";
+};
+
+export const handleActiveManagedThreadDiscordInput = async ({
+  session,
+  authorId,
+  content,
+  messageId,
+  reconcileBeforeDiscordInput,
+  startTurnFromDiscordInput,
+  steerTurnFromDiscordInput,
+  replyToMessage,
+  sendReadOnlySurface,
+  onReconcileFailure,
+  onSteerError,
+}: {
+  session: SessionRecord;
+  authorId: string;
+  content: string;
+  messageId: string;
+  reconcileBeforeDiscordInput: (
+    session: SessionRecord,
+  ) => Promise<DiscordInputReconcileResult>;
+  startTurnFromDiscordInput: (input: {
+    session: SessionRecord;
+    content: string;
+    request: StartThreadTurnDecision["request"];
+    replyToMessageId?: string;
+  }) => Promise<void>;
+  steerTurnFromDiscordInput: (input: {
+    session: SessionRecord;
+    content: string;
+  }) => Promise<void>;
+  replyToMessage: (content: string) => Promise<void>;
+  sendReadOnlySurface: (session: SessionRecord) => Promise<void>;
+  onReconcileFailure?: (
+    error: unknown,
+    session: SessionRecord,
+  ) => Promise<void> | void;
+  onSteerError?: (
+    error: unknown,
+    session: SessionRecord,
+  ) => Promise<void> | void;
+}) => {
+  if (!canAcceptManagedSessionThreadInput(session)) {
+    return { kind: "noop" as const };
+  }
+
+  let effectiveSession = session;
+
+  if (authorId === session.ownerDiscordUserId) {
+    let reconcileResult: DiscordInputReconcileResult;
+
+    try {
+      reconcileResult = await reconcileBeforeDiscordInput(session);
+    } catch (error) {
+      await onReconcileFailure?.(error, session);
+      await replyToMessage(
+        "Couldn't verify the latest Codex state for this session, so I didn't send that input to Codex. Try again in a moment.",
+      );
+      return { kind: "reconcile-failed" as const };
+    }
+
+    if (!reconcileResult.ok) {
+      if (!reconcileResult.surfaceAlreadySent) {
+        await sendReadOnlySurface(reconcileResult.session ?? session);
+      }
+      return { kind: "read-only" as const };
+    }
+
+    effectiveSession = reconcileResult.session;
+  }
+
+  const decision = decideThreadTurn({
+    authorId,
+    ownerId: effectiveSession.ownerDiscordUserId,
+    content,
+    sessionState: getDiscordInputDecisionState(effectiveSession.state),
+    codexThreadId: effectiveSession.codexThreadId,
+  });
+
+  if (decision.kind === "noop") {
+    return { kind: "noop" as const };
+  }
+
+  if (decision.kind === "reject") {
+    await replyToMessage(
+      "Session is waiting for approval. New follow-up input is blocked until that approval is resolved.",
+    );
+    return { kind: "reject" as const };
+  }
+
+  if (decision.kind === "read-only") {
+    await sendReadOnlySurface(effectiveSession);
+    return { kind: "read-only" as const };
+  }
+
+  if (decision.kind === "steer-turn") {
+    try {
+      await steerTurnFromDiscordInput({
+        session: effectiveSession,
+        content,
+      });
+    } catch (error) {
+      await onSteerError?.(error, effectiveSession);
+      await replyToMessage(
+        "Couldn't queue follow-up input for the current turn.",
+      );
+      return { kind: "steer-error" as const };
+    }
+
+    return { kind: "steer-turn" as const };
+  }
+
+  await startTurnFromDiscordInput({
+    session: effectiveSession,
+    content,
+    replyToMessageId: messageId,
+    request: decision.request,
+  });
+
+  return { kind: "start-turn" as const };
+};
+
 export const shouldIgnoreManagedThreadMessage = (
   message: Pick<Message, "author" | "system">,
 ) => {
@@ -6102,6 +6337,7 @@ const startCodeHelmRuntime = async (
   const runtimeProviderRequestIdsByApprovalKey = new Map<string, JsonRpcId>();
   const approvalResolutionsInFlight = new Set<string>();
   const transcriptRuntimes = new Map<string, TranscriptRuntime>();
+  const reconcileFailedThreadIds = new Set<string>();
   let discordClient: Client | undefined;
   let shuttingDown = false;
 
@@ -6115,6 +6351,10 @@ const startCodeHelmRuntime = async (
     const runtime = buildTranscriptRuntime();
     transcriptRuntimes.set(codexThreadId, runtime);
     return runtime;
+  };
+
+  const getTranscriptRuntime = (codexThreadId: string) => {
+    return transcriptRuntimes.get(codexThreadId);
   };
 
   const stopDiscordTypingPulse = (runtime: TranscriptRuntime) => {
@@ -7094,83 +7334,72 @@ const startCodeHelmRuntime = async (
         return;
       }
 
-      if (!canAcceptManagedSessionThreadInput(session)) {
-        return;
-      }
-
-      const sessionState =
-        session.state === "running"
-          || session.state === "waiting-approval"
-          || session.state === "degraded"
-          ? (session.state as SessionRuntimeState)
-          : "idle";
-      const decision = decideThreadTurn({
+      await handleActiveManagedThreadDiscordInput({
+        session,
         authorId: message.author.id,
-        ownerId: session.ownerDiscordUserId,
         content: message.content,
-        sessionState,
-        codexThreadId: session.codexThreadId,
-      });
-
-      if (decision.kind === "noop") {
-        return;
-      }
-
-      if (decision.kind === "reject") {
-        await message.reply(
-          "Session is waiting for approval. New follow-up input is blocked until that approval is resolved.",
-        );
-        return;
-      }
-
-      if (decision.kind === "read-only") {
-        await sendTextToChannel(
-          bot.client,
-          message.channelId,
-          renderDegradationActionText({
-            type: "session.degraded",
-            params: {
-              reason: session.degradationReason,
-            },
+        messageId: message.id,
+        reconcileBeforeDiscordInput: async (activeSession) =>
+          reconcileManagedSessionBeforeDiscordInput({
+            session: activeSession,
+            runtime: getTranscriptRuntime(activeSession.codexThreadId),
+            reconcileFailedThreadIds,
+            readRecentThreadForRuntimeSnapshotReconciliation,
+            syncTranscriptSnapshotFromReadResult: async ({
+              session: sessionToSync,
+              snapshot,
+              degradeOnUnexpectedItems,
+            }) =>
+              syncTranscriptSnapshotFromReadResult({
+                discord: bot.client,
+                session: sessionToSync,
+                snapshot,
+                degradeOnUnexpectedItems,
+              }),
+            getSessionByCodexThreadId: (codexThreadId) =>
+              sessionRepo.getByCodexThreadId(codexThreadId),
           }),
-        );
-        await sendTextToChannel(
-          bot.client,
-          message.channelId,
-          renderDegradationBannerPayload({
-            type: "session.degraded",
-            params: {
-              reason: session.degradationReason,
-            },
-          }),
-        );
-        return;
-      }
-
-      if (decision.kind === "steer-turn") {
-        try {
-          await steerTurnFromDiscordInput({
-            session,
-            content: message.content,
-          });
-        } catch (error) {
-          logger.warn("Failed to steer managed session turn from Discord message", {
-            discordThreadId: session.discordThreadId,
-            codexThreadId: session.codexThreadId,
+        startTurnFromDiscordInput,
+        steerTurnFromDiscordInput,
+        replyToMessage: async (content) => {
+          await message.reply(content);
+        },
+        sendReadOnlySurface: async (readOnlySession) => {
+          await sendTextToChannel(
+            bot.client,
+            message.channelId,
+            renderDegradationActionText({
+              type: "session.degraded",
+              params: {
+                reason: readOnlySession.degradationReason,
+              },
+            }),
+          );
+          await sendTextToChannel(
+            bot.client,
+            message.channelId,
+            renderDegradationBannerPayload({
+              type: "session.degraded",
+              params: {
+                reason: readOnlySession.degradationReason,
+              },
+            }),
+          );
+        },
+        onReconcileFailure: (error, failedSession) => {
+          logger.warn("Failed to reconcile managed session before Discord input", {
+            discordThreadId: failedSession.discordThreadId,
+            codexThreadId: failedSession.codexThreadId,
             error,
           });
-          await message.reply(
-            "Couldn't queue follow-up input for the current turn.",
-          );
-        }
-        return;
-      }
-
-      await startTurnFromDiscordInput({
-        session,
-        content: message.content,
-        replyToMessageId: message.id,
-        request: decision.request,
+        },
+        onSteerError: (error, failedSession) => {
+          logger.warn("Failed to steer managed session turn from Discord message", {
+            discordThreadId: failedSession.discordThreadId,
+            codexThreadId: failedSession.codexThreadId,
+            error,
+          });
+        },
       });
     })().catch(async (error) => {
       const session = sessionRepo.getByDiscordThreadId(message.channelId);
