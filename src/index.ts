@@ -376,6 +376,7 @@ type TranscriptRuntime = {
 
 const startupSessionWarmupTimeoutMs = 10_000;
 const sessionReconcileTimeoutMs = 10_000;
+const syncReplayMessageLimit = 3;
 const managedCodexAppServerStopTimeoutMs = 1_000;
 const discordTypingPulseIntervalMs = 8_000;
 const approvalAllowedMentions = {
@@ -2248,7 +2249,7 @@ const resolveTranscriptReplyToMessageId = ({
   return turnId ? runtime.turnReplyMessageIds.get(turnId) : undefined;
 };
 
-const relayTranscriptEntries = async ({
+export const relayTranscriptEntries = async ({
   client,
   channelId,
   runtime,
@@ -2256,6 +2257,8 @@ const relayTranscriptEntries = async ({
   source,
   activeTurnId,
   activeTurnFooter,
+  suppressUserEntries = false,
+  maxRenderedEntries,
 }: {
   client: Client;
   channelId: string;
@@ -2264,10 +2267,12 @@ const relayTranscriptEntries = async ({
   source: "live" | "snapshot";
   activeTurnId?: string;
   activeTurnFooter?: ProcessFooterText;
+  suppressUserEntries?: boolean;
+  maxRenderedEntries?: number;
 }) => {
   const pendingDiscordInputs = getPendingLocalInputTexts(runtime);
   const pendingDiscordInputCount = pendingDiscordInputs.length;
-  const entries = collectTranscriptEntries(turns, {
+  const collectedEntries = collectTranscriptEntries(turns, {
     source,
     pendingDiscordInputs,
     activeTurnId,
@@ -2277,8 +2282,14 @@ const relayTranscriptEntries = async ({
       runtime,
       itemId: entry.itemId,
       source,
-    })
+      })
   );
+  const renderableEntries = suppressUserEntries
+    ? collectedEntries.filter((entry) => entry.kind !== "user")
+    : collectedEntries;
+  const entries = maxRenderedEntries === undefined
+    ? renderableEntries
+    : renderableEntries.slice(0, Math.max(0, maxRenderedEntries));
   const consumedPendingDiscordInputs =
     pendingDiscordInputCount - pendingDiscordInputs.length;
 
@@ -6318,6 +6329,8 @@ const startCodeHelmRuntime = async (
       activeTurnFooter: activeTurnId
         ? getFooterForSessionState(activeRuntimeState)
         : undefined,
+      suppressUserEntries: true,
+      maxRenderedEntries: syncReplayMessageLimit,
     });
   };
 

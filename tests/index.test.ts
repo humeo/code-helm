@@ -1,8 +1,9 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { MessageFlags } from "discord.js";
+import { MessageFlags, type Client } from "discord.js";
 import { expect, test } from "bun:test";
+import * as codeHelmIndex from "../src/index";
 import type {
   CodexThread,
   CodexThreadStatus,
@@ -192,6 +193,90 @@ const createSequentialTurns = (count: number): CodexTurn[] =>
 
 const readTurnIds = (snapshot: ThreadReadResult) =>
   snapshot.thread.turns?.map((turn) => turn.id) ?? [];
+
+type RelayTranscriptEntriesForTest = (input: {
+  client: Client;
+  channelId: string;
+  runtime: ReturnType<typeof createRelayTranscriptRuntime>;
+  turns: CodexTurn[] | undefined;
+  source: "live" | "snapshot";
+  suppressUserEntries?: boolean;
+  maxRenderedEntries?: number;
+}) => Promise<void>;
+
+const getRelayTranscriptEntriesForTest = () => {
+  const relay = (codeHelmIndex as typeof codeHelmIndex & {
+    relayTranscriptEntries?: RelayTranscriptEntriesForTest;
+  }).relayTranscriptEntries;
+
+  expect(typeof relay).toBe("function");
+  return relay as RelayTranscriptEntriesForTest;
+};
+
+const createRelayTranscriptRuntime = () => ({
+  seenItemIds: new Set<string>(),
+  finalizingItemIds: new Set<string>(),
+  pendingLocalInputs: [],
+  pendingDiscordInputReplyMessageIds: [],
+  turnReplyMessageIds: new Map<string, string>(),
+  trustedExternalTurnIds: new Set<string>(),
+  closedTurnIds: new Set<string>(),
+  typingActive: false,
+  typingTimeout: undefined,
+  turnProcessMessages: new Map(),
+  itemTurnIds: new Map<string, string>(),
+  activeTurnId: undefined as string | undefined,
+  statusMessage: undefined,
+  statusActivity: undefined,
+  statusCommand: undefined,
+  attemptedStatusRecovery: false,
+  pendingStatusUpdate: undefined,
+  threadTokenUsage: undefined,
+});
+
+const createRelayClient = (
+  sentPayloads: Array<{ content?: string; embeds?: unknown[]; reply?: unknown }>,
+): Client => ({
+  channels: {
+    fetch: async () => ({
+      send: async (payload: { content?: string; embeds?: unknown[]; reply?: unknown }) => {
+        sentPayloads.push(payload);
+        return { id: `message-${sentPayloads.length}` };
+      },
+    }),
+  },
+}) as unknown as Client;
+
+const createSnapshotReplayTurns = (count: number): CodexTurn[] =>
+  Array.from({ length: count }, (_, index) => {
+    const ordinal = index + 1;
+
+    return {
+      id: `turn-${ordinal}`,
+      status: "completed",
+      items: [
+        {
+          type: "userMessage",
+          id: `user-${ordinal}`,
+          content: [{ type: "text", text: `historical user ${ordinal}` }],
+        },
+        {
+          type: "commandExecution",
+          id: `cmd-${ordinal}`,
+          command: `echo ${ordinal}`,
+          cwd: "/tmp/workspace/api",
+          status: "completed",
+          exitCode: 0,
+        },
+        {
+          type: "agentMessage",
+          id: `agent-${ordinal}`,
+          text: `assistant reply ${ordinal}`,
+          phase: "final_answer",
+        },
+      ],
+    };
+  });
 
 const createResumePickerThread = (
   overrides: Partial<CodexThread> = {},
@@ -1204,6 +1289,21 @@ test("startup does not install idle snapshot polling", () => {
 
   expect(source).not.toContain("const snapshotPoll = setInterval");
   expect(source).not.toContain("clearInterval(snapshotPoll)");
+});
+
+test("runtime snapshot sync uses capped replay options while live relay keeps defaults", () => {
+  const source = readFileSync(join(process.cwd(), "src/index.ts"), "utf8");
+  const snapshotSyncStart = source.indexOf("const syncTranscriptSnapshotFromReadResult = async");
+  const snapshotSyncEnd = source.indexOf("const syncTranscriptSnapshot = async", snapshotSyncStart);
+  const snapshotSyncBlock = source.slice(snapshotSyncStart, snapshotSyncEnd);
+  const liveRelayStart = source.indexOf("await relayTranscriptEntries({", source.indexOf("item/completed"));
+  const liveRelayEnd = source.indexOf("});", liveRelayStart);
+  const liveRelayBlock = source.slice(liveRelayStart, liveRelayEnd);
+
+  expect(snapshotSyncBlock).toContain("suppressUserEntries: true");
+  expect(snapshotSyncBlock).toContain("maxRenderedEntries: syncReplayMessageLimit");
+  expect(liveRelayBlock).not.toContain("suppressUserEntries");
+  expect(liveRelayBlock).not.toContain("maxRenderedEntries");
 });
 
 test("startCodeHelm does not enter a running runtime when managed Codex startup stays delayed", async () => {
@@ -6387,6 +6487,145 @@ test("automatic snapshot mismatch holds transcript relay until manual sync", () 
       degradeOnUnexpectedItems: false,
     }),
   ).toBe(false);
+});
+
+test("manual sync snapshot replay caps assistant messages and suppresses historical users", async () => {
+  const relayTranscriptEntries = getRelayTranscriptEntriesForTest();
+  const sentPayloads: Array<{ content?: string; embeds?: unknown[]; reply?: unknown }> = [];
+  const runtime = createRelayTranscriptRuntime();
+  const snapshot = createThreadReadResult({
+    status: { type: "idle" },
+    turns: createSnapshotReplayTurns(5),
+  });
+
+  await syncManagedSession({
+    session: createSessionRecord({
+      state: "degraded",
+      degradationReason: "snapshot_mismatch",
+    }),
+    readThread: async () => snapshot,
+    detectReadOnlyReason: async () => null,
+    persistSessionState: async () => {},
+    syncReadOnlySurface: async () => {},
+    updateStatusCard: async () => {},
+    syncTranscriptSnapshot: async (readResult) => {
+      await relayTranscriptEntries({
+        client: createRelayClient(sentPayloads),
+        channelId: "discord-thread-1",
+        runtime,
+        turns: readResult.thread.turns,
+        source: "snapshot",
+        suppressUserEntries: true,
+        maxRenderedEntries: 3,
+      });
+    },
+  });
+
+  expect(sentPayloads.map((payload) => payload.content)).toEqual([
+    "assistant reply 1",
+    "assistant reply 2",
+    "assistant reply 3",
+  ]);
+  expect(JSON.stringify(sentPayloads)).not.toContain("historical user");
+});
+
+test("snapshot replay marks the full recent window even when rendering is capped", async () => {
+  const relayTranscriptEntries = getRelayTranscriptEntriesForTest();
+  const sentPayloads: Array<{ content?: string; embeds?: unknown[]; reply?: unknown }> = [];
+  const runtime = createRelayTranscriptRuntime();
+  const turns = createSnapshotReplayTurns(5);
+
+  await relayTranscriptEntries({
+    client: createRelayClient(sentPayloads),
+    channelId: "discord-thread-1",
+    runtime,
+    turns,
+    source: "snapshot",
+    suppressUserEntries: true,
+    maxRenderedEntries: 3,
+  });
+  await relayTranscriptEntries({
+    client: createRelayClient(sentPayloads),
+    channelId: "discord-thread-1",
+    runtime,
+    turns,
+    source: "snapshot",
+    suppressUserEntries: true,
+    maxRenderedEntries: 3,
+  });
+
+  expect(sentPayloads.map((payload) => payload.content)).toEqual([
+    "assistant reply 1",
+    "assistant reply 2",
+    "assistant reply 3",
+  ]);
+  expect(runtime.seenItemIds.has(getUserTranscriptEntryId("turn-5"))).toBe(true);
+  expect(runtime.seenItemIds.has(getAssistantTranscriptEntryId("turn-5"))).toBe(true);
+});
+
+test("resume sync snapshot replay inherits the cap and user suppression", async () => {
+  const relayTranscriptEntries = getRelayTranscriptEntriesForTest();
+  const sentPayloads: Array<{ content?: string; embeds?: unknown[]; reply?: unknown }> = [];
+  const runtime = createRelayTranscriptRuntime();
+  const snapshot = createThreadReadResult({
+    status: { type: "idle" },
+    turns: createSnapshotReplayTurns(5),
+  });
+
+  await resumeManagedSession({
+    session: createSessionRecord({
+      lifecycleState: "archived",
+      state: "idle",
+    }),
+    readThread: async () => snapshot,
+    archiveThread: async () => {},
+    unarchiveThread: async () => {},
+    persistLifecycleState: async () => {},
+    persistRuntimeState: async () => {},
+    updateStatusCard: async () => {},
+    syncTranscriptSnapshot: async (readResult) => {
+      await relayTranscriptEntries({
+        client: createRelayClient(sentPayloads),
+        channelId: "discord-thread-1",
+        runtime,
+        turns: readResult.thread.turns,
+        source: "snapshot",
+        suppressUserEntries: true,
+        maxRenderedEntries: 3,
+      });
+    },
+  });
+
+  expect(sentPayloads.map((payload) => payload.content)).toEqual([
+    "assistant reply 1",
+    "assistant reply 2",
+    "assistant reply 3",
+  ]);
+  expect(JSON.stringify(sentPayloads)).not.toContain("historical user");
+});
+
+test("live transcript relay defaults still render user entries and all replies", async () => {
+  const relayTranscriptEntries = getRelayTranscriptEntriesForTest();
+  const sentPayloads: Array<{ content?: string; embeds?: unknown[]; reply?: unknown }> = [];
+
+  await relayTranscriptEntries({
+    client: createRelayClient(sentPayloads),
+    channelId: "discord-thread-1",
+    runtime: createRelayTranscriptRuntime(),
+    turns: createSnapshotReplayTurns(4),
+    source: "live",
+  });
+
+  expect(sentPayloads.map((payload) => payload.content)).toEqual([
+    "historical user 1",
+    "assistant reply 1",
+    "historical user 2",
+    "assistant reply 2",
+    "historical user 3",
+    "assistant reply 3",
+    "historical user 4",
+    "assistant reply 4",
+  ]);
 });
 
 test("snapshot mismatch ignores live-vs-snapshot id remapping when the same turn was already observed live", () => {
