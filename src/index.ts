@@ -2544,6 +2544,16 @@ const buildApprovalKey = ({
     : `${turnId}:${itemId}`;
 };
 
+export const readTurnIdFromApprovalKey = (approvalKey: string) => {
+  const separatorIndex = approvalKey.indexOf(":");
+
+  if (separatorIndex <= 0) {
+    return undefined;
+  }
+
+  return approvalKey.slice(0, separatorIndex);
+};
+
 const approvalRequestKindByMethod: Record<ApprovalRequestMethod, string> = {
   "item/commandExecution/requestApproval": "command_execution",
   "item/fileChange/requestApproval": "file_change",
@@ -8801,7 +8811,7 @@ const startCodeHelmRuntime = async (
 
       const runtime = ensureTranscriptRuntime(session.codexThreadId);
       const approvalTurnId =
-        readTurnIdFromTranscriptEntryId(storedApproval.approvalKey)
+        readTurnIdFromApprovalKey(storedApproval.approvalKey)
         ?? runtime.activeTurnId;
 
       if (

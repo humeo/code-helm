@@ -321,6 +321,17 @@ const getResolveCodexRemoteEventProjectionToDiscordForTest = () => {
   return helper as ResolveCodexRemoteEventProjectionToDiscordForTest;
 };
 
+type ReadTurnIdFromApprovalKeyForTest = (approvalKey: string) => string | undefined;
+
+const getReadTurnIdFromApprovalKeyForTest = () => {
+  const helper = (codeHelmIndex as typeof codeHelmIndex & {
+    readTurnIdFromApprovalKey?: ReadTurnIdFromApprovalKeyForTest;
+  }).readTurnIdFromApprovalKey;
+
+  expect(typeof helper).toBe("function");
+  return helper as ReadTurnIdFromApprovalKeyForTest;
+};
+
 type ShouldProjectCodexRemoteEventToDiscordForTest = (input: {
   session: Pick<SessionRecord, "lifecycleState">;
   discordThreadProjectable: boolean;
@@ -2363,6 +2374,73 @@ test("approval projection skip gate invalidates trusted runtime for archived and
   }
 
   expect(setArchivedCalls).toEqual([]);
+});
+
+test("approval key parsing reads the turn id before the first separator", () => {
+  const readTurnIdFromApprovalKey = getReadTurnIdFromApprovalKeyForTest();
+
+  expect(readTurnIdFromApprovalKey("turn-1:call-1")).toBe("turn-1");
+  expect(readTurnIdFromApprovalKey("turn-1:call-1:approval-1")).toBe("turn-1");
+  expect(readTurnIdFromApprovalKey("")).toBeUndefined();
+  expect(readTurnIdFromApprovalKey("turn-1")).toBeUndefined();
+  expect(readTurnIdFromApprovalKey(":call-1")).toBeUndefined();
+});
+
+test("approval resolution projection skip invalidates the trusted turn from the approval key", async () => {
+  const readTurnIdFromApprovalKey = getReadTurnIdFromApprovalKeyForTest();
+  const resolveProjection = getResolveCodexRemoteEventProjectionToDiscordForTest();
+  const db = createDatabaseClient(":memory:");
+  applyMigrations(db);
+  const sessionRepo = createSessionRepo(db);
+  const approvalRepo = createApprovalRepo(db);
+  const runtime = createRelayTranscriptRuntime();
+  runtime.trustedForDiscordInput = true;
+  noteTrustedLiveExternalTurnStart({
+    runtime,
+    turnId: "turn-1",
+  });
+  sessionRepo.insert({
+    discordThreadId: "discord-thread-1",
+    codexThreadId: "codex-thread-1",
+    ownerDiscordUserId: "owner-1",
+    cwd: "/tmp/workspace/api",
+    state: "waiting-approval",
+  });
+  approvalRepo.insert({
+    approvalKey: "turn-1:call-1",
+    requestId: "req-7",
+    codexThreadId: "codex-thread-1",
+    discordThreadId: "discord-thread-1",
+    status: "resolved",
+    displayTitle: "Command approval",
+    commandPreview: "touch c.txt",
+  });
+  const storedApproval = approvalRepo.getByApprovalKey("turn-1:call-1");
+
+  expect(storedApproval).not.toBeNull();
+  const result = await resolveProjection({
+    client: createProjectableThreadTestClient({
+      archived: true,
+      send: async () => undefined,
+      setArchived: async () => undefined,
+    }),
+    session: createSessionRecord({
+      state: "waiting-approval",
+      lifecycleState: "active",
+    }),
+    runtime,
+    turnId: readTurnIdFromApprovalKey(storedApproval?.approvalKey ?? ""),
+  });
+
+  expect(result).toMatchObject({
+    project: false,
+    reason: "archived",
+  });
+  expect(runtime.trustedForDiscordInput).toBe(false);
+  expect(runtime.trustedExternalTurnIds.has("turn-1")).toBe(false);
+  expect(runtime.trustedExternalTurnIds.has("call-1")).toBe(false);
+
+  db.close();
 });
 
 test("untrusted runtime states and prior failed reconciles still read recent snapshot", async () => {
