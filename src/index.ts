@@ -6544,7 +6544,7 @@ const startCodeHelmRuntime = async (
     stopDiscordTypingPulse(ensureTranscriptRuntime(session.codexThreadId));
 
     if (session.state === "degraded") {
-      return;
+      return false;
     }
 
     logger.warn("Managed session degraded to read-only", {
@@ -6569,6 +6569,7 @@ const startCodeHelmRuntime = async (
         params: { reason },
       }),
     );
+    return true;
   };
 
   const readRecentThreadForRuntimeSnapshotReconciliation = async (
@@ -6602,12 +6603,12 @@ const startCodeHelmRuntime = async (
       })
       && shouldDegradeDiscordToReadOnly({ controlSurface: "codex-remote" })
     ) {
-      await degradeSessionToReadOnly({
+      const degradationSurfaceSent = await degradeSessionToReadOnly({
         discord,
         session,
         reason: "snapshot_mismatch",
       });
-      return { degradationSurfaceSent: true };
+      return { degradationSurfaceSent };
     }
 
     const activeRuntimeState = inferSessionStateFromThreadStatus(snapshot.thread.status);

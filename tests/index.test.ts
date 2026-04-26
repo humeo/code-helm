@@ -1583,7 +1583,74 @@ test("snapshot status read-only during active owner input sends a read-only surf
   ]);
 });
 
-test("snapshot mismatch surface is not duplicated after lazy reconcile blocks input", async () => {
+test("already-degraded snapshot mismatch sends fallback read-only surface", async () => {
+  const reconcile = getReconcileManagedSessionBeforeDiscordInputForTest();
+  const handleInput = getHandleActiveManagedThreadDiscordInputForTest();
+  const events: string[] = [];
+  const storedSession = createSessionRecord({
+    state: "degraded",
+    degradationReason: "snapshot_mismatch",
+  });
+  const snapshot = createThreadReadResult({
+    status: { type: "idle" },
+    turns: [
+      {
+        id: "turn-remote",
+        status: "completed",
+        items: [
+          {
+            type: "userMessage",
+            id: "user-remote",
+            content: [{ type: "text", text: "remote-only input" }],
+          },
+        ],
+      },
+    ],
+  });
+
+  const result = await handleInput({
+    session: storedSession,
+    authorId: "owner-1",
+    content: "hi",
+    messageId: "discord-message-1",
+    reconcileBeforeDiscordInput: async (session) =>
+      reconcile({
+        session,
+        runtime: undefined,
+        reconcileFailedThreadIds: new Set<string>(),
+        readRecentThreadForRuntimeSnapshotReconciliation: async () => {
+          events.push("read");
+          return snapshot;
+        },
+        syncTranscriptSnapshotFromReadResult: async () => {
+          events.push("sync-no-surface");
+          return { degradationSurfaceSent: false };
+        },
+        getSessionByCodexThreadId: () => storedSession,
+      }),
+    startTurnFromDiscordInput: async () => {
+      events.push("start");
+    },
+    steerTurnFromDiscordInput: async () => {
+      events.push("steer");
+    },
+    replyToMessage: async (content) => {
+      events.push(`reply:${content}`);
+    },
+    sendReadOnlySurface: async (session) => {
+      events.push(`read-only:${session.degradationReason}`);
+    },
+  });
+
+  expect(result.kind).toBe("read-only");
+  expect(events).toEqual([
+    "read",
+    "sync-no-surface",
+    "read-only:snapshot_mismatch",
+  ]);
+});
+
+test("newly-degraded snapshot mismatch surface is not duplicated after lazy reconcile blocks input", async () => {
   const reconcile = getReconcileManagedSessionBeforeDiscordInputForTest();
   const handleInput = getHandleActiveManagedThreadDiscordInputForTest();
   const events: string[] = [];
@@ -1645,6 +1712,36 @@ test("snapshot mismatch surface is not duplicated after lazy reconcile blocks in
 
   expect(result.kind).toBe("read-only");
   expect(events).toEqual(["read", "sync-sent-surface"]);
+});
+
+test("snapshot mismatch reports a sent surface only when degradation sends one", () => {
+  const source = readFileSync(join(process.cwd(), "src/index.ts"), "utf8");
+  const degradeStart = source.indexOf("const degradeSessionToReadOnly = async");
+  const degradeEnd = source.indexOf(
+    "const readRecentThreadForRuntimeSnapshotReconciliation",
+    degradeStart,
+  );
+  const degradeBlock = source.slice(degradeStart, degradeEnd);
+  const snapshotSyncStart = source.indexOf(
+    "const syncTranscriptSnapshotFromReadResult = async",
+  );
+  const snapshotSyncEnd = source.indexOf(
+    "const syncTranscriptSnapshot = async",
+    snapshotSyncStart,
+  );
+  const snapshotSyncBlock = source.slice(snapshotSyncStart, snapshotSyncEnd);
+
+  expect(degradeStart).toBeGreaterThan(-1);
+  expect(degradeEnd).toBeGreaterThan(degradeStart);
+  expect(snapshotSyncStart).toBeGreaterThan(-1);
+  expect(snapshotSyncEnd).toBeGreaterThan(snapshotSyncStart);
+  expect(degradeBlock).toContain("return false;");
+  expect(degradeBlock).toContain("return true;");
+  expect(snapshotSyncBlock).toContain(
+    "const degradationSurfaceSent = await degradeSessionToReadOnly",
+  );
+  expect(snapshotSyncBlock).toContain("return { degradationSurfaceSent };");
+  expect(snapshotSyncBlock).not.toContain("return { degradationSurfaceSent: true };");
 });
 
 test("active owner running message reconciles before steering an untrusted runtime", async () => {
