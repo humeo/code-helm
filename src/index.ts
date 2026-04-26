@@ -3443,6 +3443,17 @@ export const shouldProjectManagedSessionDiscordSurface = (
   return session.lifecycleState === "active";
 };
 
+export const shouldProjectCodexRemoteEventToDiscord = ({
+  session,
+  discordThreadProjectable,
+}: {
+  session: Pick<SessionRecord, "lifecycleState">;
+  discordThreadProjectable: boolean;
+}) => {
+  return shouldProjectManagedSessionDiscordSurface(session)
+    && discordThreadProjectable;
+};
+
 export const withSessionOperationTimeout = async <TResult>(
   operation: Promise<TResult>,
   timeoutMs: number | undefined,
@@ -6109,6 +6120,33 @@ const isManagedDiscordThreadUsable = async ({
   }
 };
 
+export const isManagedDiscordThreadProjectable = async ({
+  client,
+  threadId,
+}: {
+  client: Client;
+  threadId: string;
+}) => {
+  try {
+    const channel = await client.channels.fetch(threadId);
+
+    if (!isSendableChannel(channel)) {
+      return false;
+    }
+
+    if (
+      "archived" in channel
+      && (channel as { archived?: unknown }).archived === true
+    ) {
+      return false;
+    }
+
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 const recoverStatusCardMessage = async (
   client: Client,
   channelId: string,
@@ -6598,6 +6636,42 @@ const startCodeHelmRuntime = async (
     sessionRepo.updateState(session.discordThreadId, nextState);
   };
 
+  const shouldProjectCodexRemoteEventForSession = async ({
+    discord,
+    session,
+    operation,
+  }: {
+    discord: Client;
+    session: SessionRecord;
+    operation: string;
+  }) => {
+    if (!shouldProjectManagedSessionDiscordSurface(session)) {
+      return false;
+    }
+
+    const discordThreadProjectable = await isManagedDiscordThreadProjectable({
+      client: discord,
+      threadId: session.discordThreadId,
+    });
+    const shouldProject = shouldProjectCodexRemoteEventToDiscord({
+      session,
+      discordThreadProjectable,
+    });
+
+    if (!shouldProject) {
+      logger.debug("Skipping Codex remote Discord projection", {
+        operation,
+        discordThreadId: session.discordThreadId,
+        codexThreadId: session.codexThreadId,
+        sessionState: session.state,
+        lifecycleState: session.lifecycleState,
+        discordThreadProjectable,
+      });
+    }
+
+    return shouldProject;
+  };
+
   const updateStatusCard = async ({
     discord,
     session,
@@ -6637,6 +6711,17 @@ const startCodeHelmRuntime = async (
     if (nextState !== "running") {
       runtime.statusActivity = undefined;
       runtime.statusCommand = undefined;
+    }
+
+    if (
+      !await shouldProjectCodexRemoteEventForSession({
+        discord,
+        session,
+        operation: "status-card-update",
+      })
+    ) {
+      stopDiscordTypingPulse(runtime);
+      return;
     }
 
     if (shouldShowDiscordTypingIndicator(nextState)) {
@@ -7344,6 +7429,16 @@ const startCodeHelmRuntime = async (
       return;
     }
 
+    if (
+      !await shouldProjectCodexRemoteEventForSession({
+        discord,
+        session,
+        operation: "live-process-update",
+      })
+    ) {
+      return;
+    }
+
     const rendered = renderLiveTurnProcessMessage({
       turnId,
       steps: current.steps,
@@ -7407,6 +7502,19 @@ const startCodeHelmRuntime = async (
       return;
     }
 
+    if (
+      session.state === "degraded"
+      || !await shouldProjectCodexRemoteEventForSession({
+        discord,
+        session,
+        operation: "live-process-finalize",
+      })
+    ) {
+      runtime.seenItemIds.delete(getProcessTranscriptEntryId(turnId));
+      runtime.turnProcessMessages.delete(turnId);
+      return;
+    }
+
     await finalizeLiveTurnProcessMessage({
       currentMessage: current.message,
       currentMessagePromise: current.pendingCreate,
@@ -7454,6 +7562,17 @@ const startCodeHelmRuntime = async (
     }
 
     if (item.phase === "commentary") {
+      runtime.itemTurnIds.delete(item.id);
+      return;
+    }
+
+    if (
+      !await shouldProjectCodexRemoteEventForSession({
+        discord,
+        session,
+        operation: "assistant-transcript-finalize",
+      })
+    ) {
       runtime.itemTurnIds.delete(item.id);
       return;
     }
@@ -7945,6 +8064,16 @@ const startCodeHelmRuntime = async (
         return;
       }
 
+      if (
+        !await shouldProjectCodexRemoteEventForSession({
+          discord: bot.client,
+          session,
+          operation: "live-transcript-relay",
+        })
+      ) {
+        return;
+      }
+
       const shouldTrackAsFinalizing =
         hasItemId(item) && shouldTrackLiveCompletedItemAsFinalizing(item);
 
@@ -8054,37 +8183,49 @@ const startCodeHelmRuntime = async (
         turn: params.turn,
       });
 
-      await applyManagedTurnCompletion({
+      updateSessionStateIfWritable(session, "idle");
+
+      if (
+        !await shouldProjectCodexRemoteEventForSession({
+          discord: bot.client,
+          session,
+          operation: "turn-completed",
+        })
+      ) {
+        return;
+      }
+
+      await updateStatusCard({
+        discord: bot.client,
         session,
-        markIdle: () => {
-          updateSessionStateIfWritable(session, "idle");
-        },
-        updateStatusCard: async () => {
-          await updateStatusCard({
-            discord: bot.client,
-            session,
-            state: "idle",
-          });
-        },
-        syncTranscriptSnapshot: async () => {
-          await syncTranscriptSnapshot({
-            discord: bot.client,
-            session,
-            degradeOnUnexpectedItems: false,
-          });
-        },
-        bootstrapThreadTitle: async () => {
-          await maybeBootstrapManagedThreadTitle({
-            client: bot.client,
-            session,
-            completedTurn: params.turn,
-            readThreadSnapshot: async () =>
-              readRecentThreadForRuntimeSnapshotReconciliation(
-                session.codexThreadId,
-              ),
-          });
-        },
+        state: "idle",
       });
+
+      const completedTurn = params.turn;
+
+      if (completedTurn) {
+        await relayTranscriptEntries({
+          client: bot.client,
+          channelId: session.discordThreadId,
+          runtime,
+          turns: [completedTurn],
+          source: "live",
+        });
+        await maybeBootstrapManagedThreadTitle({
+          client: bot.client,
+          session,
+          completedTurn,
+          readThreadSnapshot: async () => ({
+            thread: {
+              id: session.codexThreadId,
+              cwd: session.cwd,
+              preview: "",
+              status: { type: "idle" },
+              turns: [completedTurn],
+            },
+          }),
+        });
+      }
     })().catch((error) => {
       logger.error("Failed to process turn/completed event", error);
     });

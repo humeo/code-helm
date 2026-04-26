@@ -255,6 +255,42 @@ const getReconcileManagedSessionBeforeDiscordInputForTest = () => {
   return helper as ReconcileManagedSessionBeforeDiscordInputForTest;
 };
 
+type IsManagedDiscordThreadProjectableForTest = (input: {
+  client: Client;
+  threadId: string;
+}) => Promise<boolean>;
+
+const getIsManagedDiscordThreadProjectableForTest = () => {
+  const helper = (codeHelmIndex as typeof codeHelmIndex & {
+    isManagedDiscordThreadProjectable?: IsManagedDiscordThreadProjectableForTest;
+  }).isManagedDiscordThreadProjectable;
+
+  expect(typeof helper).toBe("function");
+  return helper as IsManagedDiscordThreadProjectableForTest;
+};
+
+type ShouldProjectCodexRemoteEventToDiscordForTest = (input: {
+  session: Pick<SessionRecord, "lifecycleState">;
+  discordThreadProjectable: boolean;
+}) => boolean;
+
+const getShouldProjectCodexRemoteEventToDiscordForTest = () => {
+  const helper = (codeHelmIndex as typeof codeHelmIndex & {
+    shouldProjectCodexRemoteEventToDiscord?: ShouldProjectCodexRemoteEventToDiscordForTest;
+  }).shouldProjectCodexRemoteEventToDiscord;
+
+  expect(typeof helper).toBe("function");
+  return helper as ShouldProjectCodexRemoteEventToDiscordForTest;
+};
+
+const createProjectableThreadTestClient = (
+  channel: unknown,
+): Client => ({
+  channels: {
+    fetch: async () => channel,
+  },
+}) as never;
+
 type HandleActiveManagedThreadDiscordInputForTest = (input: {
   session: SessionRecord;
   authorId: string;
@@ -5865,6 +5901,105 @@ test("managed session thread input is blocked for archived and deleted lifecycle
       }),
     ),
   ).toBe(false);
+});
+
+test("remote live event projection gate allows active sendable Discord surfaces", async () => {
+  const isManagedDiscordThreadProjectable =
+    getIsManagedDiscordThreadProjectableForTest();
+  const shouldProjectCodexRemoteEventToDiscord =
+    getShouldProjectCodexRemoteEventToDiscordForTest();
+  const client = createProjectableThreadTestClient({
+    send: async () => undefined,
+  });
+  const discordThreadProjectable = await isManagedDiscordThreadProjectable({
+    client,
+    threadId: "discord-thread-1",
+  });
+
+  expect(discordThreadProjectable).toBe(true);
+  expect(
+    ["assistant", "status", "approval"].map(() =>
+      shouldProjectCodexRemoteEventToDiscord({
+        session: createSessionRecord({
+          lifecycleState: "active",
+        }),
+        discordThreadProjectable,
+      }),
+    ),
+  ).toEqual([true, true, true]);
+});
+
+test("remote live transcript projection is skipped for archived and deleted persisted sessions", () => {
+  const shouldProjectCodexRemoteEventToDiscord =
+    getShouldProjectCodexRemoteEventToDiscordForTest();
+
+  expect(
+    shouldProjectCodexRemoteEventToDiscord({
+      session: createSessionRecord({
+        lifecycleState: "archived",
+      }),
+      discordThreadProjectable: true,
+    }),
+  ).toBe(false);
+  expect(
+    shouldProjectCodexRemoteEventToDiscord({
+      session: createSessionRecord({
+        lifecycleState: "deleted",
+      }),
+      discordThreadProjectable: true,
+    }),
+  ).toBe(false);
+});
+
+test("remote live projection skips archived or unavailable Discord threads without unarchiving", async () => {
+  const isManagedDiscordThreadProjectable =
+    getIsManagedDiscordThreadProjectableForTest();
+  const setArchivedCalls: unknown[] = [];
+  const archivedThread = {
+    archived: true,
+    send: async () => undefined,
+    setArchived: async (...args: unknown[]) => {
+      setArchivedCalls.push(args);
+    },
+  };
+
+  await expect(
+    isManagedDiscordThreadProjectable({
+      client: createProjectableThreadTestClient(archivedThread),
+      threadId: "archived-thread",
+    }),
+  ).resolves.toBe(false);
+  expect(setArchivedCalls).toEqual([]);
+  await expect(
+    isManagedDiscordThreadProjectable({
+      client: createProjectableThreadTestClient(null),
+      threadId: "deleted-thread",
+    }),
+  ).resolves.toBe(false);
+  await expect(
+    isManagedDiscordThreadProjectable({
+      client: {
+        channels: {
+          fetch: async () => {
+            throw new Error("Discord channel unavailable");
+          },
+        },
+      } as never,
+      threadId: "unavailable-thread",
+    }),
+  ).resolves.toBe(false);
+});
+
+test("remote live event handlers do not read snapshots for projection decisions", () => {
+  const source = readFileSync(join(process.cwd(), "src/index.ts"), "utf8");
+  const remoteHandlersStart = source.indexOf("codexClient.on(\"turn/started\"");
+  const remoteHandlersEnd = source.indexOf("await codexClient.initialize()", remoteHandlersStart);
+  const remoteHandlersBlock = source.slice(remoteHandlersStart, remoteHandlersEnd);
+
+  expect(remoteHandlersStart).toBeGreaterThan(-1);
+  expect(remoteHandlersEnd).toBeGreaterThan(remoteHandlersStart);
+  expect(remoteHandlersBlock).not.toContain("readThreadForSnapshotReconciliation");
+  expect(remoteHandlersBlock).not.toContain("readRecentThreadForRuntimeSnapshotReconciliation");
 });
 
 test("startup session subscription restore warns and continues after a per-session timeout", async () => {
