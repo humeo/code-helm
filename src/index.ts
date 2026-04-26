@@ -6223,6 +6223,7 @@ const isManagedDiscordThreadUsable = async ({
 export type ManagedDiscordThreadProjectabilityFailureReason =
   | "archived"
   | "not_sendable"
+  | "unavailable"
   | "fetch_failed";
 
 export type ManagedDiscordThreadProjectability =
@@ -6244,6 +6245,13 @@ export const getManagedDiscordThreadProjectability = async ({
 }): Promise<ManagedDiscordThreadProjectability> => {
   try {
     const channel = await client.channels.fetch(threadId);
+
+    if (!channel) {
+      return {
+        projectable: false,
+        reason: "unavailable",
+      };
+    }
 
     if (!isSendableChannel(channel)) {
       return {
@@ -6287,6 +6295,83 @@ export const isManagedDiscordThreadProjectable = async ({
   });
 
   return projectability.projectable;
+};
+
+export type CodexRemoteEventProjectionDecision =
+  | {
+      project: true;
+      discordThreadProjectability: ManagedDiscordThreadProjectability;
+    }
+  | {
+      project: false;
+      reason: ManagedDiscordThreadProjectabilityFailureReason | "session_lifecycle";
+      error?: unknown;
+      discordThreadProjectability?: ManagedDiscordThreadProjectability;
+    };
+
+export const resolveCodexRemoteEventProjectionToDiscord = async ({
+  client,
+  session,
+  runtime,
+  turnId,
+}: {
+  client: Client;
+  session: SessionRecord;
+  runtime?: Pick<TranscriptRuntime, "trustedExternalTurnIds" | "trustedForDiscordInput">;
+  turnId?: string;
+}): Promise<CodexRemoteEventProjectionDecision> => {
+  if (!shouldProjectManagedSessionDiscordSurface(session)) {
+    if (runtime) {
+      invalidateRuntimeTrustForSkippedRemoteProjection({
+        runtime,
+        turnId,
+      });
+    }
+
+    return {
+      project: false,
+      reason: "session_lifecycle",
+    };
+  }
+
+  const discordThreadProjectability = await getManagedDiscordThreadProjectability({
+    client,
+    threadId: session.discordThreadId,
+  });
+
+  if (
+    shouldProjectCodexRemoteEventToDiscord({
+      session,
+      discordThreadProjectable: discordThreadProjectability.projectable,
+    })
+  ) {
+    return {
+      project: true,
+      discordThreadProjectability,
+    };
+  }
+
+  if (runtime) {
+    invalidateRuntimeTrustForSkippedRemoteProjection({
+      runtime,
+      turnId,
+    });
+  }
+
+  if (discordThreadProjectability.projectable) {
+    return {
+      project: false,
+      reason: "session_lifecycle",
+      discordThreadProjectability,
+    };
+  }
+
+  return {
+    project: false,
+    reason: discordThreadProjectability.reason,
+    error: discordThreadProjectability.error,
+    discordThreadProjectability,
+  };
 };
 
 const recoverStatusCardMessage = async (
@@ -6813,8 +6898,8 @@ const startCodeHelmRuntime = async (
       projectionSkipReason: reason,
     };
 
-    if (reason === "fetch_failed") {
-      logger.warn("Skipping Codex remote Discord projection because the Discord thread could not be fetched", {
+    if (reason === "fetch_failed" || reason === "unavailable") {
+      logger.warn("Skipping Codex remote Discord projection because the Discord thread is unavailable", {
         ...metadata,
         error,
       });
@@ -6837,50 +6922,23 @@ const startCodeHelmRuntime = async (
     runtime?: Pick<TranscriptRuntime, "trustedExternalTurnIds" | "trustedForDiscordInput">;
     turnId?: string;
   }) => {
-    if (!shouldProjectManagedSessionDiscordSurface(session)) {
-      if (runtime) {
-        invalidateRuntimeTrustForSkippedRemoteProjection({
-          runtime,
-          turnId,
-        });
-      }
-      logSkippedCodexRemoteProjection({
-        session,
-        operation,
-        reason: "session_lifecycle",
-      });
-      return false;
-    }
-
-    const discordThreadProjectability = await getManagedDiscordThreadProjectability({
+    const projectionDecision = await resolveCodexRemoteEventProjectionToDiscord({
       client: discord,
-      threadId: session.discordThreadId,
-    });
-    const shouldProject = shouldProjectCodexRemoteEventToDiscord({
       session,
-      discordThreadProjectable: discordThreadProjectability.projectable,
+      runtime,
+      turnId,
     });
 
-    if (!shouldProject) {
-      if (runtime) {
-        invalidateRuntimeTrustForSkippedRemoteProjection({
-          runtime,
-          turnId,
-        });
-      }
+    if (!projectionDecision.project) {
       logSkippedCodexRemoteProjection({
         session,
         operation,
-        reason: discordThreadProjectability.projectable
-          ? "session_lifecycle"
-          : discordThreadProjectability.reason,
-        error: discordThreadProjectability.projectable
-          ? undefined
-          : discordThreadProjectability.error,
+        reason: projectionDecision.reason,
+        error: projectionDecision.error,
       });
     }
 
-    return shouldProject;
+    return projectionDecision.project;
   };
 
   const updateStatusCard = async ({
@@ -8584,6 +8642,8 @@ const startCodeHelmRuntime = async (
           discord: bot.client,
           session,
           operation: "approval-request",
+          runtime,
+          turnId: approvalTurnId,
         })
       ) {
         return;
@@ -8735,12 +8795,22 @@ const startCodeHelmRuntime = async (
 
       const session = sessionRepo.getByDiscordThreadId(storedApproval.discordThreadId);
 
+      if (!session) {
+        return;
+      }
+
+      const runtime = ensureTranscriptRuntime(session.codexThreadId);
+      const approvalTurnId =
+        readTurnIdFromTranscriptEntryId(storedApproval.approvalKey)
+        ?? runtime.activeTurnId;
+
       if (
-        !session
-        || !await shouldProjectCodexRemoteEventForSession({
+        !await shouldProjectCodexRemoteEventForSession({
           discord: bot.client,
           session,
           operation: "approval-resolution",
+          runtime,
+          turnId: approvalTurnId,
         })
       ) {
         return;

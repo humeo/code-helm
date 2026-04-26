@@ -266,7 +266,7 @@ type ManagedDiscordThreadProjectabilityForTest =
     }
   | {
       projectable: false;
-      reason: "archived" | "not_sendable" | "fetch_failed";
+      reason: "archived" | "not_sendable" | "unavailable" | "fetch_failed";
       error?: unknown;
     };
 
@@ -291,6 +291,34 @@ const getManagedDiscordThreadProjectabilityForTest = () => {
 
   expect(typeof helper).toBe("function");
   return helper as GetManagedDiscordThreadProjectabilityForTest;
+};
+
+type CodexRemoteEventProjectionDecisionForTest =
+  | {
+      project: true;
+      discordThreadProjectability: ManagedDiscordThreadProjectabilityForTest;
+    }
+  | {
+      project: false;
+      reason: "session_lifecycle" | "archived" | "not_sendable" | "unavailable" | "fetch_failed";
+      error?: unknown;
+      discordThreadProjectability?: ManagedDiscordThreadProjectabilityForTest;
+    };
+
+type ResolveCodexRemoteEventProjectionToDiscordForTest = (input: {
+  client: Client;
+  session: SessionRecord;
+  runtime?: ReturnType<typeof createRelayTranscriptRuntime>;
+  turnId?: string;
+}) => Promise<CodexRemoteEventProjectionDecisionForTest>;
+
+const getResolveCodexRemoteEventProjectionToDiscordForTest = () => {
+  const helper = (codeHelmIndex as typeof codeHelmIndex & {
+    resolveCodexRemoteEventProjectionToDiscord?: ResolveCodexRemoteEventProjectionToDiscordForTest;
+  }).resolveCodexRemoteEventProjectionToDiscord;
+
+  expect(typeof helper).toBe("function");
+  return helper as ResolveCodexRemoteEventProjectionToDiscordForTest;
 };
 
 type ShouldProjectCodexRemoteEventToDiscordForTest = (input: {
@@ -2287,6 +2315,54 @@ test("skipped remote projection invalidates input trust so next owner input reco
     "trust:codex-thread-1",
   ]);
   expect(runtime.trustedForDiscordInput).toBe(true);
+});
+
+test("approval projection skip gate invalidates trusted runtime for archived and unavailable Discord threads", async () => {
+  const resolveProjection = getResolveCodexRemoteEventProjectionToDiscordForTest();
+  const setArchivedCalls: unknown[] = [];
+
+  for (const scenario of [
+    {
+      channel: {
+        archived: true,
+        send: async () => undefined,
+        setArchived: async (...args: unknown[]) => {
+          setArchivedCalls.push(args);
+        },
+      },
+      reason: "archived",
+    },
+    {
+      channel: null,
+      reason: "unavailable",
+    },
+  ] as const) {
+    const runtime = createRelayTranscriptRuntime();
+    runtime.trustedForDiscordInput = true;
+    noteTrustedLiveExternalTurnStart({
+      runtime,
+      turnId: "approval-turn",
+    });
+
+    const result = await resolveProjection({
+      client: createProjectableThreadTestClient(scenario.channel),
+      session: createSessionRecord({
+        state: "waiting-approval",
+        lifecycleState: "active",
+      }),
+      runtime,
+      turnId: "approval-turn",
+    });
+
+    expect(result).toMatchObject({
+      project: false,
+      reason: scenario.reason,
+    });
+    expect(runtime.trustedForDiscordInput).toBe(false);
+    expect(runtime.trustedExternalTurnIds.has("approval-turn")).toBe(false);
+  }
+
+  expect(setArchivedCalls).toEqual([]);
 });
 
 test("untrusted runtime states and prior failed reconciles still read recent snapshot", async () => {
@@ -6167,6 +6243,15 @@ test("remote live projectability result distinguishes archived non-sendable and 
   ).resolves.toEqual({
     projectable: false,
     reason: "not_sendable",
+  });
+  await expect(
+    getProjectability({
+      client: createProjectableThreadTestClient(null),
+      threadId: "missing-thread",
+    }),
+  ).resolves.toEqual({
+    projectable: false,
+    reason: "unavailable",
   });
 
   const result = await getProjectability({
