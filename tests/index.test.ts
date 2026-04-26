@@ -1076,6 +1076,45 @@ test("startCodeHelm publishes runtime state when the runtime core is ready", asy
   }
 });
 
+test("startup control warmup is wired after runtime readiness publication", () => {
+  const source = readFileSync(join(process.cwd(), "src/index.ts"), "utf8");
+  const readyIndex = source.indexOf("await options.onCoreReady?.();");
+  const warmupIndex = source.indexOf("void warmManaged");
+
+  expect(readyIndex).toBeGreaterThan(-1);
+  expect(warmupIndex).toBeGreaterThan(-1);
+  expect(readyIndex).toBeLessThan(warmupIndex);
+});
+
+test("startup control warmup is fire-and-forget after readiness", () => {
+  const source = readFileSync(join(process.cwd(), "src/index.ts"), "utf8");
+  const readyIndex = source.indexOf("await options.onCoreReady?.();");
+  const warmupIndex = source.indexOf("void warmManaged");
+  const stopIndex = source.indexOf("const stop = async () =>", warmupIndex);
+  const startupTail = source.slice(readyIndex, stopIndex);
+
+  expect(startupTail).toContain("void warmManaged");
+  expect(startupTail).not.toContain("await warmManaged");
+});
+
+test("startup warmup never seeds transcript snapshots or reads turns", () => {
+  const source = readFileSync(join(process.cwd(), "src/index.ts"), "utf8");
+  const readyIndex = source.indexOf("await options.onCoreReady?.();");
+  const stopIndex = source.indexOf("const stop = async () =>", readyIndex);
+  const startupTail = source.slice(readyIndex, stopIndex);
+
+  expect(source).not.toContain("seedTranscriptRuntimeFromSnapshot");
+  expect(startupTail).not.toContain("readThreadForSnapshotReconciliation");
+  expect(startupTail).not.toContain("includeTurns: true");
+});
+
+test("startup does not install idle snapshot polling", () => {
+  const source = readFileSync(join(process.cwd(), "src/index.ts"), "utf8");
+
+  expect(source).not.toContain("const snapshotPoll = setInterval");
+  expect(source).not.toContain("clearInterval(snapshotPoll)");
+});
+
 test("startCodeHelm does not enter a running runtime when managed Codex startup stays delayed", async () => {
   const clearedStateDirs: string[] = [];
   let startedRuntime = false;
@@ -4424,9 +4463,11 @@ test("startup session subscription restore warns and continues after a per-sessi
     sessions: [
       createSessionRecord({
         codexThreadId: "slow-thread",
+        state: "running",
       }),
       createSessionRecord({
         codexThreadId: "next-thread",
+        state: "waiting-approval",
       }),
     ],
     perSessionTimeoutMs: 1,
@@ -4446,6 +4487,45 @@ test("startup session subscription restore warns and continues after a per-sessi
   expect(warnings).toHaveLength(1);
   expect(warnings[0]).toContain("slow-thread");
   expect(warnings[0]).toContain("timed out");
+});
+
+test("startup session subscription restore resumes only active running and waiting-approval sessions", async () => {
+  const calls: string[] = [];
+
+  await restoreManagedSessionSubscriptions({
+    sessions: [
+      createSessionRecord({
+        codexThreadId: "running-thread",
+        lifecycleState: "active",
+        state: "running",
+      }),
+      createSessionRecord({
+        codexThreadId: "approval-thread",
+        lifecycleState: "active",
+        state: "waiting-approval",
+      }),
+      createSessionRecord({
+        codexThreadId: "idle-thread",
+        lifecycleState: "active",
+        state: "idle",
+      }),
+      createSessionRecord({
+        codexThreadId: "archived-running-thread",
+        lifecycleState: "archived",
+        state: "running",
+      }),
+      createSessionRecord({
+        codexThreadId: "deleted-approval-thread",
+        lifecycleState: "deleted",
+        state: "waiting-approval",
+      }),
+    ],
+    resumeThread: async ({ threadId }) => {
+      calls.push(threadId);
+    },
+  });
+
+  expect(calls).toEqual(["running-thread", "approval-thread"]);
 });
 
 test("archived owner message resumes first and only forwards when the synced session is ready", async () => {

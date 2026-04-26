@@ -80,6 +80,7 @@ import {
   resolveSyncSessionState,
   resolveSessionAccessMode,
 } from "./domain/session-service";
+import { shouldWarmManagedSessionControlAtStartup } from "./domain/session-reconciliation";
 import {
   buildPathBrowserChoices,
 } from "./domain/session-path-browser";
@@ -369,7 +370,6 @@ type TranscriptRuntime = {
   threadTokenUsage?: import("./codex/protocol-types").ThreadTokenUsage;
 };
 
-const sessionSnapshotPollIntervalMs = 15_000;
 const startupSessionWarmupTimeoutMs = 10_000;
 const managedCodexAppServerStopTimeoutMs = 1_000;
 const discordTypingPulseIntervalMs = 8_000;
@@ -3041,19 +3041,19 @@ export const restoreManagedSessionSubscriptions = async ({
   onThreadMissing,
   onWarning,
 }: {
-  sessions: Array<Pick<SessionRecord, "codexThreadId" | "lifecycleState">>;
+  sessions: Array<Pick<SessionRecord, "codexThreadId" | "lifecycleState" | "state">>;
   perSessionTimeoutMs?: number;
   resumeThread: (params: { threadId: string }) => Promise<unknown>;
   onThreadMissing?: (
-    session: Pick<SessionRecord, "codexThreadId" | "lifecycleState">,
+    session: Pick<SessionRecord, "codexThreadId" | "lifecycleState" | "state">,
   ) => Promise<void> | void;
   onWarning?: (
-    session: Pick<SessionRecord, "codexThreadId" | "lifecycleState">,
+    session: Pick<SessionRecord, "codexThreadId" | "lifecycleState" | "state">,
     error: unknown,
   ) => Promise<void> | void;
 }) => {
   for (const session of sessions) {
-    if (!shouldProjectManagedSessionDiscordSurface(session)) {
+    if (!shouldWarmManagedSessionControlAtStartup(session)) {
       continue;
     }
 
@@ -6233,20 +6233,6 @@ const startCodeHelmRuntime = async (
     });
   };
 
-  const seedTranscriptRuntimeFromSnapshot = async (session: {
-    codexThreadId: string;
-  }) => {
-    const runtime = ensureTranscriptRuntime(session.codexThreadId);
-    const snapshot = await readThreadForSnapshotReconciliation({
-      codexClient,
-      threadId: session.codexThreadId,
-    });
-    seedTranscriptRuntimeSeenItemsFromSnapshot({
-      runtime,
-      turns: snapshot.thread.turns,
-    });
-  };
-
   const startTurnFromDiscordInput = async ({
     session,
     content,
@@ -7839,7 +7825,7 @@ const startCodeHelmRuntime = async (
 
   await options.onCoreReady?.();
 
-  const warmManagedSessionsAtStartup = async () => {
+  const warmManagedSessionSubscriptionsAtStartup = async () => {
     await restoreManagedSessionSubscriptions({
       sessions: sessionRepo.listAll(),
       perSessionTimeoutMs: startupSessionWarmupTimeoutMs,
@@ -7867,126 +7853,11 @@ const startCodeHelmRuntime = async (
         );
       },
     });
-
-    for (const session of sessionRepo.listAll()) {
-      if (shuttingDown) {
-        return;
-      }
-
-      if (!shouldProjectManagedSessionDiscordSurface(session)) {
-        continue;
-      }
-
-      try {
-        await withStartupSessionTimeout(
-          seedTranscriptRuntimeFromSnapshot(session),
-          startupSessionWarmupTimeoutMs,
-          `Startup transcript seed timed out for managed session ${session.codexThreadId}.`,
-        );
-      } catch (error) {
-        const disposition = getSnapshotReconciliationFailureDisposition(error);
-
-        if (disposition === "degrade-thread-missing") {
-          await degradeSessionToReadOnly({
-            discord: bot.client,
-            session,
-            reason: "thread_missing",
-          });
-          continue;
-        }
-
-        if (disposition === "warn") {
-          logger.warn(
-            `Failed to seed transcript runtime for mapped session ${session.codexThreadId}`,
-            error,
-          );
-        }
-      }
-    }
   };
 
-  void warmManagedSessionsAtStartup().catch((error) => {
-    logger.error("Managed session startup warmup failed", error);
+  void warmManagedSessionSubscriptionsAtStartup().catch((error) => {
+    logger.error("Managed session startup control warmup failed", error);
   });
-
-  const snapshotPoll = setInterval(() => {
-    void (async () => {
-      for (const session of sessionRepo.listAll()) {
-        if (!shouldProjectManagedSessionDiscordSurface(session)) {
-          continue;
-        }
-
-        const sessionState = coerceSessionRuntimeState(session.state);
-
-        try {
-          if (shouldPollSnapshotForSessionState(sessionState)) {
-            await syncTranscriptSnapshot({
-              discord: bot.client,
-              session,
-              degradeOnUnexpectedItems: true,
-            });
-            continue;
-          }
-
-          if (!shouldPollRecoveryProbeForSessionState(sessionState)) {
-            continue;
-          }
-
-          await pollSessionRecovery({
-            session,
-            sessionState,
-            readThread: async (threadId) =>
-              retryCodexThreadOperationAfterResume({
-                threadId,
-                operation: () =>
-                  codexClient.readThread({
-                    threadId,
-                  }),
-                resumeThread: ({ threadId: nextThreadId }) =>
-                  codexClient.resumeThread({
-                    threadId: nextThreadId,
-                  }),
-              }),
-            updateSessionState: async (nextState) => {
-              updateSessionStateIfWritable(session, nextState);
-            },
-            updateStatusCard: async (nextState) =>
-              updateStatusCard({
-                discord: bot.client,
-                session,
-                state: nextState,
-              }),
-            syncTranscriptSnapshot: async () =>
-              syncTranscriptSnapshot({
-                discord: bot.client,
-                session,
-                degradeOnUnexpectedItems: true,
-              }),
-          });
-        } catch (error) {
-          const disposition = getSnapshotReconciliationFailureDisposition(error);
-
-          if (disposition === "degrade-thread-missing") {
-            await degradeSessionToReadOnly({
-              discord: bot.client,
-              session,
-              reason: "thread_missing",
-            });
-            continue;
-          }
-
-          if (disposition === "warn") {
-            logger.warn(
-              `Failed to reconcile transcript snapshot for ${session.codexThreadId}`,
-              error,
-            );
-          }
-        }
-      }
-    })().catch((error) => {
-      logger.error("Snapshot reconciliation loop failed", error);
-    });
-  }, sessionSnapshotPollIntervalMs);
 
   const stop = async () => {
     if (shuttingDown) {
@@ -7994,7 +7865,6 @@ const startCodeHelmRuntime = async (
     }
 
     shuttingDown = true;
-    clearInterval(snapshotPoll);
     await bot.stop();
     codexClient.close();
     db.close();
