@@ -1509,6 +1509,122 @@ test("unknown recent remote user input degrades and blocks active owner start", 
   expect(events).toEqual(["read", "sync"]);
 });
 
+test("active owner running message reconciles before steering an untrusted runtime", async () => {
+  const handleInput = getHandleActiveManagedThreadDiscordInputForTest();
+  const events: string[] = [];
+  const session = createSessionRecord({ state: "running" });
+
+  const result = await handleInput({
+    session,
+    authorId: "owner-1",
+    content: "continue",
+    messageId: "discord-message-1",
+    reconcileBeforeDiscordInput: async () => {
+      events.push("reconcile");
+      return { ok: true, session };
+    },
+    startTurnFromDiscordInput: async () => {
+      events.push("start");
+    },
+    steerTurnFromDiscordInput: async (input) => {
+      events.push(`steer:${input.session.codexThreadId}:${input.content}`);
+    },
+    replyToMessage: async (content) => {
+      events.push(`reply:${content}`);
+    },
+    sendReadOnlySurface: async () => {
+      events.push("read-only");
+    },
+  });
+
+  expect(result.kind).toBe("steer-turn");
+  expect(events).toEqual([
+    "reconcile",
+    "steer:codex-thread-1:continue",
+  ]);
+});
+
+test("active owner running message blocks steering when reconcile degrades", async () => {
+  const handleInput = getHandleActiveManagedThreadDiscordInputForTest();
+  const events: string[] = [];
+  const session = createSessionRecord({ state: "running" });
+  const degradedSession = createSessionRecord({
+    state: "degraded",
+    degradationReason: "snapshot_mismatch",
+  });
+
+  const result = await handleInput({
+    session,
+    authorId: "owner-1",
+    content: "continue",
+    messageId: "discord-message-1",
+    reconcileBeforeDiscordInput: async () => {
+      events.push("reconcile");
+      return {
+        ok: false,
+        session: degradedSession,
+        surfaceAlreadySent: true,
+      };
+    },
+    startTurnFromDiscordInput: async () => {
+      events.push("start");
+    },
+    steerTurnFromDiscordInput: async () => {
+      events.push("steer");
+    },
+    replyToMessage: async (content) => {
+      events.push(`reply:${content}`);
+    },
+    sendReadOnlySurface: async () => {
+      events.push("read-only");
+    },
+  });
+
+  expect(result.kind).toBe("read-only");
+  expect(events).toEqual(["reconcile"]);
+});
+
+test("active owner input stops before start or steer when reconcile fails", async () => {
+  const handleInput = getHandleActiveManagedThreadDiscordInputForTest();
+  const events: string[] = [];
+  const session = createSessionRecord({ state: "running" });
+
+  const result = await handleInput({
+    session,
+    authorId: "owner-1",
+    content: "continue",
+    messageId: "discord-message-1",
+    reconcileBeforeDiscordInput: async () => {
+      events.push("reconcile");
+      throw new Error("Snapshot reconciliation timed out for managed session codex-thread-1");
+    },
+    startTurnFromDiscordInput: async () => {
+      events.push("start");
+    },
+    steerTurnFromDiscordInput: async () => {
+      events.push("steer");
+    },
+    replyToMessage: async (content) => {
+      events.push(`reply:${content}`);
+    },
+    sendReadOnlySurface: async () => {
+      events.push("read-only");
+    },
+    onReconcileFailure: async (error, failedSession) => {
+      events.push(
+        `warn:${failedSession.codexThreadId}:${error instanceof Error}`,
+      );
+    },
+  });
+
+  expect(result.kind).toBe("reconcile-failed");
+  expect(events).toEqual([
+    "reconcile",
+    "warn:codex-thread-1:true",
+    "reply:Couldn't verify the latest Codex state for this session, so I didn't send that input to Codex. Try again in a moment.",
+  ]);
+});
+
 test("trusted runtime skips recent snapshot read and continues as before", async () => {
   const reconcile = getReconcileManagedSessionBeforeDiscordInputForTest();
   const runtime = {};
@@ -1608,6 +1724,30 @@ test("non-owner active messages do not trigger lazy snapshot reconciliation", as
 
   expect(result.kind).toBe("noop");
   expect(events).toEqual([]);
+});
+
+test("unmanaged active thread messages return before lazy reconcile routing", () => {
+  const source = readFileSync(join(process.cwd(), "src/index.ts"), "utf8");
+  const messageCreateStart = source.indexOf("bot.client.on(Events.MessageCreate");
+  const noSessionGuard = source.indexOf("if (!session) {", messageCreateStart);
+  const archivedSessionBranch = source.indexOf(
+    "if (session.lifecycleState === \"archived\")",
+    noSessionGuard,
+  );
+  const activeInputHandler = source.indexOf(
+    "await handleActiveManagedThreadDiscordInput({",
+    messageCreateStart,
+  );
+  const noSessionGuardBlock = source.slice(noSessionGuard, archivedSessionBranch);
+
+  expect(messageCreateStart).toBeGreaterThan(-1);
+  expect(noSessionGuard).toBeGreaterThan(messageCreateStart);
+  expect(archivedSessionBranch).toBeGreaterThan(noSessionGuard);
+  expect(activeInputHandler).toBeGreaterThan(noSessionGuard);
+  expect(noSessionGuardBlock).toContain("return;");
+  expect(noSessionGuardBlock).not.toContain("reconcileManagedSessionBeforeDiscordInput");
+  expect(noSessionGuardBlock).not.toContain("startTurnFromDiscordInput");
+  expect(noSessionGuardBlock).not.toContain("steerTurnFromDiscordInput");
 });
 
 test("startCodeHelm does not enter a running runtime when managed Codex startup stays delayed", async () => {
