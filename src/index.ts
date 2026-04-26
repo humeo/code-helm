@@ -3091,6 +3091,7 @@ export const reconcileManagedSessionBeforeDiscordInput = async ({
   readRecentThreadForRuntimeSnapshotReconciliation,
   syncTranscriptSnapshotFromReadResult,
   getSessionByCodexThreadId,
+  persistReconciledSessionState,
 }: {
   session: SessionRecord;
   runtime?: unknown;
@@ -3104,6 +3105,10 @@ export const reconcileManagedSessionBeforeDiscordInput = async ({
     degradeOnUnexpectedItems: boolean;
   }) => Promise<void>;
   getSessionByCodexThreadId: (codexThreadId: string) => SessionRecord | null;
+  persistReconciledSessionState?: (
+    session: SessionRecord,
+    state: SessionRuntimeState,
+  ) => Promise<void> | void;
 }): Promise<DiscordInputReconcileResult> => {
   if (hasTrustedRuntimeForDiscordInput({
     session,
@@ -3116,8 +3121,10 @@ export const reconcileManagedSessionBeforeDiscordInput = async ({
     };
   }
 
+  let snapshot: ThreadReadResult;
+
   try {
-    const snapshot = await readRecentThreadForRuntimeSnapshotReconciliation(
+    snapshot = await readRecentThreadForRuntimeSnapshotReconciliation(
       session.codexThreadId,
     );
 
@@ -3132,6 +3139,22 @@ export const reconcileManagedSessionBeforeDiscordInput = async ({
     throw error;
   }
 
+  const postSyncSession = getSessionByCodexThreadId(session.codexThreadId);
+
+  if (!postSyncSession || !hasWritableOrBusyDiscordInputState(postSyncSession)) {
+    return {
+      ok: false,
+      session: postSyncSession,
+      surfaceAlreadySent:
+        session.state !== "degraded"
+        && postSyncSession?.state === "degraded",
+    };
+  }
+
+  await persistReconciledSessionState?.(
+    postSyncSession,
+    inferSessionStateFromThreadStatus(snapshot.thread.status),
+  );
   const refreshedSession = getSessionByCodexThreadId(session.codexThreadId);
 
   if (!refreshedSession || !hasWritableOrBusyDiscordInputState(refreshedSession)) {
@@ -3139,7 +3162,7 @@ export const reconcileManagedSessionBeforeDiscordInput = async ({
       ok: false,
       session: refreshedSession,
       surfaceAlreadySent:
-        session.state !== "degraded"
+        postSyncSession.state !== "degraded"
         && refreshedSession?.state === "degraded",
     };
   }
@@ -7358,6 +7381,9 @@ const startCodeHelmRuntime = async (
               }),
             getSessionByCodexThreadId: (codexThreadId) =>
               sessionRepo.getByCodexThreadId(codexThreadId),
+            persistReconciledSessionState: (sessionToUpdate, state) => {
+              updateSessionStateIfWritable(sessionToUpdate, state);
+            },
           }),
         startTurnFromDiscordInput,
         steerTurnFromDiscordInput,

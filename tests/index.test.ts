@@ -231,6 +231,10 @@ type ReconcileManagedSessionBeforeDiscordInputForTest = (input: {
     degradeOnUnexpectedItems: boolean;
   }) => Promise<void>;
   getSessionByCodexThreadId: (codexThreadId: string) => SessionRecord | null;
+  persistReconciledSessionState?: (
+    session: SessionRecord,
+    state: "idle" | "running" | "waiting-approval",
+  ) => Promise<void> | void;
 }) => Promise<DiscordInputReconcileResultForTest>;
 
 const getReconcileManagedSessionBeforeDiscordInputForTest = () => {
@@ -1582,6 +1586,118 @@ test("active owner running message blocks steering when reconcile degrades", asy
 
   expect(result.kind).toBe("read-only");
   expect(events).toEqual(["reconcile"]);
+});
+
+test("reconciled idle snapshot routes stale running owner input to start", async () => {
+  const reconcile = getReconcileManagedSessionBeforeDiscordInputForTest();
+  const handleInput = getHandleActiveManagedThreadDiscordInputForTest();
+  const events: string[] = [];
+  let storedSession = createSessionRecord({ state: "running" });
+  const snapshot = createThreadReadResult({
+    status: { type: "idle" },
+    turns: [{ id: "turn-1", status: "completed", items: [] }],
+  });
+
+  const result = await handleInput({
+    session: storedSession,
+    authorId: "owner-1",
+    content: "new task",
+    messageId: "discord-message-1",
+    reconcileBeforeDiscordInput: async (session) =>
+      reconcile({
+        session,
+        runtime: undefined,
+        reconcileFailedThreadIds: new Set<string>(),
+        readRecentThreadForRuntimeSnapshotReconciliation: async () => {
+          events.push("read");
+          return snapshot;
+        },
+        syncTranscriptSnapshotFromReadResult: async () => {
+          events.push("sync");
+        },
+        getSessionByCodexThreadId: () => storedSession,
+        persistReconciledSessionState: async (_session, state) => {
+          events.push(`persist:${state}`);
+          storedSession = createSessionRecord({ state });
+        },
+      }),
+    startTurnFromDiscordInput: async (input) => {
+      events.push(`start:${input.request.threadId}:${input.content}`);
+    },
+    steerTurnFromDiscordInput: async () => {
+      events.push("steer");
+    },
+    replyToMessage: async (content) => {
+      events.push(`reply:${content}`);
+    },
+    sendReadOnlySurface: async () => {
+      events.push("read-only");
+    },
+  });
+
+  expect(result.kind).toBe("start-turn");
+  expect(events).toEqual([
+    "read",
+    "sync",
+    "persist:idle",
+    "start:codex-thread-1:new task",
+  ]);
+});
+
+test("reconciled running snapshot routes stale idle owner input to steer", async () => {
+  const reconcile = getReconcileManagedSessionBeforeDiscordInputForTest();
+  const handleInput = getHandleActiveManagedThreadDiscordInputForTest();
+  const events: string[] = [];
+  let storedSession = createSessionRecord({ state: "idle" });
+  const snapshot = createThreadReadResult({
+    status: { type: "active", activeFlags: ["waitingOnUserInput"] },
+    turns: [{ id: "turn-1", status: "in_progress", items: [] }],
+  });
+
+  const result = await handleInput({
+    session: storedSession,
+    authorId: "owner-1",
+    content: "continue",
+    messageId: "discord-message-1",
+    reconcileBeforeDiscordInput: async (session) =>
+      reconcile({
+        session,
+        runtime: undefined,
+        reconcileFailedThreadIds: new Set<string>(),
+        readRecentThreadForRuntimeSnapshotReconciliation: async () => {
+          events.push("read");
+          return snapshot;
+        },
+        syncTranscriptSnapshotFromReadResult: async () => {
+          events.push("sync");
+        },
+        getSessionByCodexThreadId: () => storedSession,
+        persistReconciledSessionState: async (_session, state) => {
+          events.push(`persist:${state}`);
+          storedSession = createSessionRecord({ state });
+        },
+      }),
+    startTurnFromDiscordInput: async () => {
+      events.push("start");
+    },
+    steerTurnFromDiscordInput: async (input) => {
+      events.push(`steer:${input.session.codexThreadId}:${input.content}`);
+    },
+    replyToMessage: async (content) => {
+      events.push(`reply:${content}`);
+    },
+    sendReadOnlySurface: async () => {
+      events.push("read-only");
+    },
+  });
+
+  expect(result.kind).toBe("steer-turn");
+  expect(events).toEqual([
+    "read",
+    "sync",
+    "persist:running",
+    "steer:codex-thread-1:continue",
+  ]);
 });
 
 test("active owner input stops before start or steer when reconcile fails", async () => {
