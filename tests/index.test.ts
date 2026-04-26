@@ -449,6 +449,7 @@ test("managed session status command prefers fresh snapshot state and Codex-styl
   expect(result.reply.content).toContain("Token usage:      2.9M total  (2.64M input + 262K output)");
   expect(result.reply.content).toContain("Context window:   52% left (130K used / 258K)");
   expect(result.reply.content).toContain("Limits:           not available for this account");
+  expect(result.reply.content).not.toContain("Snapshot:");
   expect(result.reply.content).not.toContain("Queued steer:");
   expect(result.reply.content).not.toContain("Pending approvals:");
   expect(runtime.activeTurnId).toBe("turn-1");
@@ -528,6 +529,9 @@ test("managed session status command falls back to stored state when snapshot re
   });
 
   expect(result.reply.content).toContain("Runtime:            waiting-approval");
+  expect(result.reply.content).toContain(
+    "Snapshot:           unavailable; showing stored runtime state",
+  );
   expect(runtime.activeTurnId).toBeUndefined();
 
   db.close();
@@ -1200,25 +1204,6 @@ test("startup does not install idle snapshot polling", () => {
 
   expect(source).not.toContain("const snapshotPoll = setInterval");
   expect(source).not.toContain("clearInterval(snapshotPoll)");
-});
-
-test("runtime command snapshot reconciliation is wired through recent-window timeout reads", () => {
-  const source = readFileSync(join(process.cwd(), "src/index.ts"), "utf8");
-  const runtimeIndex = source.indexOf("const startCodeHelmRuntime = async");
-  const botIndex = source.indexOf("const bot = createDiscordBot", runtimeIndex);
-  const runtimeSource = source.slice(runtimeIndex, botIndex);
-
-  expect(runtimeSource).toContain("const readRecentThreadForRuntimeSnapshotReconciliation");
-  expect(runtimeSource).toContain("withSessionOperationTimeout");
-  expect(runtimeSource).toContain("limitThreadReadResultToRecentTurns");
-  expect(runtimeSource).toMatch(
-    /readThread:\s*async \(\) =>\s*readRecentThreadForRuntimeSnapshotReconciliation\(session\.codexThreadId\)/,
-  );
-  expect(
-    runtimeSource.match(
-      /readThreadForSnapshotReconciliation:\s*\(\{ threadId \}\) =>\s*readRecentThreadForRuntimeSnapshotReconciliation\(threadId\)/g,
-    ) ?? [],
-  ).toHaveLength(2);
 });
 
 test("startCodeHelm does not enter a running runtime when managed Codex startup stays delayed", async () => {
@@ -8372,15 +8357,18 @@ test("recent snapshot reconciliation reader limits turns and times out with a se
     "turn-12",
   ]);
 
+  const timeoutReadCalls: Array<{
+    params: { threadId: string; includeTurns?: boolean };
+    options?: { timeoutMs?: number; timeoutMessage?: string };
+  }> = [];
+
   await expect(
     readRecentThreadForSnapshotReconciliation({
       codexClient: {
-        async readThread() {
-          await new Promise(() => {});
-          return createThreadReadResult({
-            status: { type: "idle" },
-            turns: [],
-          });
+        async readThread(params, options) {
+          timeoutReadCalls.push({ params, options });
+          await Bun.sleep(options?.timeoutMs ?? 0);
+          throw new Error(options?.timeoutMessage ?? "missing timeout");
         },
         async resumeThread() {
           throw new Error("resumeThread should not be needed for timeout");
@@ -8390,6 +8378,18 @@ test("recent snapshot reconciliation reader limits turns and times out with a se
       timeoutMs: 1,
     }),
   ).rejects.toThrow("Snapshot reconciliation timed out for managed session thread-2");
+  expect(timeoutReadCalls).toEqual([
+    {
+      params: {
+        threadId: "thread-2",
+        includeTurns: true,
+      },
+      options: {
+        timeoutMs: 1,
+        timeoutMessage: "Snapshot reconciliation timed out for managed session thread-2",
+      },
+    },
+  ]);
 });
 
 test("snapshot reconciliation warning policy suppresses expected pre-materialization failures", () => {

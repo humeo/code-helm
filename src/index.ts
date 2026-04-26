@@ -27,7 +27,7 @@ import {
   writeRuntimeSummary,
 } from "./cli/runtime-state";
 import { resolveCodeHelmPaths } from "./cli/paths";
-import { JsonRpcClient } from "./codex/jsonrpc-client";
+import { JsonRpcClient, type JsonRpcRequestOptions } from "./codex/jsonrpc-client";
 import {
   startManagedCodexAppServer,
   type ManagedCodexAppServer,
@@ -624,6 +624,29 @@ const shouldRetryCodexThreadOperationAfterResume = (error: unknown) => {
   return isNotLoadedCodexThreadError(error) || isMissingCodexThreadError(error);
 };
 
+const remainingSessionOperationTimeout = (deadlineMs: number | undefined) => {
+  return deadlineMs === undefined
+    ? undefined
+    : Math.max(0, deadlineMs - Date.now());
+};
+
+const buildSessionOperationRequestOptions = ({
+  deadlineMs,
+  timeoutMessage,
+}: {
+  deadlineMs?: number;
+  timeoutMessage: string;
+}): JsonRpcRequestOptions | undefined => {
+  const timeoutMs = remainingSessionOperationTimeout(deadlineMs);
+
+  return timeoutMs === undefined
+    ? undefined
+    : {
+      timeoutMs,
+      timeoutMessage,
+    };
+};
+
 const isPreMaterializationResumeError = (error: unknown) => {
   if (!(error instanceof Error)) {
     return false;
@@ -984,10 +1007,21 @@ export const tryRecoverStatusCardMessage = async ({
 export const readThreadForSnapshotReconciliation = async ({
   codexClient,
   threadId,
+  timeoutMs,
+  timeoutMessage = `Snapshot reconciliation timed out for managed session ${threadId}`,
 }: {
   codexClient: Pick<JsonRpcClient, "readThread" | "resumeThread">;
   threadId: string;
+  timeoutMs?: number;
+  timeoutMessage?: string;
 }): Promise<ThreadReadResult> => {
+  const deadlineMs = timeoutMs === undefined ? undefined : Date.now() + timeoutMs;
+  const requestOptions = () =>
+    buildSessionOperationRequestOptions({
+      deadlineMs,
+      timeoutMessage,
+    });
+
   try {
     return await retryCodexThreadOperationAfterResume({
       threadId,
@@ -995,11 +1029,11 @@ export const readThreadForSnapshotReconciliation = async ({
         codexClient.readThread({
           threadId,
           includeTurns: true,
-        }),
+        }, requestOptions()),
       resumeThread: ({ threadId: nextThreadId }) =>
         codexClient.resumeThread({
           threadId: nextThreadId,
-        }),
+        }, requestOptions()),
     });
   } catch (error) {
     if (!isExpectedPreMaterializationIncludeTurnsError(error)) {
@@ -1008,7 +1042,7 @@ export const readThreadForSnapshotReconciliation = async ({
 
     const snapshot = await codexClient.readThread({
       threadId,
-    });
+    }, requestOptions());
 
     return {
       ...snapshot,
@@ -3039,6 +3073,11 @@ export const withSessionOperationTimeout = async <TResult>(
   }
 };
 
+const isSessionOperationTimeoutError = (error: unknown) => {
+  return error instanceof Error
+    && error.message.toLowerCase().includes("timed out");
+};
+
 const limitSnapshotToRecentReconcileTurns = (
   snapshot: ThreadReadResult,
 ): ThreadReadResult => {
@@ -3060,14 +3099,12 @@ export const readRecentThreadForSnapshotReconciliation = async ({
   timeoutMs?: number;
   timeoutMessage?: string;
 }): Promise<ThreadReadResult> => {
-  const snapshot = await withSessionOperationTimeout(
-    readThreadForSnapshotReconciliation({
-      codexClient,
-      threadId,
-    }),
+  const snapshot = await readThreadForSnapshotReconciliation({
+    codexClient,
+    threadId,
     timeoutMs,
     timeoutMessage,
-  );
+  });
 
   return limitThreadReadResultToRecentTurns(snapshot, recentReconcileTurnLimit);
 };
@@ -3081,7 +3118,10 @@ export const restoreManagedSessionSubscriptions = async ({
 }: {
   sessions: Array<Pick<SessionRecord, "codexThreadId" | "lifecycleState" | "state">>;
   perSessionTimeoutMs?: number;
-  resumeThread: (params: { threadId: string }) => Promise<unknown>;
+  resumeThread: (
+    params: { threadId: string },
+    options?: JsonRpcRequestOptions,
+  ) => Promise<unknown>;
   onThreadMissing?: (
     session: Pick<SessionRecord, "codexThreadId" | "lifecycleState" | "state">,
   ) => Promise<void> | void;
@@ -3096,11 +3136,17 @@ export const restoreManagedSessionSubscriptions = async ({
     }
 
     try {
+      const timeoutMessage =
+        `Startup restore timed out for managed session ${session.codexThreadId}.`;
+
       await withSessionOperationTimeout(
         (async () => {
           try {
             await resumeThread({
               threadId: session.codexThreadId,
+            }, {
+              timeoutMs: perSessionTimeoutMs,
+              timeoutMessage,
             });
           } catch (error) {
             const disposition = getSnapshotReconciliationFailureDisposition(error);
@@ -3114,7 +3160,7 @@ export const restoreManagedSessionSubscriptions = async ({
           }
         })(),
         perSessionTimeoutMs,
-        `Startup restore timed out for managed session ${session.codexThreadId}.`,
+        timeoutMessage,
       );
     } catch (error) {
       const disposition = getSnapshotReconciliationFailureDisposition(error);
@@ -4601,6 +4647,7 @@ export const createManagedSessionCommandServices = ({
       const runtime = ensureTranscriptRuntime(session.codexThreadId);
       let effectiveState = session.state;
       let limitsSummary = "data not available yet";
+      let snapshotSummary: string | undefined;
 
       try {
         session = await hydrateSessionModelMetadataFromResume({
@@ -4621,8 +4668,16 @@ export const createManagedSessionCommandServices = ({
 
         effectiveState = inferSessionStateFromThreadStatus(snapshot.thread.status);
         runtime.activeTurnId = readActiveTurnIdFromThreadReadResult(snapshot);
-      } catch {
+      } catch (error) {
         effectiveState = session.state;
+        snapshotSummary = "unavailable; showing stored runtime state";
+        if (!isSessionOperationTimeoutError(error)) {
+          logger.warn("Managed session status snapshot refresh failed", {
+            discordThreadId: session.discordThreadId,
+            codexThreadId: session.codexThreadId,
+            error,
+          });
+        }
       }
 
       try {
@@ -4640,6 +4695,7 @@ export const createManagedSessionCommandServices = ({
           content: renderManagedSessionStatus({
             session,
             effectiveState,
+            snapshotSummary,
             tokenUsageSummary: formatManagedSessionTokenUsageSummary(
               runtime.threadTokenUsage,
             ),
@@ -6212,17 +6268,11 @@ const startCodeHelmRuntime = async (
   const readRecentThreadForRuntimeSnapshotReconciliation = async (
     threadId: string,
   ) =>
-    limitThreadReadResultToRecentTurns(
-      await withSessionOperationTimeout(
-        readThreadForSnapshotReconciliation({
-          codexClient,
-          threadId,
-        }),
-        sessionReconcileTimeoutMs,
-        `Snapshot reconciliation timed out for managed session ${threadId}`,
-      ),
-      recentReconcileTurnLimit,
-    );
+    readRecentThreadForSnapshotReconciliation({
+      codexClient,
+      threadId,
+      timeoutMs: sessionReconcileTimeoutMs,
+    });
 
   const syncTranscriptSnapshotFromReadResult = async ({
     discord,
@@ -7873,10 +7923,10 @@ const startCodeHelmRuntime = async (
     await restoreManagedSessionSubscriptions({
       sessions: sessionRepo.listAll(),
       perSessionTimeoutMs: startupSessionWarmupTimeoutMs,
-      resumeThread: async ({ threadId }) =>
+      resumeThread: async ({ threadId }, requestOptions) =>
         codexClient.resumeThread({
           threadId,
-        }),
+        }, requestOptions),
       onThreadMissing: async (session) => {
         const refreshedSession = sessionRepo.getByCodexThreadId(session.codexThreadId);
 

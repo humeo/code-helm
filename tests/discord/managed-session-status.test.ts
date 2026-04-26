@@ -25,6 +25,29 @@ test("managed session status renderer includes Codex-style footer summaries", ()
   expect(text).toContain("Limits:           not available for this account");
 });
 
+test("managed session status renderer can surface snapshot fallback state", () => {
+  const text = renderManagedSessionStatus({
+    session: {
+      discordThreadId: "discord-1",
+      codexThreadId: "codex-1",
+      cwd: "/tmp/project",
+      lifecycleState: "active",
+      modelOverride: null,
+      reasoningEffortOverride: null,
+    },
+    effectiveState: "waiting-approval",
+    snapshotSummary: "unavailable; showing stored runtime state",
+    tokenUsageSummary: "data not available yet",
+    contextWindowSummary: "data not available yet",
+    limitsSummary: "data not available yet",
+  });
+
+  expect(text).toContain("Runtime:            waiting-approval");
+  expect(text).toContain(
+    "Snapshot:           unavailable; showing stored runtime state",
+  );
+});
+
 test("managed session status renderer no longer includes queued-steer internals", () => {
   const text = renderManagedSessionStatus({
     session: {

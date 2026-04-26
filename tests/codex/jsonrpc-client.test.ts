@@ -7,6 +7,7 @@ import {
   type JsonRpcTransport,
   type TransportHandlers,
 } from "../../src/codex/jsonrpc-client";
+import { readThreadForSnapshotReconciliation } from "../../src/index";
 import type { StartTurnParams } from "../../src/codex/protocol-types";
 import { SessionController } from "../../src/codex/session-controller";
 import { initializeLogger, shutdownLogger } from "../../src/logger";
@@ -57,6 +58,20 @@ const readLogRecords = (logDir: string) => {
     .split("\n")
     .filter(Boolean)
     .map((line) => JSON.parse(line) as Record<string, unknown>);
+};
+
+const readSentMethods = (sent: string[]) =>
+  sent
+    .map((message) => JSON.parse(message) as { method?: string })
+    .map((message) => message.method)
+    .filter((method): method is string => typeof method === "string");
+
+const initializeClient = async (client: JsonRpcClient, stub: ReturnType<typeof createTransportStub>) => {
+  const initializePromise = client.initialize();
+
+  await Promise.resolve();
+  stub.receive({ id: 1, result: {} });
+  await initializePromise;
 };
 
 test("routes command requestApproval and resolved events to subscribers", async () => {
@@ -387,6 +402,122 @@ test("rejects and clears in-flight RPCs when the transport closes", async () => 
   stub.close();
 
   await expect(threadPromise).rejects.toThrow("JSON-RPC transport closed");
+  expect(client.getPendingRequestCount()).toBe(0);
+});
+
+test("timed-out readThread requests clear their pending entry", async () => {
+  const stub = createTransportStub();
+  const client = new JsonRpcClient("ws://example.test", {
+    transport: stub.transport,
+  });
+
+  await initializeClient(client, stub);
+
+  const readPromise = client.readThread(
+    {
+      threadId: "thread-timeout",
+      includeTurns: true,
+    },
+    {
+      timeoutMs: 1,
+      timeoutMessage: "readThread timed out",
+    },
+  );
+
+  await Promise.resolve();
+  expect(client.getPendingRequestCount()).toBe(1);
+
+  const outcome = await Promise.race([
+    readPromise.then(() => "resolved", (error) => `rejected:${(error as Error).message}`),
+    Bun.sleep(20).then(() => "still-pending"),
+  ]);
+
+  expect(outcome).toBe("rejected:readThread timed out");
+  expect(client.getPendingRequestCount()).toBe(0);
+});
+
+test("late readThread responses after timeout are ignored", async () => {
+  const stub = createTransportStub();
+  const client = new JsonRpcClient("ws://example.test", {
+    transport: stub.transport,
+  });
+
+  await initializeClient(client, stub);
+
+  const readPromise = client.readThread(
+    {
+      threadId: "thread-late",
+      includeTurns: true,
+    },
+    {
+      timeoutMs: 1,
+      timeoutMessage: "readThread timed out",
+    },
+  );
+  const outcomePromise = readPromise.then(
+    () => "resolved",
+    (error) => `rejected:${(error as Error).message}`,
+  );
+
+  await Bun.sleep(5);
+  stub.receive({
+    id: 2,
+    result: {
+      thread: {
+        id: "thread-late",
+        cwd: "/tmp/project",
+        preview: "",
+        status: { type: "idle" },
+      },
+    },
+  });
+
+  const outcome = await Promise.race([
+    outcomePromise,
+    Bun.sleep(20).then(() => "still-pending"),
+  ]);
+
+  expect(outcome).toBe("rejected:readThread timed out");
+  expect(client.getPendingRequestCount()).toBe(0);
+});
+
+test("snapshot read timeout ignores late not-loaded errors without resuming", async () => {
+  const stub = createTransportStub();
+  const client = new JsonRpcClient("ws://example.test", {
+    transport: stub.transport,
+  });
+
+  await initializeClient(client, stub);
+
+  const readPromise = readThreadForSnapshotReconciliation({
+    codexClient: client,
+    threadId: "thread-late-error",
+    timeoutMs: 1,
+    timeoutMessage: "snapshot read timed out",
+  });
+  const outcomePromise = readPromise.then(
+    () => "resolved",
+    (error) => `rejected:${(error as Error).message}`,
+  );
+
+  await Bun.sleep(5);
+  stub.receive({
+    id: 2,
+    error: {
+      code: -32000,
+      message: "thread not loaded: thread-late-error",
+    },
+  });
+  await Promise.resolve();
+
+  expect(readSentMethods(stub.sent)).not.toContain("thread/resume");
+
+  const outcome = await Promise.race([
+    outcomePromise,
+    Bun.sleep(20).then(() => "still-pending"),
+  ]);
+
+  expect(outcome).toBe("rejected:snapshot read timed out");
   expect(client.getPendingRequestCount()).toBe(0);
 });
 

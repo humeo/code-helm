@@ -49,10 +49,16 @@ type PendingRequest = {
   method: string;
   resolve: (result: unknown) => void;
   reject: (error: Error) => void;
+  timeout?: ReturnType<typeof setTimeout>;
 };
 
 type JsonRpcClientOptions = {
   transport?: JsonRpcTransport;
+};
+
+export type JsonRpcRequestOptions = {
+  timeoutMs?: number;
+  timeoutMessage?: string;
 };
 
 type WebSocketLike = {
@@ -264,14 +270,14 @@ export class JsonRpcClient {
     return this.sendRequest<ThreadStartResult>("thread/start", params);
   }
 
-  async resumeThread(params: ResumeThreadParams) {
+  async resumeThread(params: ResumeThreadParams, options?: JsonRpcRequestOptions) {
     await this.initialize();
-    return this.sendRequest<ThreadResumeResult>("thread/resume", params);
+    return this.sendRequest<ThreadResumeResult>("thread/resume", params, options);
   }
 
-  async readThread(params: ThreadReadParams) {
+  async readThread(params: ThreadReadParams, options?: JsonRpcRequestOptions) {
     await this.initialize();
-    return this.sendRequest<ThreadReadResult>("thread/read", params);
+    return this.sendRequest<ThreadReadResult>("thread/read", params, options);
   }
 
   async listThreads(params: ThreadListParams = {}) {
@@ -328,13 +334,12 @@ export class JsonRpcClient {
     }
 
     if ("result" in message && "id" in message) {
-      const pendingRequest = this.pendingRequests.get(message.id);
+      const pendingRequest = this.takePendingRequest(message.id);
 
       if (!pendingRequest) {
         return;
       }
 
-      this.pendingRequests.delete(message.id);
       this.log.debug("JSON-RPC request completed", {
         requestId: message.id,
         method: pendingRequest.method,
@@ -350,13 +355,12 @@ export class JsonRpcClient {
         return;
       }
 
-      const pendingRequest = this.pendingRequests.get(failure.id);
+      const pendingRequest = this.takePendingRequest(failure.id);
 
       if (!pendingRequest) {
         return;
       }
 
-      this.pendingRequests.delete(failure.id);
       this.log.warn("JSON-RPC request failed", {
         requestId: failure.id,
         method: pendingRequest.method,
@@ -449,17 +453,41 @@ export class JsonRpcClient {
     this.transport.send(JSON.stringify(message));
   }
 
-  private sendRequest<TResult = unknown>(method: string, params?: unknown) {
+  private sendRequest<TResult = unknown>(
+    method: string,
+    params?: unknown,
+    options: JsonRpcRequestOptions = {},
+  ) {
     const id = this.nextRequestId++;
 
     return new Promise<TResult>((resolve, reject) => {
-      this.pendingRequests.set(id, {
+      const pendingRequest: PendingRequest = {
         method,
         resolve: (result) => {
           resolve(result as TResult);
         },
         reject,
-      });
+      };
+
+      if (options.timeoutMs !== undefined) {
+        pendingRequest.timeout = setTimeout(() => {
+          const timedOutRequest = this.takePendingRequest(id);
+
+          if (!timedOutRequest) {
+            return;
+          }
+
+          this.log.warn("JSON-RPC request timed out", {
+            requestId: id,
+            method,
+          });
+          timedOutRequest.reject(new Error(
+            options.timeoutMessage ?? `JSON-RPC request timed out for ${method}`,
+          ));
+        }, options.timeoutMs);
+      }
+
+      this.pendingRequests.set(id, pendingRequest);
 
       try {
         this.sendMessage({
@@ -473,7 +501,7 @@ export class JsonRpcClient {
           method,
         });
       } catch (error) {
-        this.pendingRequests.delete(id);
+        this.takePendingRequest(id);
         this.log.error("JSON-RPC request send failed", {
           requestId: id,
           method,
@@ -484,8 +512,28 @@ export class JsonRpcClient {
     });
   }
 
+  private takePendingRequest(id: JsonRpcId) {
+    const pendingRequest = this.pendingRequests.get(id);
+
+    if (!pendingRequest) {
+      return undefined;
+    }
+
+    this.pendingRequests.delete(id);
+
+    if (pendingRequest.timeout) {
+      clearTimeout(pendingRequest.timeout);
+    }
+
+    return pendingRequest;
+  }
+
   private rejectPendingRequests(error: Error) {
     for (const pendingRequest of this.pendingRequests.values()) {
+      if (pendingRequest.timeout) {
+        clearTimeout(pendingRequest.timeout);
+      }
+
       pendingRequest.reject(error);
     }
 

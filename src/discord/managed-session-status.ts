@@ -15,6 +15,7 @@ type ManagedSessionStatusInput = {
     reasoningEffortOverride: string | null;
   };
   effectiveState: string;
+  snapshotSummary?: string;
   tokenUsageSummary: string;
   contextWindowSummary: string;
   limitsSummary: string;
@@ -157,6 +158,7 @@ export const summarizeManagedSessionRateLimits = (
 export const renderManagedSessionStatus = ({
   session,
   effectiveState,
+  snapshotSummary,
   tokenUsageSummary,
   contextWindowSummary,
   limitsSummary,
@@ -167,6 +169,7 @@ export const renderManagedSessionStatus = ({
     "",
     `Lifecycle:          ${session.lifecycleState}`,
     `Runtime:            ${effectiveState}`,
+    ...(snapshotSummary ? [`Snapshot:           ${snapshotSummary}`] : []),
     `Directory:          ${session.cwd}`,
     `Codex thread:       ${session.codexThreadId}`,
     `Discord thread:     ${session.discordThreadId}`,
