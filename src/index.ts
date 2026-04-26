@@ -3102,6 +3102,12 @@ export type DiscordInputReconcileResult =
       surfaceAlreadySent?: boolean;
     };
 
+type TranscriptSnapshotSyncResult =
+  | {
+      degradationSurfaceSent?: boolean;
+    }
+  | void;
+
 export const reconcileManagedSessionBeforeDiscordInput = async ({
   session,
   runtime,
@@ -3122,7 +3128,7 @@ export const reconcileManagedSessionBeforeDiscordInput = async ({
     session: SessionRecord;
     snapshot: ThreadReadResult;
     degradeOnUnexpectedItems: boolean;
-  }) => Promise<void>;
+  }) => Promise<TranscriptSnapshotSyncResult> | TranscriptSnapshotSyncResult;
   getSessionByCodexThreadId: (codexThreadId: string) => SessionRecord | null;
   persistReconciledSessionState?: (
     session: SessionRecord,
@@ -3142,13 +3148,14 @@ export const reconcileManagedSessionBeforeDiscordInput = async ({
   }
 
   let snapshot: ThreadReadResult;
+  let snapshotSyncResult: TranscriptSnapshotSyncResult;
 
   try {
     snapshot = await readRecentThreadForRuntimeSnapshotReconciliation(
       session.codexThreadId,
     );
 
-    await syncTranscriptSnapshotFromReadResult({
+    snapshotSyncResult = await syncTranscriptSnapshotFromReadResult({
       session,
       snapshot,
       degradeOnUnexpectedItems: true,
@@ -3159,6 +3166,10 @@ export const reconcileManagedSessionBeforeDiscordInput = async ({
     reconcileFailedThreadIds.add(session.codexThreadId);
     throw error;
   }
+  const surfaceAlreadySent =
+    typeof snapshotSyncResult === "object"
+    && snapshotSyncResult !== null
+    && snapshotSyncResult.degradationSurfaceSent === true;
 
   const postSyncSession = getSessionByCodexThreadId(session.codexThreadId);
 
@@ -3166,9 +3177,7 @@ export const reconcileManagedSessionBeforeDiscordInput = async ({
     return {
       ok: false,
       session: postSyncSession,
-      surfaceAlreadySent:
-        session.state !== "degraded"
-        && postSyncSession?.state === "degraded",
+      surfaceAlreadySent: surfaceAlreadySent || undefined,
     };
   }
 
@@ -3182,9 +3191,7 @@ export const reconcileManagedSessionBeforeDiscordInput = async ({
     return {
       ok: false,
       session: refreshedSession,
-      surfaceAlreadySent:
-        postSyncSession.state !== "degraded"
-        && refreshedSession?.state === "degraded",
+      surfaceAlreadySent: surfaceAlreadySent || undefined,
     };
   }
 
@@ -6600,7 +6607,7 @@ const startCodeHelmRuntime = async (
         session,
         reason: "snapshot_mismatch",
       });
-      return;
+      return { degradationSurfaceSent: true };
     }
 
     const activeRuntimeState = inferSessionStateFromThreadStatus(snapshot.thread.status);

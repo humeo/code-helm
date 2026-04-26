@@ -216,7 +216,14 @@ const getRelayTranscriptEntriesForTest = () => {
 type DiscordInputReconcileResultForTest = {
   ok: boolean;
   session?: SessionRecord | null;
+  surfaceAlreadySent?: boolean;
 };
+
+type TranscriptSnapshotSyncResultForTest =
+  | {
+      degradationSurfaceSent?: boolean;
+    }
+  | void;
 
 type ReconcileManagedSessionBeforeDiscordInputForTest = (input: {
   session: SessionRecord;
@@ -229,11 +236,11 @@ type ReconcileManagedSessionBeforeDiscordInputForTest = (input: {
     session: SessionRecord;
     snapshot: ThreadReadResult;
     degradeOnUnexpectedItems: boolean;
-  }) => Promise<void>;
+  }) => Promise<TranscriptSnapshotSyncResultForTest>;
   getSessionByCodexThreadId: (codexThreadId: string) => SessionRecord | null;
   persistReconciledSessionState?: (
     session: SessionRecord,
-    state: "idle" | "running" | "waiting-approval",
+    state: SessionRecord["state"],
   ) => Promise<void> | void;
   markRuntimeTrustedForDiscordInput?: (codexThreadId: string) => void;
 }) => Promise<DiscordInputReconcileResultForTest>;
@@ -1489,6 +1496,7 @@ test("unknown recent remote user input degrades and blocks active owner start", 
             state: "degraded",
             degradationReason: "snapshot_mismatch",
           });
+          return { degradationSurfaceSent: true };
         },
         getSessionByCodexThreadId: () => storedSession,
       }),
@@ -1512,6 +1520,131 @@ test("unknown recent remote user input degrades and blocks active owner start", 
     degradationReason: "snapshot_mismatch",
   });
   expect(events).toEqual(["read", "sync"]);
+});
+
+test("snapshot status read-only during active owner input sends a read-only surface", async () => {
+  const reconcile = getReconcileManagedSessionBeforeDiscordInputForTest();
+  const handleInput = getHandleActiveManagedThreadDiscordInputForTest();
+  const events: string[] = [];
+  let storedSession = createSessionRecord({ state: "idle" });
+  const snapshot = createThreadReadResult({
+    status: { type: "systemError" },
+    turns: [],
+  });
+
+  const result = await handleInput({
+    session: storedSession,
+    authorId: "owner-1",
+    content: "hi",
+    messageId: "discord-message-1",
+    reconcileBeforeDiscordInput: async (session) =>
+      reconcile({
+        session,
+        runtime: undefined,
+        reconcileFailedThreadIds: new Set<string>(),
+        readRecentThreadForRuntimeSnapshotReconciliation: async () => {
+          events.push("read");
+          return snapshot;
+        },
+        syncTranscriptSnapshotFromReadResult: async () => {
+          events.push("sync");
+        },
+        getSessionByCodexThreadId: () => storedSession,
+        persistReconciledSessionState: async (_session, state) => {
+          events.push(`persist:${state}`);
+          storedSession = createSessionRecord({
+            state,
+            degradationReason: null,
+          });
+        },
+      }),
+    startTurnFromDiscordInput: async () => {
+      events.push("start");
+    },
+    steerTurnFromDiscordInput: async () => {
+      events.push("steer");
+    },
+    replyToMessage: async (content) => {
+      events.push(`reply:${content}`);
+    },
+    sendReadOnlySurface: async (session) => {
+      events.push(
+        `read-only:${session.state}:${session.degradationReason ?? "none"}`,
+      );
+    },
+  });
+
+  expect(result.kind).toBe("read-only");
+  expect(events).toEqual([
+    "read",
+    "sync",
+    "persist:degraded",
+    "read-only:degraded:none",
+  ]);
+});
+
+test("snapshot mismatch surface is not duplicated after lazy reconcile blocks input", async () => {
+  const reconcile = getReconcileManagedSessionBeforeDiscordInputForTest();
+  const handleInput = getHandleActiveManagedThreadDiscordInputForTest();
+  const events: string[] = [];
+  let storedSession = createSessionRecord({ state: "idle" });
+  const snapshot = createThreadReadResult({
+    status: { type: "idle" },
+    turns: [
+      {
+        id: "turn-remote",
+        status: "completed",
+        items: [
+          {
+            type: "userMessage",
+            id: "user-remote",
+            content: [{ type: "text", text: "remote-only input" }],
+          },
+        ],
+      },
+    ],
+  });
+
+  const result = await handleInput({
+    session: storedSession,
+    authorId: "owner-1",
+    content: "hi",
+    messageId: "discord-message-1",
+    reconcileBeforeDiscordInput: async (session) =>
+      reconcile({
+        session,
+        runtime: undefined,
+        reconcileFailedThreadIds: new Set<string>(),
+        readRecentThreadForRuntimeSnapshotReconciliation: async () => {
+          events.push("read");
+          return snapshot;
+        },
+        syncTranscriptSnapshotFromReadResult: async () => {
+          events.push("sync-sent-surface");
+          storedSession = createSessionRecord({
+            state: "degraded",
+            degradationReason: "snapshot_mismatch",
+          });
+          return { degradationSurfaceSent: true };
+        },
+        getSessionByCodexThreadId: () => storedSession,
+      }),
+    startTurnFromDiscordInput: async () => {
+      events.push("start");
+    },
+    steerTurnFromDiscordInput: async () => {
+      events.push("steer");
+    },
+    replyToMessage: async (content) => {
+      events.push(`reply:${content}`);
+    },
+    sendReadOnlySurface: async () => {
+      events.push("duplicate-read-only");
+    },
+  });
+
+  expect(result.kind).toBe("read-only");
+  expect(events).toEqual(["read", "sync-sent-surface"]);
 });
 
 test("active owner running message reconciles before steering an untrusted runtime", async () => {
