@@ -4820,6 +4820,76 @@ test("/session-sync returns an explicit blocked reply when local and external in
   });
 });
 
+test("/session-sync blocks reversed pending local inputs as ambiguous recent external input", async () => {
+  const runtime = createRelayTranscriptRuntime();
+  runtime.pendingLocalInputs.push(
+    { kind: "start", text: "A" },
+    { kind: "start", text: "B" },
+  );
+  const recentTurns: CodexTurn[] = [
+    {
+      id: "turn-b",
+      status: "completed",
+      items: [
+        {
+          type: "userMessage",
+          id: "user-b",
+          content: [{ type: "text", text: "B" }],
+        },
+      ],
+    },
+    {
+      id: "turn-a",
+      status: "completed",
+      items: [
+        {
+          type: "userMessage",
+          id: "user-a",
+          content: [{ type: "text", text: "A" }],
+        },
+      ],
+    },
+  ];
+  const { services, getSessionByCodexThreadId } = createControlChannelServicesFixture({
+    existingSession: createSessionRecord({
+      state: "degraded",
+      degradationReason: "snapshot_mismatch",
+    }),
+    syncSessionHandler: async (session) => {
+      const acceptance = acceptManualSyncRecentExternalTurns({
+        runtime,
+        turns: recentTurns,
+      });
+
+      if (!acceptance.ok) {
+        throw new Error(
+          `Sync blocked for \`${session.codexThreadId}\` because local input is still pending while Codex has recent external input. Send a new message after sync or start a new session.`,
+        );
+      }
+
+      return createResumeOutcome("ready");
+    },
+  });
+
+  const result = await services.syncSession({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "discord-thread-1",
+  });
+
+  expect(result).toEqual({
+    reply: {
+      content:
+        "Sync blocked for `codex-thread-1` because local input is still pending while Codex has recent external input. Send a new message after sync or start a new session.",
+      ephemeral: true,
+    },
+  });
+  expect(getSessionByCodexThreadId("codex-thread-1")).toMatchObject({
+    state: "degraded",
+    degradationReason: "snapshot_mismatch",
+  });
+});
+
 test("close session archives the same Discord thread before persisting lifecycle state", async () => {
   const calls: string[] = [];
 
@@ -7576,6 +7646,91 @@ test("manual sync blocks external user turns while local input is pending", () =
     externalTurnIds: ["remote-turn"],
   });
   expect(runtime.trustedExternalTurnIds.has("remote-turn")).toBe(false);
+});
+
+test("manual sync treats out-of-order pending local input matches as ambiguous external input", () => {
+  const runtime = createRelayTranscriptRuntime();
+  runtime.pendingLocalInputs.push(
+    { kind: "start", text: "A" },
+    { kind: "start", text: "B" },
+  );
+
+  const result = acceptManualSyncRecentExternalTurns({
+    runtime,
+    turns: [
+      {
+        id: "turn-b",
+        status: "completed",
+        items: [
+          {
+            type: "userMessage",
+            id: "user-b",
+            content: [{ type: "text", text: "B" }],
+          },
+        ],
+      },
+      {
+        id: "turn-a",
+        status: "completed",
+        items: [
+          {
+            type: "userMessage",
+            id: "user-a",
+            content: [{ type: "text", text: "A" }],
+          },
+        ],
+      },
+    ],
+  });
+
+  expect(result).toEqual({
+    ok: false,
+    reason: "pending-local-input",
+    externalTurnIds: ["turn-b"],
+  });
+  expect(runtime.trustedExternalTurnIds.size).toBe(0);
+});
+
+test("manual sync accepts ordered pending local input matches without false blocking", () => {
+  const runtime = createRelayTranscriptRuntime();
+  runtime.pendingLocalInputs.push(
+    { kind: "start", text: "A" },
+    { kind: "start", text: "B" },
+  );
+
+  const result = acceptManualSyncRecentExternalTurns({
+    runtime,
+    turns: [
+      {
+        id: "turn-a",
+        status: "completed",
+        items: [
+          {
+            type: "userMessage",
+            id: "user-a",
+            content: [{ type: "text", text: "A" }],
+          },
+        ],
+      },
+      {
+        id: "turn-b",
+        status: "completed",
+        items: [
+          {
+            type: "userMessage",
+            id: "user-b",
+            content: [{ type: "text", text: "B" }],
+          },
+        ],
+      },
+    ],
+  });
+
+  expect(result).toEqual({
+    ok: true,
+    trustedTurnIds: [],
+  });
+  expect(runtime.trustedExternalTurnIds.size).toBe(0);
 });
 
 test("automatic snapshot mismatch holds transcript relay until manual sync", () => {

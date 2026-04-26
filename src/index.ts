@@ -1988,9 +1988,10 @@ export const hasPendingLocalInput = (
 
 const readUserMessageText = (item: CodexUserMessageItem) => {
   return item.content
-    .filter((part) => part.type === "text")
+    .filter((part) => part.type === "text" && typeof part.text === "string")
     .map((part) => part.text)
-    .join("");
+    .join("\n")
+    .trim();
 };
 
 const collectExternalRecentUserTurnIds = ({
@@ -2010,10 +2011,14 @@ const collectExternalRecentUserTurnIds = ({
       }
 
       const text = readUserMessageText(item);
-      const pendingIndex = pendingTexts.indexOf(text);
+      if (text.length === 0) {
+        continue;
+      }
 
-      if (pendingIndex >= 0) {
-        pendingTexts.splice(pendingIndex, 1);
+      const nextPendingInput = pendingTexts[0];
+
+      if (typeof nextPendingInput === "string" && nextPendingInput === text) {
+        pendingTexts.shift();
         continue;
       }
 
