@@ -14,8 +14,9 @@ The daemon should become ready when the core runtime is ready:
 - commands are registered
 - `runtime.json` is published for CLI status and stop commands
 
-Old managed sessions should be reconciled only when they matter to a user action
-or a low-frequency recovery path.
+Old managed sessions should be reconciled only when they matter to a Discord user
+action. Live Codex remote events are handled by projection gating, not snapshot
+reconciliation. There should be no idle-session background sweep.
 
 The default reconciliation model is a recent-window sync, not a full transcript
 audit. CodeHelm should check the latest 10 Codex turns by default. It should not
@@ -26,7 +27,7 @@ If the current Codex App Server can only return full `thread/read` snapshots,
 this design still treats the latest 10 turns as the CodeHelm processing and
 rendering boundary. Fetching a full snapshot is acceptable only as a temporary
 per-session fallback for explicit or lazy reconciliation. It is not acceptable
-on daemon startup, broad background warmup, or unthrottled periodic scans.
+on daemon startup or broad background warmup.
 
 ## Problem
 
@@ -60,8 +61,9 @@ The fix is to make reconciliation explicit, bounded, and trust-gated.
 - avoid startup-time `thread/read(includeTurns=true)` across all mapped sessions
 - preserve live continuity for sessions that are actively running or waiting for
   approval
-- reconcile old session transcript state only when a user action or recovery path
-  needs it
+- reconcile old session transcript state only when a Discord user action needs it
+- project live Codex remote events to Discord only when the mapped Discord
+  session is still active
 - default to checking the latest 10 Codex turns, not the full history
 - avoid automatic full-history Discord replay
 - make out-of-sync sessions visible and safe instead of silently continuing from
@@ -76,6 +78,7 @@ The fix is to make reconciliation explicit, bounded, and trust-gated.
 - redesign the Codex App Server `thread/read` API
 - persist a complete transcript store in SQLite
 - remove all snapshot reconciliation behavior
+- add idle background recovery for inactive sessions
 
 ## User-Approved Decisions
 
@@ -86,10 +89,16 @@ The fix is to make reconciliation explicit, bounded, and trust-gated.
 - CodeHelm sync should be described as recent-window reconciliation, not a full
   transcript audit.
 - Manual sync should not dump a long historical transcript into Discord.
+- Idle sessions should not be periodically recovered by the daemon. Snapshot
+  reconciliation is driven by Discord actions only.
+- Codex remote events should be projected to Discord only when the mapped Discord
+  session is active. Archived or deleted sessions should not receive projected
+  remote transcript updates.
 
 ## Architecture
 
-The runtime should split old-session recovery into two separate responsibilities.
+The runtime should split old-session handling into two event-driven
+responsibilities.
 
 ### 1. Control Warmup
 
@@ -114,13 +123,11 @@ Transcript reconciliation rebuilds or validates the in-memory transcript runtime
 for one session.
 
 This path should be lazy. It should run only when a session is about to be used
-or explicitly inspected:
+or explicitly inspected through Discord:
 
 - user sends a message in a managed Discord thread
 - `/status` requests fresh state
 - `/session-sync` requests reconciliation
-- low-frequency idle recovery decides a session is worth checking
-- recovery probe determines a formerly active session transitioned back to idle
 
 Transcript reconciliation may read Codex turns. It must be bounded by the latest
 10 turns in the default path.
@@ -128,6 +135,32 @@ Transcript reconciliation may read Codex turns. It must be bounded by the latest
 This is a CodeHelm behavior boundary even if the transport cannot yet fetch a
 tail-only snapshot. CodeHelm must slice to the latest 10 turns before classifying
 unknown input, marking items seen, or choosing transcript messages to render.
+
+### 3. Codex Remote Projection
+
+Codex remote input is the other event source.
+
+When CodeHelm receives a live event from Codex App Server for a mapped session,
+it should decide whether that event belongs on the Discord surface:
+
+- active session: project eligible assistant/tool/status events into Discord
+- archived session: do not project transcript events into Discord
+- deleted session: do not project transcript events into Discord
+
+This decision should require both of these gates:
+
+- CodeHelm's persisted session lifecycle state is `active`
+- the Discord thread can receive the message without being recreated or
+  unarchived
+
+If the Discord thread is unavailable, archived, deleted, or would require
+unarchiving to send, CodeHelm should skip projection and log a session-level
+warning. A Codex remote event should not cause CodeHelm to restore, recreate, or
+unarchive a Discord thread by itself.
+
+Codex remote projection is not a snapshot recovery path and does not trigger
+recent-window reconciliation. It handles events that arrive live through the
+control subscription.
 
 ## Snapshot Read Boundary
 
@@ -148,8 +181,8 @@ session at a time, but only under these safeguards:
 - always processed as a latest-10-turn window
 - never rendered as full historical replay
 
-Periodic recovery inherits the same limitation. It may not become a hidden route
-for full-history scans.
+No background idle recovery may use full snapshots as a hidden route for
+full-history scans.
 
 ## Startup Flow
 
@@ -162,7 +195,6 @@ Startup should follow this order:
 5. publish `runtime.json`
 6. return readiness to the CLI parent process
 7. start background control warmup
-8. start periodic recovery timers
 
 No default startup step should snapshot all active sessions for transcript seed.
 
@@ -192,6 +224,28 @@ reconcile candidate when:
 - a prior reconcile timed out or failed
 - the persisted session state is stale compared with a fresh status snapshot
 - the session is already degraded for snapshot mismatch
+
+## Codex Remote Event Flow
+
+When a Codex remote event arrives through a restored control subscription,
+CodeHelm should treat it as live input from the remote side. This path gates
+Discord projection only; it does not lazy-load transcript snapshots.
+
+The flow is:
+
+1. resolve the Codex thread id to a mapped session
+2. read the session lifecycle state from CodeHelm persistence
+3. if the persisted session is not active, do not project the event to Discord
+4. inspect the Discord thread state required for sending
+5. if the Discord thread is unavailable, archived, deleted, or would require
+   unarchiving to send, skip projection
+6. if both gates pass, use the existing live transcript/status projection rules
+7. if projection fails because Discord state is unavailable, log a session-level
+   warning without crashing the daemon
+
+This path does not need to run recent-window snapshot reconciliation first,
+because the event is already live. If later snapshot reconciliation observes a
+fork or mismatch, the session can still move to an out-of-sync/read-only state.
 
 ## Origin Classification
 
@@ -330,28 +384,6 @@ The important behavior is that CodeHelm does not silently merge ambiguous
 multi-writer history during automated continuation. Manual sync is the explicit
 remote-accept path for the recent window.
 
-## Periodic Recovery
-
-Periodic recovery should remain low priority.
-
-It should not immediately scan all idle sessions after startup. The default
-policy should be measurable:
-
-- active runtime states use the existing recovery probe behavior
-- idle snapshot polling starts no earlier than 60 seconds after runtime readiness
-- idle snapshot polling checks at most 1 idle session per recovery interval
-- the idle-session cap is global to the daemon, not per workspace or guild
-- idle snapshot polling obeys the same latest-10-turn processing boundary
-- each recovery operation remains independently timeout-bounded
-- failures stay session-local
-
-Periodic recovery should never become a hidden startup phase.
-
-Periodic recovery must not perform full-turn snapshot reads across every idle
-session in a tight loop. If the current transport can only fetch a full snapshot,
-the implementation may use that fallback for only the single idle session selected
-for the interval, and it must process only the latest 10 turns for that session.
-
 ## Future Hardening: Persistent Checkpoints
 
 Persistent transcript checkpoints are useful but not required to fix startup.
@@ -380,6 +412,8 @@ Expected session-level errors should stay session-level.
 - timeout: warn once for the affected session and continue
 - unknown snapshot shape: mark the session as needing manual sync
 - Discord send failure during sync notice: log warning, do not crash daemon
+- Codex remote event for archived or deleted session: ignore for Discord
+  projection and keep the persisted lifecycle unchanged
 
 Daemon startup should fail only when core runtime dependencies fail before
 readiness, such as database migration, Codex initialization, command
@@ -405,10 +439,9 @@ Behavior-level coverage should include:
 - `/session-sync` does not replay long historical transcript content
 - `/session-sync` renders at most 3 missing assistant/tool messages and does not
   render historical user messages as bot-authored transcript entries
-- periodic recovery does not scan every idle session immediately after startup
-- periodic recovery uses the same latest-10-turn processing boundary
-- periodic idle recovery waits at least 60 seconds after readiness and checks no
-  more than 1 idle session per interval
+- no idle periodic recovery runs after startup
+- live Codex remote events project to active Discord sessions
+- live Codex remote events do not project to archived or deleted Discord sessions
 - lazy reconcile timeout remains session-local and does not affect daemon
   readiness
 
@@ -430,8 +463,8 @@ synthetic live id remapping should remain part of the safety net.
 - default sync checks the latest 10 turns and clearly avoids claiming full
   history audit
 - default sync renders at most 3 recent assistant/tool messages
-- periodic idle recovery checks no more than 1 idle session per interval and does
-  not invoke full snapshot fallback for all idle sessions in one recovery cycle
+- no background idle recovery snapshots mapped sessions after daemon readiness
+- Codex remote events are projected only for active mapped Discord sessions
 - long-disconnected or forked sessions become explicit user decisions instead of
   silent merges
 - full test suite and typecheck pass after implementation
