@@ -1980,6 +1980,97 @@ export const getQueuedSteerInputs = (
   return runtime.pendingLocalInputs.filter((input) => input.kind === "steer");
 };
 
+export const hasPendingLocalInput = (
+  runtime: Pick<TranscriptRuntime, "pendingLocalInputs">,
+) => {
+  return runtime.pendingLocalInputs.length > 0;
+};
+
+const readUserMessageText = (item: CodexUserMessageItem) => {
+  return item.content
+    .filter((part) => part.type === "text")
+    .map((part) => part.text)
+    .join("");
+};
+
+const collectExternalRecentUserTurnIds = ({
+  runtime,
+  turns,
+}: {
+  runtime: Pick<TranscriptRuntime, "pendingLocalInputs">;
+  turns: CodexTurn[] | undefined;
+}) => {
+  const pendingTexts = getPendingLocalInputTexts(runtime);
+  const externalTurnIds = new Set<string>();
+
+  for (const turn of turns ?? []) {
+    for (const item of turn.items ?? []) {
+      if (!isUserMessageItem(item)) {
+        continue;
+      }
+
+      const text = readUserMessageText(item);
+      const pendingIndex = pendingTexts.indexOf(text);
+
+      if (pendingIndex >= 0) {
+        pendingTexts.splice(pendingIndex, 1);
+        continue;
+      }
+
+      externalTurnIds.add(turn.id);
+    }
+  }
+
+  return [...externalTurnIds];
+};
+
+export const acceptManualSyncRecentExternalTurns = ({
+  runtime,
+  turns,
+}: {
+  runtime: Pick<TranscriptRuntime, "pendingLocalInputs" | "trustedExternalTurnIds">;
+  turns: CodexTurn[] | undefined;
+}): {
+  ok: true;
+  trustedTurnIds: string[];
+} | {
+  ok: false;
+  reason: "pending-local-input";
+  externalTurnIds: string[];
+} => {
+  const externalTurnIds = collectExternalRecentUserTurnIds({
+    runtime,
+    turns,
+  });
+
+  if (externalTurnIds.length === 0) {
+    return {
+      ok: true,
+      trustedTurnIds: [],
+    };
+  }
+
+  if (hasPendingLocalInput(runtime)) {
+    return {
+      ok: false,
+      reason: "pending-local-input",
+      externalTurnIds,
+    };
+  }
+
+  for (const turnId of externalTurnIds) {
+    noteTrustedLiveExternalTurnStart({
+      runtime,
+      turnId,
+    });
+  }
+
+  return {
+    ok: true,
+    trustedTurnIds: externalTurnIds,
+  };
+};
+
 const removePendingLocalInput = ({
   runtime,
   pendingInput,
@@ -4770,9 +4861,11 @@ type CreateControlChannelServicesDeps = {
   ) => Promise<void>;
   syncManagedSessionIntoDiscordThread: (
     session: NonNullable<ReturnType<CreateControlChannelServicesDeps["sessionRepo"]["getByCodexThreadId"]>>,
+    initialSnapshot?: ThreadReadResult,
   ) => Promise<SessionResumeState>;
   resumeManagedSessionIntoDiscordThread: (
     session: NonNullable<ReturnType<CreateControlChannelServicesDeps["sessionRepo"]["getByCodexThreadId"]>>,
+    initialSnapshot?: ThreadReadResult,
   ) => Promise<SessionResumeState>;
   sendTextToChannel: (
     client: Client,
@@ -5673,8 +5766,8 @@ export const createControlChannelServices = ({
           || syncedRuntimeState === "waiting-approval";
         const result =
           shouldResumeIntoDiscordThread
-            ? await resumeManagedSessionIntoDiscordThread(attachedSession)
-            : await syncManagedSessionIntoDiscordThread(attachedSession);
+            ? await resumeManagedSessionIntoDiscordThread(attachedSession, snapshot)
+            : await syncManagedSessionIntoDiscordThread(attachedSession, snapshot);
 
         if (result.kind === "untrusted") {
           const untrustedReply = {

@@ -106,6 +106,7 @@ import {
   renderLiveTurnProcessMessage,
   seedTranscriptRuntimeSeenItemsFromSnapshot,
   noteTrustedLiveExternalTurnStart,
+  acceptManualSyncRecentExternalTurns,
   sortResumePickerThreads,
   applySessionStartTurnOverrides,
   startCodeHelm,
@@ -296,7 +297,10 @@ const getHandleActiveManagedThreadDiscordInputForTest = () => {
 const createRelayTranscriptRuntime = () => ({
   seenItemIds: new Set<string>(),
   finalizingItemIds: new Set<string>(),
-  pendingLocalInputs: [],
+  pendingLocalInputs: [] as Array<
+    | { kind: "start"; text: string }
+    | { kind: "steer"; text: string; turnId: string }
+  >,
   pendingDiscordInputReplyMessageIds: [],
   turnReplyMessageIds: new Map<string, string>(),
   trustedExternalTurnIds: new Set<string>(),
@@ -2369,6 +2373,7 @@ const createControlChannelServicesFixture = ({
   discordThreadUsable = true,
   readThreadStatus = { type: "idle" } satisfies CodexThreadStatus,
   readThreadCwd = "/tmp/workspace/api",
+  readThreadTurns,
   startThreadCwd,
   startThreadModel,
   startThreadReasoningEffort,
@@ -2379,6 +2384,8 @@ const createControlChannelServicesFixture = ({
   syncError,
   syncOutcome = createResumeOutcome("ready"),
   resumeOutcome = createResumeOutcome("ready"),
+  syncSessionHandler,
+  resumeSessionHandler,
   listThreadsError,
   listThreadsData = {
     active: [] as CodexThread[],
@@ -2390,6 +2397,7 @@ const createControlChannelServicesFixture = ({
   discordThreadUsable?: boolean;
   readThreadStatus?: CodexThreadStatus;
   readThreadCwd?: string;
+  readThreadTurns?: CodexTurn[];
   startThreadCwd?: string;
   startThreadModel?: string;
   startThreadReasoningEffort?: string | null;
@@ -2400,6 +2408,14 @@ const createControlChannelServicesFixture = ({
   syncError?: Error;
   syncOutcome?: SessionResumeState;
   resumeOutcome?: SessionResumeState;
+  syncSessionHandler?: (
+    session: SessionRecord,
+    initialSnapshot?: ThreadReadResult,
+  ) => Promise<SessionResumeState>;
+  resumeSessionHandler?: (
+    session: SessionRecord,
+    initialSnapshot?: ThreadReadResult,
+  ) => Promise<SessionResumeState>;
   listThreadsError?: Error;
   listThreadsData?: {
     active: CodexThread[];
@@ -2441,7 +2457,9 @@ const createControlChannelServicesFixture = ({
       lifecycleState: SessionRecord["lifecycleState"];
     }>,
     syncedThreads: [] as string[],
+    syncedSnapshots: [] as Array<ThreadReadResult | undefined>,
     resumedThreads: [] as string[],
+    resumedSnapshots: [] as Array<ThreadReadResult | undefined>,
     deletedThreads: [] as string[],
     sentTexts: [] as Array<{
       channelId: string;
@@ -2606,15 +2624,23 @@ const createControlChannelServicesFixture = ({
       }
     },
     closeManagedSession: async () => {},
-    syncManagedSessionIntoDiscordThread: async (session) => {
+    syncManagedSessionIntoDiscordThread: async (session, initialSnapshot) => {
       calls.syncedThreads.push(session.discordThreadId);
+      calls.syncedSnapshots.push(initialSnapshot);
       if (syncError) {
         throw syncError;
       }
+      if (syncSessionHandler) {
+        return syncSessionHandler(session, initialSnapshot);
+      }
       return syncOutcome;
     },
-    resumeManagedSessionIntoDiscordThread: async (session) => {
+    resumeManagedSessionIntoDiscordThread: async (session, initialSnapshot) => {
       calls.resumedThreads.push(session.discordThreadId);
+      calls.resumedSnapshots.push(initialSnapshot);
+      if (resumeSessionHandler) {
+        return resumeSessionHandler(session, initialSnapshot);
+      }
       return resumeOutcome;
     },
     sendTextToChannel: async (_client, channelId, content) => {
@@ -2639,6 +2665,7 @@ const createControlChannelServicesFixture = ({
           id: threadId,
           cwd: readThreadCwd,
           status: readThreadStatus,
+          turns: readThreadTurns,
         }),
       };
     },
@@ -4275,6 +4302,125 @@ test("waiting-approval replacement attach resumes the replacement thread instead
     reply: {
       content:
         "Attached session in replacement thread <#discord-thread-new-1>. Session remains `waiting-approval`.",
+    },
+  });
+});
+
+test("/session-resume passes the initial recent snapshot into the sync attach helper", async () => {
+  const { services, calls } = createControlChannelServicesFixture({
+    readThreadStatus: {
+      type: "active",
+      activeFlags: [],
+    },
+    readThreadTurns: createSequentialTurns(12),
+  });
+
+  await services.setCurrentWorkdir({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
+    path: defaultSessionPath,
+  });
+
+  const result = await services.resumeSession({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
+    codexThreadId: "codex-thread-1",
+  });
+
+  expect(calls.readThreadIds).toEqual(["codex-thread-1"]);
+  expect(calls.syncedThreads).toEqual(["discord-thread-new-1"]);
+  expect(calls.resumedThreads).toEqual([]);
+  expect(calls.syncedSnapshots).toHaveLength(1);
+  expect(readTurnIds(calls.syncedSnapshots[0] as ThreadReadResult)).toEqual([
+    "turn-3",
+    "turn-4",
+    "turn-5",
+    "turn-6",
+    "turn-7",
+    "turn-8",
+    "turn-9",
+    "turn-10",
+    "turn-11",
+    "turn-12",
+  ]);
+  expect(result).toEqual({
+    reply: {
+      content: "Attached session <#discord-thread-new-1>. Session is writable.",
+    },
+  });
+});
+
+test("/session-resume rolls back a replacement attach when the initial recent snapshot is untrusted", async () => {
+  const remoteUserTurn: CodexTurn = {
+    id: "remote-turn",
+    status: "completed",
+    items: [
+      {
+        type: "userMessage",
+        id: "remote-user",
+        content: [{ type: "text", text: "remote-only input" }],
+      },
+    ],
+  };
+  const { services, calls, getSessionByCodexThreadId } = createControlChannelServicesFixture({
+    existingSession: createSessionRecord({
+      discordThreadId: "discord-thread-deleted",
+      lifecycleState: "deleted",
+    }),
+    discordThreadUsable: false,
+    readThreadStatus: {
+      type: "active",
+      activeFlags: [],
+    },
+    readThreadTurns: [remoteUserTurn],
+    syncSessionHandler: async (_session, initialSnapshot) => {
+      const hasRecentRemoteUserInput = initialSnapshot?.thread.turns?.some((turn) =>
+        turn.items?.some((item) => item.type === "userMessage")
+      ) ?? false;
+
+      return hasRecentRemoteUserInput
+        ? createResumeOutcome("untrusted")
+        : createResumeOutcome("ready");
+    },
+  });
+
+  await services.setCurrentWorkdir({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
+    path: defaultSessionPath,
+  });
+
+  const result = await services.resumeSession({
+    actorId: "owner-1",
+    guildId: "guild-1",
+    channelId: "control-1",
+    codexThreadId: "codex-thread-1",
+  });
+
+  expect(calls.syncedSnapshots).toHaveLength(1);
+  expect(calls.reboundThreads).toEqual([
+    {
+      currentDiscordThreadId: "discord-thread-deleted",
+      nextDiscordThreadId: "discord-thread-new-1",
+    },
+    {
+      currentDiscordThreadId: "discord-thread-new-1",
+      nextDiscordThreadId: "discord-thread-deleted",
+    },
+  ]);
+  expect(calls.deletedThreads).toEqual(["discord-thread-new-1"]);
+  expect(getSessionByCodexThreadId("codex-thread-1")).toMatchObject({
+    discordThreadId: "discord-thread-deleted",
+    lifecycleState: "deleted",
+  });
+  expect(result).toEqual({
+    reply: {
+      content:
+        "Attach aborted for `codex-thread-1` because CodeHelm could not establish a trustworthy synced session view.",
+      ephemeral: true,
     },
   });
 });
@@ -7292,6 +7438,65 @@ test("live turn start trusts only external turns that did not originate from Dis
     turnId: "discord-turn",
   });
   expect(runtime.trustedExternalTurnIds.has("discord-turn")).toBe(false);
+});
+
+test("manual sync trusts recent external user turns when no local input is pending", () => {
+  const runtime = createRelayTranscriptRuntime();
+
+  const result = acceptManualSyncRecentExternalTurns({
+    runtime,
+    turns: [
+      {
+        id: "remote-turn",
+        status: "completed",
+        items: [
+          {
+            type: "userMessage",
+            id: "remote-user",
+            content: [{ type: "text", text: "remote-only input" }],
+          },
+        ],
+      },
+    ],
+  });
+
+  expect(result).toEqual({
+    ok: true,
+    trustedTurnIds: ["remote-turn"],
+  });
+  expect(runtime.trustedExternalTurnIds.has("remote-turn")).toBe(true);
+});
+
+test("manual sync blocks external user turns while local input is pending", () => {
+  const runtime = createRelayTranscriptRuntime();
+  runtime.pendingLocalInputs.push({
+    kind: "start",
+    text: "local pending input",
+  });
+
+  const result = acceptManualSyncRecentExternalTurns({
+    runtime,
+    turns: [
+      {
+        id: "remote-turn",
+        status: "completed",
+        items: [
+          {
+            type: "userMessage",
+            id: "remote-user",
+            content: [{ type: "text", text: "remote-only input" }],
+          },
+        ],
+      },
+    ],
+  });
+
+  expect(result).toEqual({
+    ok: false,
+    reason: "pending-local-input",
+    externalTurnIds: ["remote-turn"],
+  });
+  expect(runtime.trustedExternalTurnIds.has("remote-turn")).toBe(false);
 });
 
 test("automatic snapshot mismatch holds transcript relay until manual sync", () => {
