@@ -235,6 +235,7 @@ type ReconcileManagedSessionBeforeDiscordInputForTest = (input: {
     session: SessionRecord,
     state: "idle" | "running" | "waiting-approval",
   ) => Promise<void> | void;
+  markRuntimeTrustedForDiscordInput?: (codexThreadId: string) => void;
 }) => Promise<DiscordInputReconcileResultForTest>;
 
 const getReconcileManagedSessionBeforeDiscordInputForTest = () => {
@@ -1588,11 +1589,54 @@ test("active owner running message blocks steering when reconcile degrades", asy
   expect(events).toEqual(["reconcile"]);
 });
 
+test("status-created unmarked runtime does not skip lazy reconcile", async () => {
+  const reconcile = getReconcileManagedSessionBeforeDiscordInputForTest();
+  const events: string[] = [];
+  let storedSession = createSessionRecord({ state: "idle" });
+  const runtime = { trustedForDiscordInput: false };
+  const snapshot = createThreadReadResult({
+    status: { type: "idle" },
+    turns: [],
+  });
+
+  const result = await reconcile({
+    session: storedSession,
+    runtime,
+    reconcileFailedThreadIds: new Set<string>(),
+    readRecentThreadForRuntimeSnapshotReconciliation: async (threadId) => {
+      events.push(`read:${threadId}`);
+      return snapshot;
+    },
+    syncTranscriptSnapshotFromReadResult: async () => {
+      events.push("sync");
+    },
+    getSessionByCodexThreadId: () => storedSession,
+    persistReconciledSessionState: async (_session, state) => {
+      events.push(`persist:${state}`);
+      storedSession = createSessionRecord({ state });
+    },
+    markRuntimeTrustedForDiscordInput: (codexThreadId) => {
+      events.push(`trust:${codexThreadId}`);
+      runtime.trustedForDiscordInput = true;
+    },
+  });
+
+  expect(result).toMatchObject({ ok: true });
+  expect(runtime.trustedForDiscordInput).toBe(true);
+  expect(events).toEqual([
+    "read:codex-thread-1",
+    "sync",
+    "persist:idle",
+    "trust:codex-thread-1",
+  ]);
+});
+
 test("reconciled idle snapshot routes stale running owner input to start", async () => {
   const reconcile = getReconcileManagedSessionBeforeDiscordInputForTest();
   const handleInput = getHandleActiveManagedThreadDiscordInputForTest();
   const events: string[] = [];
   let storedSession = createSessionRecord({ state: "running" });
+  const runtime = { trustedForDiscordInput: false };
   const snapshot = createThreadReadResult({
     status: { type: "idle" },
     turns: [{ id: "turn-1", status: "completed", items: [] }],
@@ -1606,7 +1650,7 @@ test("reconciled idle snapshot routes stale running owner input to start", async
     reconcileBeforeDiscordInput: async (session) =>
       reconcile({
         session,
-        runtime: undefined,
+        runtime,
         reconcileFailedThreadIds: new Set<string>(),
         readRecentThreadForRuntimeSnapshotReconciliation: async () => {
           events.push("read");
@@ -1619,6 +1663,9 @@ test("reconciled idle snapshot routes stale running owner input to start", async
         persistReconciledSessionState: async (_session, state) => {
           events.push(`persist:${state}`);
           storedSession = createSessionRecord({ state });
+        },
+        markRuntimeTrustedForDiscordInput: () => {
+          runtime.trustedForDiscordInput = true;
         },
       }),
     startTurnFromDiscordInput: async (input) => {
@@ -1649,6 +1696,7 @@ test("reconciled running snapshot routes stale idle owner input to steer", async
   const handleInput = getHandleActiveManagedThreadDiscordInputForTest();
   const events: string[] = [];
   let storedSession = createSessionRecord({ state: "idle" });
+  const runtime = { trustedForDiscordInput: false };
   const snapshot = createThreadReadResult({
     status: { type: "active", activeFlags: ["waitingOnUserInput"] },
     turns: [{ id: "turn-1", status: "in_progress", items: [] }],
@@ -1662,7 +1710,7 @@ test("reconciled running snapshot routes stale idle owner input to steer", async
     reconcileBeforeDiscordInput: async (session) =>
       reconcile({
         session,
-        runtime: undefined,
+        runtime,
         reconcileFailedThreadIds: new Set<string>(),
         readRecentThreadForRuntimeSnapshotReconciliation: async () => {
           events.push("read");
@@ -1675,6 +1723,9 @@ test("reconciled running snapshot routes stale idle owner input to steer", async
         persistReconciledSessionState: async (_session, state) => {
           events.push(`persist:${state}`);
           storedSession = createSessionRecord({ state });
+        },
+        markRuntimeTrustedForDiscordInput: () => {
+          runtime.trustedForDiscordInput = true;
         },
       }),
     startTurnFromDiscordInput: async () => {
@@ -1743,7 +1794,7 @@ test("active owner input stops before start or steer when reconcile fails", asyn
 
 test("trusted runtime skips recent snapshot read and continues as before", async () => {
   const reconcile = getReconcileManagedSessionBeforeDiscordInputForTest();
-  const runtime = {};
+  const runtime = { trustedForDiscordInput: true };
   const session = createSessionRecord({ state: "idle" });
   let readCount = 0;
   let syncCount = 0;

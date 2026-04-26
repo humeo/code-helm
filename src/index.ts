@@ -348,6 +348,7 @@ type TranscriptRuntime = {
   pendingDiscordInputReplyMessageIds: Array<string | undefined>;
   turnReplyMessageIds: Map<string, string>;
   trustedExternalTurnIds: Set<string>;
+  trustedForDiscordInput: boolean;
   closedTurnIds: Set<string>;
   typingActive: boolean;
   typingTimeout?: ReturnType<typeof setTimeout>;
@@ -1939,6 +1940,7 @@ const buildTranscriptRuntime = (): TranscriptRuntime => {
     pendingDiscordInputReplyMessageIds: [],
     turnReplyMessageIds: new Map(),
     trustedExternalTurnIds: new Set<string>(),
+    trustedForDiscordInput: false,
     closedTurnIds: new Set<string>(),
     typingActive: false,
     typingTimeout: undefined,
@@ -3068,9 +3070,25 @@ export const hasTrustedRuntimeForDiscordInput = ({
   runtime?: unknown;
   reconcileFailed?: boolean;
 }) => {
-  return Boolean(runtime)
+  return typeof runtime === "object"
+    && runtime !== null
+    && "trustedForDiscordInput" in runtime
+    && runtime.trustedForDiscordInput === true
     && !reconcileFailed
     && hasWritableOrBusyDiscordInputState(session);
+};
+
+const setRuntimeTrustedForDiscordInput = (
+  runtime: unknown,
+  trustedForDiscordInput: boolean,
+) => {
+  if (
+    typeof runtime === "object"
+    && runtime !== null
+    && "trustedForDiscordInput" in runtime
+  ) {
+    runtime.trustedForDiscordInput = trustedForDiscordInput;
+  }
 };
 
 export type DiscordInputReconcileResult =
@@ -3092,6 +3110,7 @@ export const reconcileManagedSessionBeforeDiscordInput = async ({
   syncTranscriptSnapshotFromReadResult,
   getSessionByCodexThreadId,
   persistReconciledSessionState,
+  markRuntimeTrustedForDiscordInput,
 }: {
   session: SessionRecord;
   runtime?: unknown;
@@ -3109,6 +3128,7 @@ export const reconcileManagedSessionBeforeDiscordInput = async ({
     session: SessionRecord,
     state: SessionRuntimeState,
   ) => Promise<void> | void;
+  markRuntimeTrustedForDiscordInput?: (codexThreadId: string) => void;
 }): Promise<DiscordInputReconcileResult> => {
   if (hasTrustedRuntimeForDiscordInput({
     session,
@@ -3135,6 +3155,7 @@ export const reconcileManagedSessionBeforeDiscordInput = async ({
     });
     reconcileFailedThreadIds.delete(session.codexThreadId);
   } catch (error) {
+    setRuntimeTrustedForDiscordInput(runtime, false);
     reconcileFailedThreadIds.add(session.codexThreadId);
     throw error;
   }
@@ -3166,6 +3187,9 @@ export const reconcileManagedSessionBeforeDiscordInput = async ({
         && refreshedSession?.state === "degraded",
     };
   }
+
+  setRuntimeTrustedForDiscordInput(runtime, true);
+  markRuntimeTrustedForDiscordInput?.(refreshedSession.codexThreadId);
 
   return {
     ok: true,
@@ -6667,6 +6691,7 @@ const startCodeHelmRuntime = async (
       } else {
         sessionRepo.updateState(session.discordThreadId, "running");
       }
+      runtime.trustedForDiscordInput = true;
       logger.info("Started Codex turn from Discord message", {
         discordThreadId: session.discordThreadId,
         codexThreadId: session.codexThreadId,
@@ -6739,6 +6764,7 @@ const startCodeHelmRuntime = async (
         expectedTurnId: activeTurnId,
         input: [{ type: "text", text: content }],
       });
+      runtime.trustedForDiscordInput = true;
       logger.info("Queued Codex turn follow-up from Discord message", {
         discordThreadId: session.discordThreadId,
         codexThreadId: session.codexThreadId,
@@ -7383,6 +7409,9 @@ const startCodeHelmRuntime = async (
               sessionRepo.getByCodexThreadId(codexThreadId),
             persistReconciledSessionState: (sessionToUpdate, state) => {
               updateSessionStateIfWritable(sessionToUpdate, state);
+            },
+            markRuntimeTrustedForDiscordInput: (codexThreadId) => {
+              ensureTranscriptRuntime(codexThreadId).trustedForDiscordInput = true;
             },
           }),
         startTurnFromDiscordInput,
