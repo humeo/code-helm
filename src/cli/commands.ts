@@ -915,6 +915,10 @@ const renderHelpOutput = (env: Record<string, string | undefined>) => {
         items: [
           { command: "start", description: "Start CodeHelm in foreground" },
           { command: "start --daemon", description: "Start CodeHelm in background" },
+          {
+            command: "start --port <port>",
+            description: "Start CodeHelm on a custom managed app-server port",
+          },
           { command: "status", description: "Show runtime state" },
           { command: "stop", description: "Stop the background runtime" },
         ],

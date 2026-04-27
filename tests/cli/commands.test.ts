@@ -257,6 +257,8 @@ describe("runCliCommand", () => {
     expect(result.output).toContain("Connect Discord and initialize local state");
     expect(result.output).toContain("start --daemon");
     expect(result.output).toContain("Start CodeHelm in background");
+    expect(result.output).toContain("start --port <port>");
+    expect(result.output).toContain("Start CodeHelm on a custom managed app-server port");
     expect(result.output).toContain("autostart enable");
     expect(result.output).toContain("Enable automatic startup");
     expect(result.output).toContain("check");

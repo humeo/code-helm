@@ -167,9 +167,9 @@ describe("runOnboarding", () => {
     expect(lines[1]).toMatch(/^Discord bot token\s+abcd\*{4}$/);
     expect(lines[2]).toMatch(/^Guild\s+Guild One$/);
     expect(lines[3]).toMatch(/^Control channel\s+#control-room$/);
-    expect(lines[4]).toMatch(/^Codex App Server\s+managed \(loopback, port assigned on start\)$/);
-    expect(lines[5]).toMatch(/^Codex address\s+ws:\/\/127\.0\.0\.1:<auto>$/);
-    expect(lines[6]).toMatch(/^Codex connect\s+codex --remote ws:\/\/127\.0\.0\.1:<auto> -C "\$\(pwd\)"$/);
+    expect(lines[4]).toMatch(/^Codex App Server\s+managed \(loopback, default port 4200\)$/);
+    expect(lines[5]).toMatch(/^Codex address\s+ws:\/\/127\.0\.0\.1:4200$/);
+    expect(lines[6]).toMatch(/^Codex connect\s+codex --remote ws:\/\/127\.0\.0\.1:4200 -C "\$\(pwd\)"$/);
     expect(lines[7]).toMatch(/^Config path\s+\/tmp\/config\.toml$/);
     expect(lines[8]).toMatch(/^Secrets path\s+\/tmp\/secrets\.toml$/);
     expect(lines[9]).toMatch(/^Database path\s+\/tmp\/codehelm\.sqlite$/);

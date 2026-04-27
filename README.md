@@ -119,6 +119,15 @@ Background:
 code-helm start --daemon
 ```
 
+By default, CodeHelm starts the managed Codex App Server at `ws://127.0.0.1:4200`.
+
+If that port is already in use, choose another port for this run:
+
+```bash
+code-helm start --port 4201
+code-helm start --daemon --port 4201
+```
+
 #### 4. Connect Codex
 
 Use the address printed by `code-helm start`:

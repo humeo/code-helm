@@ -117,6 +117,15 @@ code-helm start
 code-helm start --daemon
 ```
 
+默认情况下，CodeHelm 会在 `ws://127.0.0.1:4200` 启动托管的 Codex App Server。
+
+如果这个端口已被占用，可以为本次运行选择另一个端口：
+
+```bash
+code-helm start --port 4201
+code-helm start --daemon --port 4201
+```
+
 #### 4. 连接 Codex
 
 使用 `code-helm start` 打印出来的地址：

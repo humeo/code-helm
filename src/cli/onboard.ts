@@ -20,6 +20,10 @@ import {
   type SelectableGuild,
 } from "./discord-discovery";
 import { renderKeyValueRows } from "./output";
+import {
+  DEFAULT_MANAGED_CODEX_APP_SERVER_PORT,
+  formatManagedCodexAppServerAddress,
+} from "../codex/supervisor";
 
 export type OnboardingUiTokenResponse =
   | { kind: "submit"; token: string }
@@ -63,7 +67,9 @@ export type OnboardingResult =
   | { kind: "cancelled" };
 
 const ONBOARDING_CANCELLED_MESSAGE = "Onboarding cancelled.";
-const MANAGED_CODEX_APP_SERVER_ADDRESS = "ws://127.0.0.1:<auto>";
+const MANAGED_CODEX_APP_SERVER_ADDRESS = formatManagedCodexAppServerAddress(
+  DEFAULT_MANAGED_CODEX_APP_SERVER_PORT,
+);
 
 export const formatCodexConnectCommand = (address: string) => {
   return `codex --remote ${address} -C "$(pwd)"`;
@@ -123,7 +129,10 @@ export const formatReviewSummary = (input: {
     { key: "Discord bot token", value: maskBotTokenForDisplay(input.botToken) },
     { key: "Guild", value: input.guild.name },
     { key: "Control channel", value: `#${input.controlChannel.name}` },
-    { key: "Codex App Server", value: "managed (loopback, port assigned on start)" },
+    {
+      key: "Codex App Server",
+      value: `managed (loopback, default port ${DEFAULT_MANAGED_CODEX_APP_SERVER_PORT})`,
+    },
     { key: "Codex address", value: MANAGED_CODEX_APP_SERVER_ADDRESS },
     { key: "Codex connect", value: MANAGED_CODEX_CONNECT_COMMAND },
     { key: "Config path", value: input.configPath },
