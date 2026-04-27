@@ -1,7 +1,7 @@
 export type CliCommand =
   | { kind: "help" }
   | { kind: "onboard" }
-  | { kind: "start"; daemon: boolean }
+  | { kind: "start"; daemon: boolean; port?: number }
   | { kind: "status" }
   | { kind: "stop" }
   | { kind: "version" }
@@ -14,6 +14,58 @@ const usage = "Usage: code-helm <help|onboard|start|status|stop|version|check|up
 
 const failUsage = (message: string): never => {
   throw new Error(`${message}\n${usage}`);
+};
+
+const parsePortValue = (value: string | undefined): number => {
+  if (value === undefined) {
+    return failUsage("Missing value for --port");
+  }
+
+  if (!/^\d+$/.test(value)) {
+    failUsage(`Invalid value for --port: ${value}`);
+  }
+
+  const port = Number(value);
+
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    failUsage(`Invalid value for --port: ${value}`);
+  }
+
+  return port;
+};
+
+const parseStartArgs = (rest: string[]): CliCommand => {
+  let daemon = false;
+  let port: number | undefined;
+
+  for (let index = 0; index < rest.length; index += 1) {
+    const token = rest[index];
+
+    if (token === "--daemon") {
+      if (daemon) {
+        failUsage("Duplicate --daemon for start");
+      }
+
+      daemon = true;
+      continue;
+    }
+
+    if (token === "--port") {
+      if (port !== undefined) {
+        failUsage("Duplicate --port for start");
+      }
+
+      port = parsePortValue(rest[index + 1]);
+      index += 1;
+      continue;
+    }
+
+    failUsage(`Unknown arguments for start: ${rest.join(" ")}`);
+  }
+
+  return port === undefined
+    ? { kind: "start", daemon }
+    : { kind: "start", daemon, port };
 };
 
 export const parseCliArgs = (argv: string[]): CliCommand => {
@@ -35,17 +87,8 @@ export const parseCliArgs = (argv: string[]): CliCommand => {
         failUsage(`Unknown arguments for onboard: ${rest.join(" ")}`);
       }
       return { kind: "onboard" };
-    case "start": {
-      if (rest.length === 0) {
-        return { kind: "start", daemon: false };
-      }
-
-      if (rest.length === 1 && rest[0] === "--daemon") {
-        return { kind: "start", daemon: true };
-      }
-
-      failUsage(`Unknown arguments for start: ${rest.join(" ")}`);
-    }
+    case "start":
+      return parseStartArgs(rest);
     case "status":
       if (rest.length > 0) {
         failUsage(`Unknown arguments for status: ${rest.join(" ")}`);

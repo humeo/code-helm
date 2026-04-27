@@ -11,6 +11,31 @@ test("parses supported cli commands", () => {
     kind: "start",
     daemon: true,
   });
+  expect(parseCliArgs(["start", "--port", "4201"])).toEqual({
+    kind: "start",
+    daemon: false,
+    port: 4201,
+  });
+  expect(parseCliArgs(["start", "--port", "1"])).toEqual({
+    kind: "start",
+    daemon: false,
+    port: 1,
+  });
+  expect(parseCliArgs(["start", "--port", "65535"])).toEqual({
+    kind: "start",
+    daemon: false,
+    port: 65535,
+  });
+  expect(parseCliArgs(["start", "--daemon", "--port", "4201"])).toEqual({
+    kind: "start",
+    daemon: true,
+    port: 4201,
+  });
+  expect(parseCliArgs(["start", "--port", "4201", "--daemon"])).toEqual({
+    kind: "start",
+    daemon: true,
+    port: 4201,
+  });
   expect(parseCliArgs(["status"])).toEqual({ kind: "status" });
   expect(parseCliArgs(["stop"])).toEqual({ kind: "stop" });
   expect(parseCliArgs(["version"])).toEqual({ kind: "version" });
@@ -90,6 +115,24 @@ test("rejects invalid start flags and autostart arity", () => {
   expect(() => parseCliArgs(["start", "--daemon", "--extra"])).toThrow(
     /Unknown arguments for start/,
   );
+  expect(() => parseCliArgs(["start", "--daemon", "--daemon"])).toThrow(
+    /Duplicate --daemon/,
+  );
+  expect(() => parseCliArgs(["start", "--port"])).toThrow(
+    /Missing value for --port/,
+  );
+  expect(() => parseCliArgs(["start", "--port", "abc"])).toThrow(
+    /Invalid value for --port/,
+  );
+  expect(() => parseCliArgs(["start", "--port", "0"])).toThrow(
+    /Invalid value for --port/,
+  );
+  expect(() => parseCliArgs(["start", "--port", "65536"])).toThrow(
+    /Invalid value for --port/,
+  );
+  expect(() =>
+    parseCliArgs(["start", "--port", "4201", "--port", "4202"]),
+  ).toThrow(/Duplicate --port/);
   expect(() => parseCliArgs(["autostart"])).toThrow(/Usage: code-helm autostart/);
   expect(() => parseCliArgs(["autostart", "enable", "extra"])).toThrow(
     /Usage: code-helm autostart/,
