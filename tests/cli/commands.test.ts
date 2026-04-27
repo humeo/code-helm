@@ -1158,6 +1158,33 @@ describe("runCliCommand", () => {
     ).rejects.toThrow(/spawn boom/i);
   });
 
+  test("start reports managed app-server port guidance on foreground startup failure", async () => {
+    const services = createBaseServices();
+    let thrown: unknown;
+
+    services.startForeground = async () => {
+      throw new CodexSupervisorError(
+        "CODEX_APP_SERVER_FAILED_TO_START",
+        "Managed Codex App Server failed to start.",
+        {
+          startupDisposition: "failed",
+          diagnostics: "address already in use",
+        },
+      );
+    };
+
+    try {
+      await runCliCommand({ kind: "start", daemon: false, port: 4201 }, services);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    const message = (thrown as Error).message;
+    expect(message).toMatch(/ws:\/\/127\.0\.0\.1:4201/);
+    expect(message).toMatch(/lsof -nP -iTCP:4201 -sTCP:LISTEN/);
+  });
+
   test("start renders certificate verification startup failures with targeted certificate guidance", async () => {
     const services = createBaseServices();
 

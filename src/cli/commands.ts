@@ -24,7 +24,11 @@ import {
   type StartupError,
   type RuntimeSummary,
 } from "./runtime-state";
-import { CodexSupervisorError } from "../codex/supervisor";
+import {
+  CodexSupervisorError,
+  DEFAULT_MANAGED_CODEX_APP_SERVER_PORT,
+  formatManagedCodexAppServerAddress,
+} from "../codex/supervisor";
 import { loadAppConfig, type AppConfig } from "../config";
 import { resolveLegacyWorkspaceBootstrap, startCodeHelm } from "../index";
 import { initializeLogger, logger, shutdownLogger } from "../logger";
@@ -591,7 +595,10 @@ const classifyStartupFailure = (message: string) => {
 
 const formatStartupFailure = (
   error: unknown,
-  options: { env: Record<string, string | undefined> },
+  options: {
+    appServerAddress?: string;
+    env: Record<string, string | undefined>;
+  },
 ) => {
   if (
     error instanceof CodexSupervisorError
@@ -635,15 +642,37 @@ const formatStartupFailure = (
         });
       }
 
+      const portHint = options.appServerAddress
+        ? formatPortInspectionCommand(options.appServerAddress)
+        : undefined;
+
       return renderErrorPanel({
         title: "Startup Failed",
         headline: "Managed Codex App Server failed to start.",
         sections: [
+          ...(options.appServerAddress
+            ? [
+                {
+                  kind: "key-value" as const,
+                  title: "Managed Codex App Server",
+                  rows: [
+                    { key: "Address", value: options.appServerAddress },
+                  ],
+                },
+              ]
+            : []),
           {
             kind: "steps",
             title: "Try next",
             items: [
               "CodeHelm could not finish startup.",
+              ...(portHint
+                ? [
+                    "The selected port may already be in use.",
+                    portHint,
+                    "Stop the conflicting process or choose another port with code-helm start --port <port>.",
+                  ]
+                : []),
               "Inspect the diagnostics below, resolve the startup issue, then try running the command again.",
               "code-helm start",
             ],
@@ -1673,7 +1702,13 @@ export const runCliCommand = async (
           stateDir: configuredStore.paths.stateDir,
         });
       } catch (error) {
-        const formattedStartupFailure = formatStartupFailure(error, { env: services.env });
+        const appServerAddress = formatManagedCodexAppServerAddress(
+          command.port ?? DEFAULT_MANAGED_CODEX_APP_SERVER_PORT,
+        );
+        const formattedStartupFailure = formatStartupFailure(error, {
+          appServerAddress,
+          env: services.env,
+        });
 
         if (formattedStartupFailure) {
           throw new Error(formattedStartupFailure);
