@@ -6750,6 +6750,32 @@ export type StartCodeHelmOptions = {
   writeRuntimeSummary?: typeof writeRuntimeSummary;
 };
 
+export const resolveManagedAppServerPortFromEnv = (
+  env: Record<string, string | undefined>,
+) => {
+  const rawPort = env.CODE_HELM_MANAGED_APP_SERVER_PORT;
+
+  if (rawPort === undefined || rawPort.trim().length === 0) {
+    return undefined;
+  }
+
+  if (!/^\d+$/.test(rawPort)) {
+    throw new Error(
+      `CODE_HELM_MANAGED_APP_SERVER_PORT must be an integer from 1 to 65535: ${rawPort}`,
+    );
+  }
+
+  const port = Number(rawPort);
+
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(
+      `CODE_HELM_MANAGED_APP_SERVER_PORT must be an integer from 1 to 65535: ${rawPort}`,
+    );
+  }
+
+  return port;
+};
+
 const isPidAlive = (pid: number) => {
   try {
     process.kill(pid, 0);
@@ -9039,7 +9065,7 @@ export const startCodeHelm = async (
         : process.cwd();
       runtimeLogger.info("Starting managed Codex App Server", {
         cwd: managedAppServerCwd,
-        port: options.managedAppServerPort,
+        appServerPort: options.managedAppServerPort,
       });
       managedCodexAppServer = await startManagedServer({
         cwd: managedAppServerCwd,
@@ -9138,23 +9164,31 @@ export const startCodeHelm = async (
 
 export const loadAndStartCodeHelmFromProcess = async (
   env: Record<string, string | undefined> = Bun.env,
+  dependencies: {
+    parseConfig?: typeof parseConfig;
+    startCodeHelm?: typeof startCodeHelm;
+  } = {},
 ) => {
   const mode = env.CODE_HELM_DAEMON_MODE === "background" ? "background" : "foreground";
+  const readConfig = dependencies.parseConfig ?? parseConfig;
+  const start = dependencies.startCodeHelm ?? startCodeHelm;
 
   initializeLogger({
     env,
     console: mode === "background" ? false : "pretty",
   });
 
-  const config = parseConfig(env);
+  const config = readConfig(env);
+  const managedAppServerPort = resolveManagedAppServerPortFromEnv(env);
 
   if (config.DISCORD_APP_ID === DEFAULT_DISCORD_APP_ID) {
     throw new Error("CodeHelm configuration is not ready for daemon startup: DISCORD_APP_ID is unresolved");
   }
 
-  const handle = await startCodeHelm(config, {
+  const handle = await start(config, {
     installSignalHandlers: true,
     legacyWorkspaceBootstrap: resolveLegacyWorkspaceBootstrap(env),
+    managedAppServerPort,
     mode,
     stateDir: resolveCodeHelmPaths({ env }).stateDir,
   });

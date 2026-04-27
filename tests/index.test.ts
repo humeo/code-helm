@@ -109,6 +109,8 @@ import {
   acceptManualSyncRecentExternalTurns,
   sortResumePickerThreads,
   applySessionStartTurnOverrides,
+  loadAndStartCodeHelmFromProcess,
+  resolveManagedAppServerPortFromEnv,
   startCodeHelm,
   rememberRuntimeApprovalRequest,
   resolveStoredApprovalForResolvedEvent,
@@ -2646,6 +2648,72 @@ test("startCodeHelm forwards the requested managed app-server port", async () =>
 
   await handle.stop();
   expect(receivedPort).toBe(4201);
+});
+
+test("resolveManagedAppServerPortFromEnv reads a daemon port override", () => {
+  expect(resolveManagedAppServerPortFromEnv({
+    CODE_HELM_MANAGED_APP_SERVER_PORT: "4201",
+  })).toBe(4201);
+});
+
+test.each([
+  ["absent", {}, undefined],
+  ["blank", { CODE_HELM_MANAGED_APP_SERVER_PORT: "  " }, undefined],
+  ["lower boundary", { CODE_HELM_MANAGED_APP_SERVER_PORT: "1" }, 1],
+  ["upper boundary", { CODE_HELM_MANAGED_APP_SERVER_PORT: "65535" }, 65535],
+] as const)(
+  "resolveManagedAppServerPortFromEnv handles %s daemon port env",
+  (_caseName, env, expected) => {
+    expect(resolveManagedAppServerPortFromEnv(env)).toBe(expected);
+  },
+);
+
+test("resolveManagedAppServerPortFromEnv rejects invalid daemon port overrides", () => {
+  expect(() =>
+    resolveManagedAppServerPortFromEnv({
+      CODE_HELM_MANAGED_APP_SERVER_PORT: "abc",
+    })
+  ).toThrow(/CODE_HELM_MANAGED_APP_SERVER_PORT/);
+});
+
+test.each(["0", "65536"] as const)(
+  "resolveManagedAppServerPortFromEnv rejects out-of-range daemon port override %s",
+  (value) => {
+    expect(() =>
+      resolveManagedAppServerPortFromEnv({
+        CODE_HELM_MANAGED_APP_SERVER_PORT: value,
+      })
+    ).toThrow(/CODE_HELM_MANAGED_APP_SERVER_PORT/);
+  },
+);
+
+test("loadAndStartCodeHelmFromProcess passes daemon port env to startCodeHelm", async () => {
+  const tempRoot = createTestHomeRoot();
+  let receivedPort: number | undefined;
+
+  try {
+    const handle = await loadAndStartCodeHelmFromProcess({
+      CODE_HELM_DAEMON_MODE: "background",
+      CODE_HELM_MANAGED_APP_SERVER_PORT: "4201",
+      CODE_HELM_CONFIG: "/tmp/config.toml",
+      CODE_HELM_SECRETS: "/tmp/secrets.toml",
+      CODE_HELM_LOG_DIR: join(tempRoot, "logs"),
+    }, {
+      parseConfig: () => createAppConfig(),
+      startCodeHelm: async (_config, options) => {
+        receivedPort = options?.managedAppServerPort;
+        return {
+          config: createAppConfig(),
+          stop: async () => {},
+        };
+      },
+    });
+
+    await handle.stop();
+    expect(receivedPort).toBe(4201);
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
 });
 
 test("startCodeHelm starts managed Codex App Server in background using dedicated workdir", async () => {

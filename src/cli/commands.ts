@@ -790,14 +790,22 @@ const ensureConfiguredStore = async (
 const startInBackground = async (
   store: LoadedConfigStore,
   services: CommandServices,
+  options: { managedAppServerPort?: number } = {},
 ) => {
-  const env = {
+  const env: Record<string, string | undefined> = {
     ...process.env,
     ...services.env,
     CODE_HELM_CONFIG: store.paths.configPath,
     CODE_HELM_SECRETS: store.paths.secretsPath,
     CODE_HELM_DAEMON_MODE: "background",
   };
+
+  if (options.managedAppServerPort === undefined) {
+    delete env.CODE_HELM_MANAGED_APP_SERVER_PORT;
+  } else {
+    env.CODE_HELM_MANAGED_APP_SERVER_PORT = String(options.managedAppServerPort);
+  }
+
   const indexEntryPath = resolve(dirname(new URL(import.meta.url).pathname), "../index.ts");
 
   const child = services.spawnBackgroundProcess({
@@ -1529,7 +1537,9 @@ export const runCliCommand = async (
       }
 
       if (command.daemon) {
-        const backgroundRuntime = await startInBackground(configuredStore, services);
+        const backgroundRuntime = await startInBackground(configuredStore, services, {
+          managedAppServerPort: command.port,
+        });
         return {
           output: renderRuntimeStatusOutput(backgroundRuntime, {
             context: "start",

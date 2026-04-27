@@ -1297,6 +1297,70 @@ describe("runCliCommand", () => {
     expect(spawnedEnv?.CODE_HELM_SECRETS).toBeTruthy();
   });
 
+  test("start --daemon passes --port through the daemon environment", async () => {
+    const services = createBaseServices();
+    let spawnedEnv: Record<string, string | undefined> | undefined;
+
+    services.spawnBackgroundProcess = ({ env }) => {
+      spawnedEnv = env;
+      return {
+        pid: 4321,
+        unref() {},
+      };
+    };
+
+    await runCliCommand({ kind: "start", daemon: true, port: 4201 }, services);
+
+    expect(spawnedEnv?.CODE_HELM_MANAGED_APP_SERVER_PORT).toBe("4201");
+  });
+
+  test("start --daemon clears inherited managed port env when --port is omitted", async () => {
+    const services = createBaseServices();
+    let spawnedEnv: Record<string, string | undefined> | undefined;
+
+    services.env = {
+      CODE_HELM_MANAGED_APP_SERVER_PORT: "4201",
+    };
+    services.spawnBackgroundProcess = ({ env }) => {
+      spawnedEnv = env;
+      return {
+        pid: 4321,
+        unref() {},
+      };
+    };
+
+    await runCliCommand({ kind: "start", daemon: true }, services);
+
+    expect(spawnedEnv?.CODE_HELM_MANAGED_APP_SERVER_PORT).toBeUndefined();
+  });
+
+  test("start --daemon clears process managed port env when --port is omitted", async () => {
+    const originalPort = process.env.CODE_HELM_MANAGED_APP_SERVER_PORT;
+    const services = createBaseServices();
+    let spawnedEnv: Record<string, string | undefined> | undefined;
+
+    process.env.CODE_HELM_MANAGED_APP_SERVER_PORT = "4201";
+    services.spawnBackgroundProcess = ({ env }) => {
+      spawnedEnv = env;
+      return {
+        pid: 4321,
+        unref() {},
+      };
+    };
+
+    try {
+      await runCliCommand({ kind: "start", daemon: true }, services);
+    } finally {
+      if (originalPort === undefined) {
+        delete process.env.CODE_HELM_MANAGED_APP_SERVER_PORT;
+      } else {
+        process.env.CODE_HELM_MANAGED_APP_SERVER_PORT = originalPort;
+      }
+    }
+
+    expect(spawnedEnv?.CODE_HELM_MANAGED_APP_SERVER_PORT).toBeUndefined();
+  });
+
   test("start --daemon keeps the parent readiness wait bounded by default", async () => {
     const paths = createPaths();
     let receivedTimeoutMs: number | undefined;
