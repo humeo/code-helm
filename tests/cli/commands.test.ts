@@ -91,6 +91,8 @@ const createBaseServices = (): CommandServices => {
     }),
     loadAppConfig: () => config,
     readRuntimeSummary: () => undefined,
+    readStartupError: () => undefined,
+    clearStartupError: () => {},
     isPidAlive: () => false,
     runOnboarding: async () => ({ kind: "completed" }),
     startForeground: async () => ({
@@ -104,6 +106,10 @@ const createBaseServices = (): CommandServices => {
     signalProcess: () => true,
     waitForRuntimeExit: async () => true,
     waitForBackgroundRuntime: async () => createRuntimeSummary(),
+    waitForBackgroundStartup: async () => ({
+      kind: "ready",
+      runtime: createRuntimeSummary(),
+    }),
     enableAutostart: async () => ({
       kind: "enabled",
       label: "dev.codehelm.code-helm",
@@ -1394,23 +1400,26 @@ describe("runCliCommand", () => {
           pid: 4321,
           unref() {},
         }),
-        waitForBackgroundRuntime: async ({ timeoutMs }) => {
+        waitForBackgroundStartup: async ({ timeoutMs }) => {
           receivedTimeoutMs = timeoutMs;
 
           return {
-            pid: 4321,
-            mode: "background",
-            discord: {
-              guildId: "guild-1",
-              controlChannelId: "channel-1",
-              connected: true,
+            kind: "ready",
+            runtime: {
+              pid: 4321,
+              mode: "background",
+              discord: {
+                guildId: "guild-1",
+                controlChannelId: "channel-1",
+                connected: true,
+              },
+              codex: {
+                appServerAddress: "ws://127.0.0.1:4100",
+                running: true,
+                startupState: "ready",
+              },
+              startedAt: "2026-04-16T00:00:00.000Z",
             },
-            codex: {
-              appServerAddress: "ws://127.0.0.1:4100",
-              running: true,
-              startupState: "ready",
-            },
-            startedAt: "2026-04-16T00:00:00.000Z",
           };
         },
       },
@@ -1427,7 +1436,7 @@ describe("runCliCommand", () => {
       pid: 5555,
       unref() {},
     });
-    services.waitForBackgroundRuntime = async () => undefined;
+    services.waitForBackgroundStartup = async () => ({ kind: "timeout" });
     services.signalProcess = (pid, signal) => {
       signalled.push({ pid, signal });
       return true;
@@ -1446,7 +1455,7 @@ describe("runCliCommand", () => {
       pid: 5555,
       unref() {},
     });
-    services.waitForBackgroundRuntime = async () => undefined;
+    services.waitForBackgroundStartup = async () => ({ kind: "timeout" });
     services.signalProcess = () => {
       const error = new Error("kill ESRCH");
       (error as NodeJS.ErrnoException).code = "ESRCH";
@@ -1463,28 +1472,92 @@ describe("runCliCommand", () => {
     let receivedTimeoutMs: number | undefined;
 
     services.backgroundRuntimeTimeoutMs = 12_345;
-    services.waitForBackgroundRuntime = async ({ timeoutMs }) => {
+    services.waitForBackgroundStartup = async ({ timeoutMs }) => {
       receivedTimeoutMs = timeoutMs;
       return {
-        pid: 4321,
-        mode: "background",
-        discord: {
-          guildId: "guild-1",
-          controlChannelId: "channel-1",
-          connected: true,
+        kind: "ready",
+        runtime: {
+          pid: 4321,
+          mode: "background",
+          discord: {
+            guildId: "guild-1",
+            controlChannelId: "channel-1",
+            connected: true,
+          },
+          codex: {
+            appServerAddress: "ws://127.0.0.1:4100",
+            pid: 8765,
+            running: true,
+          },
+          startedAt: "2026-04-16T08:30:00.000Z",
         },
-        codex: {
-          appServerAddress: "ws://127.0.0.1:4100",
-          pid: 8765,
-          running: true,
-        },
-        startedAt: "2026-04-16T08:30:00.000Z",
       };
     };
 
     await runCliCommand({ kind: "start", daemon: true }, services);
 
     expect(receivedTimeoutMs).toBe(12_345);
+  });
+
+  test("start --daemon reports startup-error state instead of generic runtime timeout", async () => {
+    const services = createBaseServices();
+    const clearedStartupErrorDirs: string[] = [];
+    const signalled: Array<{ pid: number; signal: NodeJS.Signals }> = [];
+    let thrown: unknown;
+
+    services.spawnBackgroundProcess = () => ({
+      pid: 5555,
+      unref() {},
+    });
+    services.waitForBackgroundStartup = async () => ({
+      kind: "failed",
+      error: {
+        stage: "managed-app-server",
+        appServerAddress: "ws://127.0.0.1:4201",
+        message: "Managed Codex App Server failed to start.",
+        diagnostics: "address already in use",
+        occurredAt: "2026-04-27T12:00:00.000Z",
+      },
+    });
+    services.clearStartupError = ({ stateDir }) => {
+      clearedStartupErrorDirs.push(stateDir);
+    };
+    services.signalProcess = (pid, signal) => {
+      signalled.push({ pid, signal });
+      return true;
+    };
+
+    try {
+      await runCliCommand({ kind: "start", daemon: true, port: 4201 }, services);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    const message = (thrown as Error).message;
+    expect(message).toMatch(/ws:\/\/127\.0\.0\.1:4201/);
+    expect(message).toMatch(/lsof -nP -iTCP:4201 -sTCP:LISTEN/);
+
+    expect(signalled).toEqual([{ pid: 5555, signal: "SIGTERM" }]);
+    expect(clearedStartupErrorDirs).toContain(services.loadConfigStore().paths.stateDir);
+  });
+
+  test("start --daemon clears stale startup-error state before launch", async () => {
+    const services = createBaseServices();
+    const paths = createPaths();
+    const clearedStartupErrorDirs: string[] = [];
+
+    services.loadConfigStore = () => ({
+      ...createBaseServices().loadConfigStore(),
+      paths,
+    });
+    services.clearStartupError = ({ stateDir }) => {
+      clearedStartupErrorDirs.push(stateDir);
+    };
+
+    await runCliCommand({ kind: "start", daemon: true, port: 4201 }, services);
+
+    expect(clearedStartupErrorDirs).toContain(paths.stateDir);
   });
 
   test("start forwards legacy workspace bootstrap to foreground startup", async () => {

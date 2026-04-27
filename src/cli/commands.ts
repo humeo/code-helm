@@ -17,8 +17,11 @@ import {
 } from "./autostart";
 import { loadConfigStore, type LoadedConfigStore } from "./config-store";
 import {
+  clearStartupError,
+  readStartupError,
   readRuntimeSummary,
   resolveRuntimeStatePath,
+  type StartupError,
   type RuntimeSummary,
 } from "./runtime-state";
 import { CodexSupervisorError } from "../codex/supervisor";
@@ -62,6 +65,11 @@ type BackgroundRestartOutcome =
   | { kind: "restarted"; runtime: RuntimeSummary }
   | { kind: "failed"; reason: string };
 
+type BackgroundStartupWaitResult =
+  | { kind: "ready"; runtime: RuntimeSummary }
+  | { kind: "failed"; error: StartupError }
+  | { kind: "timeout" };
+
 export type CommandServices = {
   backgroundRuntimeTimeoutMs: number;
   disableAutostart: () => Promise<AutostartResult>;
@@ -73,6 +81,8 @@ export type CommandServices = {
     stateDir: string;
     isPidAlive: (pid: number) => boolean;
   }) => RuntimeSummary | undefined;
+  readStartupError: (options: { stateDir: string }) => StartupError | undefined;
+  clearStartupError: (options: { stateDir: string }) => void;
   isPidAlive: (pid: number) => boolean;
   runOnboarding: (options: {
     env: Record<string, string | undefined>;
@@ -95,6 +105,11 @@ export type CommandServices = {
     isPidAlive: (pid: number) => boolean;
     timeoutMs?: number;
   }) => Promise<RuntimeSummary | undefined>;
+  waitForBackgroundStartup: (options: {
+    stateDir: string;
+    isPidAlive: (pid: number) => boolean;
+    timeoutMs?: number;
+  }) => Promise<BackgroundStartupWaitResult>;
   waitForRuntimeExit: (options: {
     stateDir: string;
     isPidAlive: (pid: number) => boolean;
@@ -293,6 +308,8 @@ const createDefaultServices = (
   loadConfigStore: (options) => loadConfigStore({ env: options?.env ?? env }),
   loadAppConfig,
   readRuntimeSummary,
+  readStartupError,
+  clearStartupError,
   isPidAlive: defaultIsPidAlive,
   runOnboarding: ({ env: nextEnv, homeDir }) => defaultRunOnboarding({ env: nextEnv, homeDir }),
   startForeground: defaultStartForeground,
@@ -304,6 +321,15 @@ const createDefaultServices = (
       isPidAlive: options.isPidAlive,
       timeoutMs: options.timeoutMs,
     }, { readRuntimeSummary }),
+  waitForBackgroundStartup: (options) =>
+    waitForBackgroundStartup({
+      stateDir: options.stateDir,
+      isPidAlive: options.isPidAlive,
+      timeoutMs: options.timeoutMs,
+    }, {
+      readRuntimeSummary,
+      readStartupError,
+    }),
   waitForRuntimeExit: defaultWaitForRuntimeExit,
   emitOutput: () => {},
   confirmUpdate: defaultConfirmUpdate,
@@ -487,6 +513,41 @@ const trimDiagnostics = (diagnostics?: string) => {
   }
 
   return trimmed;
+};
+
+const formatPortInspectionCommand = (appServerAddress: string) => {
+  const port = new URL(appServerAddress).port;
+  return `lsof -nP -iTCP:${port} -sTCP:LISTEN`;
+};
+
+const renderStartupErrorState = (
+  error: StartupError,
+  env: Record<string, string | undefined>,
+) => {
+  return renderErrorPanel({
+    title: "Startup Failed",
+    headline: error.message,
+    sections: [
+      {
+        kind: "key-value",
+        title: "Managed Codex App Server",
+        rows: [
+          { key: "Address", value: error.appServerAddress },
+        ],
+      },
+      {
+        kind: "steps",
+        title: "Try next",
+        items: [
+          "The selected port may already be in use.",
+          formatPortInspectionCommand(error.appServerAddress),
+          "Stop the conflicting process or choose another port with code-helm start --port <port>.",
+        ],
+      },
+    ],
+    diagnostics: trimDiagnostics(error.diagnostics),
+    env,
+  });
 };
 
 const renderCertificateStartupFailure = (
@@ -751,6 +812,36 @@ const waitForRuntimeSummary = async (
   return undefined;
 };
 
+const waitForBackgroundStartup = async (
+  options: {
+    stateDir: string;
+    isPidAlive: (pid: number) => boolean;
+    timeoutMs?: number;
+  },
+  services: Pick<CommandServices, "readRuntimeSummary" | "readStartupError">,
+): Promise<BackgroundStartupWaitResult> => {
+  const timeoutMs = options.timeoutMs ?? 5_000;
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const startupError = services.readStartupError({ stateDir: options.stateDir });
+
+    if (startupError) {
+      return { kind: "failed", error: startupError };
+    }
+
+    const runtime = services.readRuntimeSummary(options);
+
+    if (runtime) {
+      return { kind: "ready", runtime };
+    }
+
+    await Bun.sleep(50);
+  }
+
+  return { kind: "timeout" };
+};
+
 const ensureConfiguredStore = async (
   services: CommandServices,
 ): Promise<LoadedConfigStore> => {
@@ -808,6 +899,8 @@ const startInBackground = async (
 
   const indexEntryPath = resolve(dirname(new URL(import.meta.url).pathname), "../index.ts");
 
+  services.clearStartupError({ stateDir: store.paths.stateDir });
+
   const child = services.spawnBackgroundProcess({
     command: "bun",
     args: ["run", indexEntryPath],
@@ -818,25 +911,39 @@ const startInBackground = async (
     throw new Error("Background CodeHelm daemon did not expose a pid.");
   }
 
-  const runtime = await services.waitForBackgroundRuntime({
+  const startup = await services.waitForBackgroundStartup({
     stateDir: store.paths.stateDir,
     isPidAlive: services.isPidAlive,
     timeoutMs: services.backgroundRuntimeTimeoutMs,
   });
 
-  if (!runtime) {
+  if (startup.kind === "ready") {
+    return startup.runtime;
+  }
+
+  if (startup.kind === "failed") {
     try {
       services.signalProcess(child.pid, "SIGTERM");
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
         throw error;
       }
+    } finally {
+      services.clearStartupError({ stateDir: store.paths.stateDir });
     }
 
-    throw new Error("Background CodeHelm daemon did not publish runtime state.");
+    throw new Error(renderStartupErrorState(startup.error, services.env));
   }
 
-  return runtime;
+  try {
+    services.signalProcess(child.pid, "SIGTERM");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
+      throw error;
+    }
+  }
+
+  throw new Error("Background CodeHelm daemon did not publish runtime state.");
 };
 
 const stopBackgroundRuntime = async (
