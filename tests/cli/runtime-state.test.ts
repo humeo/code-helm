@@ -11,9 +11,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   acquireInstanceLock,
+  clearStartupError,
   clearRuntimeState,
+  readStartupError,
   readRuntimeSummary,
   releaseInstanceLock,
+  writeStartupError,
   writeRuntimeSummary,
   type RuntimeSummary,
 } from "../../src/cli/runtime-state";
@@ -178,6 +181,40 @@ describe("runtime-state", () => {
         startupState: "ready",
       },
     });
+  });
+
+  test("writes reads and clears startup-error.json", () => {
+    const directory = createTempDir();
+
+    writeStartupError({
+      stateDir: directory,
+      error: {
+        stage: "managed-app-server",
+        appServerAddress: "ws://127.0.0.1:4201",
+        message: "Managed Codex App Server failed to start.",
+        diagnostics: "address already in use",
+        occurredAt: "2026-04-27T12:00:00.000Z",
+      },
+    });
+
+    expect(readStartupError({ stateDir: directory })).toEqual({
+      stage: "managed-app-server",
+      appServerAddress: "ws://127.0.0.1:4201",
+      message: "Managed Codex App Server failed to start.",
+      diagnostics: "address already in use",
+      occurredAt: "2026-04-27T12:00:00.000Z",
+    });
+
+    clearStartupError({ stateDir: directory });
+    expect(readStartupError({ stateDir: directory })).toBeUndefined();
+  });
+
+  test("readStartupError removes invalid startup-error state", () => {
+    const directory = createTempDir();
+    writeFileSync(join(directory, "startup-error.json"), "{bad json");
+
+    expect(readStartupError({ stateDir: directory })).toBeUndefined();
+    expect(existsSync(join(directory, "startup-error.json"))).toBe(false);
   });
 
   test("cleans corrupt runtime.json without masking a real active conflict", () => {

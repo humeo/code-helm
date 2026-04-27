@@ -31,7 +31,16 @@ const runtimeSummarySchema = z.object({
   startedAt: z.string().datetime().optional(),
 });
 
+const startupErrorSchema = z.object({
+  stage: z.enum(["managed-app-server"]),
+  appServerAddress: wsUrlSchema,
+  message: z.string().min(1),
+  diagnostics: z.string().optional(),
+  occurredAt: z.string().datetime(),
+});
+
 export type RuntimeSummary = z.infer<typeof runtimeSummarySchema>;
+export type StartupError = z.infer<typeof startupErrorSchema>;
 
 export type RuntimeStateOptions = {
   stateDir: string;
@@ -59,6 +68,10 @@ const getLockPath = (stateDir: string) => {
 
 export const resolveRuntimeStatePath = ({ stateDir }: RuntimeStateOptions) => {
   return join(stateDir, "runtime.json");
+};
+
+export const resolveStartupErrorPath = ({ stateDir }: RuntimeStateOptions) => {
+  return join(stateDir, "startup-error.json");
 };
 
 const ensureStateDir = (stateDir: string) => {
@@ -134,6 +147,37 @@ export const writeRuntimeSummary = (
     resolveRuntimeStatePath({ stateDir: options.stateDir }),
     runtimeSummarySchema.parse(options.summary),
   );
+};
+
+export const writeStartupError = (
+  options: RuntimeStateOptions & {
+    error: StartupError;
+  },
+) => {
+  ensureStateDir(options.stateDir);
+  writeJsonFileAtomically(
+    resolveStartupErrorPath({ stateDir: options.stateDir }),
+    startupErrorSchema.parse(options.error),
+  );
+};
+
+export const readStartupError = ({ stateDir }: RuntimeStateOptions) => {
+  const startupErrorPath = resolveStartupErrorPath({ stateDir });
+
+  if (!existsSync(startupErrorPath)) {
+    return undefined;
+  }
+
+  try {
+    return startupErrorSchema.parse(readJsonFile(startupErrorPath));
+  } catch {
+    removeFileIfExists(startupErrorPath);
+    return undefined;
+  }
+};
+
+export const clearStartupError = ({ stateDir }: RuntimeStateOptions) => {
+  removeFileIfExists(resolveStartupErrorPath({ stateDir }));
 };
 
 export const readRuntimeSummary = ({ stateDir, isPidAlive }: ReadRuntimeSummaryOptions) => {
