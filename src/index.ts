@@ -6735,6 +6735,7 @@ export type StartCodeHelmOptions = {
   clearRuntimeState?: typeof clearRuntimeState;
   installSignalHandlers?: boolean;
   legacyWorkspaceBootstrap?: ReturnType<typeof resolveLegacyWorkspaceBootstrap>;
+  managedAppServerPort?: number;
   mode?: StartCodeHelmMode;
   startManagedCodexAppServer?: typeof startManagedCodexAppServer;
   startRuntime?: (
@@ -9038,9 +9039,11 @@ export const startCodeHelm = async (
         : process.cwd();
       runtimeLogger.info("Starting managed Codex App Server", {
         cwd: managedAppServerCwd,
+        port: options.managedAppServerPort,
       });
       managedCodexAppServer = await startManagedServer({
         cwd: managedAppServerCwd,
+        port: options.managedAppServerPort,
       });
       runtimeLogger.info("Managed Codex App Server ready", {
         appServerAddress: managedCodexAppServer.address,

@@ -2619,6 +2619,35 @@ test("startCodeHelm starts managed Codex App Server in foreground using current 
   expect(receivedCwd).toBe(process.cwd());
 });
 
+test("startCodeHelm forwards the requested managed app-server port", async () => {
+  let receivedPort: number | undefined;
+
+  const handle = await startCodeHelm({
+    ...createAppConfig(),
+    codex: {
+      appServerUrl: DEFAULT_CODEX_APP_SERVER_URL,
+    },
+  }, {
+    installSignalHandlers: false,
+    managedAppServerPort: 4201,
+    startManagedCodexAppServer: async (options = {}) => {
+      receivedPort = options.port;
+      return {
+        pid: 999,
+        address: "ws://127.0.0.1:4201",
+        stop: async () => {},
+      };
+    },
+    startRuntime: async (config) => ({
+      config,
+      stop: async () => {},
+    }),
+  });
+
+  await handle.stop();
+  expect(receivedPort).toBe(4201);
+});
+
 test("startCodeHelm starts managed Codex App Server in background using dedicated workdir", async () => {
   let receivedCwd: string | undefined;
 

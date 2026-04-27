@@ -81,6 +81,7 @@ export type CommandServices = {
   startForeground: (options: {
     config: AppConfig;
     legacyWorkspaceBootstrap: ReturnType<typeof resolveLegacyWorkspaceBootstrap>;
+    managedAppServerPort?: number;
     stateDir: string;
   }) => Promise<StartHandle>;
   spawnBackgroundProcess: (options: {
@@ -167,6 +168,7 @@ const defaultWaitForRuntimeExit: CommandServices["waitForRuntimeExit"] = async (
 const defaultStartForeground: CommandServices["startForeground"] = ({
   config,
   legacyWorkspaceBootstrap,
+  managedAppServerPort,
   stateDir,
 }) => {
   initializeLogger({
@@ -176,6 +178,7 @@ const defaultStartForeground: CommandServices["startForeground"] = ({
 
   return startCodeHelm(config, {
     legacyWorkspaceBootstrap,
+    managedAppServerPort,
     mode: "foreground",
     stateDir,
   }).then((handle) => {
@@ -1519,6 +1522,12 @@ export const runCliCommand = async (
 
       const configuredStore = await ensureConfiguredStore(services);
 
+      if (command.port !== undefined && services.env.CODE_HELM_CODEX_APP_SERVER_URL) {
+        throw new Error(
+          "--port only applies to CodeHelm's managed Codex App Server. Remove CODE_HELM_CODEX_APP_SERVER_URL or omit --port.",
+        );
+      }
+
       if (command.daemon) {
         const backgroundRuntime = await startInBackground(configuredStore, services);
         return {
@@ -1543,6 +1552,7 @@ export const runCliCommand = async (
         handle = await services.startForeground({
           config,
           legacyWorkspaceBootstrap: resolveLegacyWorkspaceBootstrap(services.env),
+          managedAppServerPort: command.port,
           stateDir: configuredStore.paths.stateDir,
         });
       } catch (error) {

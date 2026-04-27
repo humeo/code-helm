@@ -1454,6 +1454,38 @@ describe("runCliCommand", () => {
     });
   });
 
+  test("start forwards --port to foreground startup", async () => {
+    const services = createBaseServices();
+    let receivedPort: number | undefined;
+
+    services.startForeground = async (options) => {
+      receivedPort = options.managedAppServerPort;
+      return {
+        config: createConfig("ws://127.0.0.1:4201"),
+        stop: async () => {},
+      };
+    };
+
+    const result = await runCliCommand(
+      { kind: "start", daemon: false, port: 4201 },
+      services,
+    );
+
+    expect(receivedPort).toBe(4201);
+    expect(result.output).toContain("ws://127.0.0.1:4201");
+  });
+
+  test("start rejects --port when an external app-server URL is configured", async () => {
+    const services = createBaseServices();
+    services.env = {
+      CODE_HELM_CODEX_APP_SERVER_URL: "ws://127.0.0.1:4999",
+    };
+
+    await expect(
+      runCliCommand({ kind: "start", daemon: false, port: 4201 }, services),
+    ).rejects.toThrow(/--port.*CODE_HELM_CODEX_APP_SERVER_URL/i);
+  });
+
   test("status renders the runtime panel including app-server address and codex remote command", async () => {
     const services = createBaseServices();
     const expectedStatePath = join(services.loadConfigStore().paths.stateDir, "runtime.json");
