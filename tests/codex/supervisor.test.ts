@@ -1,8 +1,11 @@
 import { expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
+import { createServer } from "node:net";
 import {
   CodexSupervisorError,
+  DEFAULT_MANAGED_CODEX_APP_SERVER_PORT,
   detectCodexBinary,
+  formatManagedCodexAppServerAddress,
   startManagedCodexAppServer,
   stopManagedCodexAppServer,
   waitForManagedCodexAppServerReady,
@@ -22,6 +25,8 @@ class ChildProcessStub extends EventEmitter implements ChildProcessLike {
   }
 }
 
+const skipPortAvailabilityCheck = async () => {};
+
 test("detectCodexBinary returns a structured error when codex is unavailable", async () => {
   await expect(
     detectCodexBinary({
@@ -30,6 +35,11 @@ test("detectCodexBinary returns a structured error when codex is unavailable", a
   ).rejects.toMatchObject({
     code: "CODEX_BINARY_NOT_FOUND",
   } satisfies Partial<CodexSupervisorError>);
+});
+
+test("managed Codex App Server helpers expose the fixed default address", () => {
+  expect(DEFAULT_MANAGED_CODEX_APP_SERVER_PORT).toBe(4200);
+  expect(formatManagedCodexAppServerAddress(4200)).toBe("ws://127.0.0.1:4200");
 });
 
 test("startManagedCodexAppServer uses the codex app-server listen command", async () => {
@@ -47,7 +57,7 @@ test("startManagedCodexAppServer uses the codex app-server listen command", asyn
   const server = await startManagedCodexAppServer({
     cwd: "/tmp/codehelm-app-server-workdir",
     resolveBinary: async () => "/usr/local/bin/codex",
-    allocatePort: async () => 4511,
+    ensurePortAvailable: skipPortAvailabilityCheck,
     spawnProcess: (command, args, options) => {
       spawnCall = {
         command,
@@ -59,19 +69,87 @@ test("startManagedCodexAppServer uses the codex app-server listen command", asyn
     },
     waitForReady: async ({ address }) => {
       readyChecked = true;
-      expect(address).toBe("ws://127.0.0.1:4511");
+      expect(address).toBe("ws://127.0.0.1:4200");
     },
   });
 
   expect(spawnCall).toEqual({
     command: "/usr/local/bin/codex",
-    args: ["app-server", "--listen", "ws://127.0.0.1:4511"],
+    args: ["app-server", "--listen", "ws://127.0.0.1:4200"],
     stdio: ["ignore", "pipe", "pipe"],
     cwd: "/tmp/codehelm-app-server-workdir",
   });
   expect(server.pid).toBe(4242);
-  expect(server.address).toBe("ws://127.0.0.1:4511");
+  expect(server.address).toBe("ws://127.0.0.1:4200");
   expect(readyChecked).toBe(true);
+});
+
+test("startManagedCodexAppServer uses a requested managed port", async () => {
+  const child = new ChildProcessStub(4242);
+  let spawnArgs: string[] | undefined;
+
+  const server = await startManagedCodexAppServer({
+    port: 4201,
+    resolveBinary: async () => "/usr/local/bin/codex",
+    ensurePortAvailable: skipPortAvailabilityCheck,
+    spawnProcess: (_command, args) => {
+      spawnArgs = args;
+      return child;
+    },
+    waitForReady: async ({ address }) => {
+      expect(address).toBe("ws://127.0.0.1:4201");
+    },
+  });
+
+  expect(spawnArgs).toEqual(["app-server", "--listen", "ws://127.0.0.1:4201"]);
+  expect(server.address).toBe("ws://127.0.0.1:4201");
+});
+
+test("startManagedCodexAppServer fails before spawning when the requested port is busy", async () => {
+  const busyServer = createServer();
+
+  await new Promise<void>((resolve, reject) => {
+    busyServer.once("error", reject);
+    busyServer.listen(0, "127.0.0.1", () => resolve());
+  });
+
+  const address = busyServer.address();
+
+  if (!address || typeof address === "string") {
+    throw new Error("Expected the test server to bind to a TCP port.");
+  }
+
+  let spawnCalled = false;
+
+  try {
+    await expect(
+      startManagedCodexAppServer({
+        port: address.port,
+        resolveBinary: async () => "/usr/local/bin/codex",
+        spawnProcess: () => {
+          spawnCalled = true;
+          return new ChildProcessStub(4242);
+        },
+        waitForReady: async () => {},
+      }),
+    ).rejects.toMatchObject({
+      code: "CODEX_APP_SERVER_FAILED_TO_START",
+      startupDisposition: "failed",
+    } satisfies Partial<CodexSupervisorError>);
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      busyServer.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+
+        resolve();
+      });
+    });
+  }
+
+  expect(spawnCalled).toBe(false);
 });
 
 test("startManagedCodexAppServer fails clearly when readiness never arrives", async () => {
@@ -87,7 +165,7 @@ test("startManagedCodexAppServer fails clearly when readiness never arrives", as
   await expect(
     startManagedCodexAppServer({
       resolveBinary: async () => "/usr/local/bin/codex",
-      allocatePort: async () => 4511,
+      ensurePortAvailable: skipPortAvailabilityCheck,
       spawnProcess: () => child,
       waitForReady: async () => {
         throw new CodexSupervisorError(
@@ -163,7 +241,7 @@ test("startManagedCodexAppServer classifies spawn failures as failed startup", a
   await expect(
     startManagedCodexAppServer({
       resolveBinary: async () => "/usr/local/bin/codex",
-      allocatePort: async () => 4511,
+      ensurePortAvailable: skipPortAvailabilityCheck,
       spawnProcess: () => {
         throw new Error("spawn boom");
       },
@@ -178,7 +256,7 @@ test("stopManagedCodexAppServer sends SIGTERM and waits for a clean exit", async
   const child = new ChildProcessStub(4242);
   const server = await startManagedCodexAppServer({
     resolveBinary: async () => "/usr/local/bin/codex",
-    allocatePort: async () => 4511,
+    ensurePortAvailable: skipPortAvailabilityCheck,
     spawnProcess: () => child,
     waitForReady: async () => {},
   });
@@ -200,7 +278,7 @@ test("stopManagedCodexAppServer still succeeds when the child exits immediately 
 
   const server = await startManagedCodexAppServer({
     resolveBinary: async () => "/usr/local/bin/codex",
-    allocatePort: async () => 4511,
+    ensurePortAvailable: skipPortAvailabilityCheck,
     spawnProcess: () => child,
     waitForReady: async () => {},
   });
@@ -223,7 +301,7 @@ test("startManagedCodexAppServer starts the app-server in its own process group 
 
   await startManagedCodexAppServer({
     resolveBinary: async () => "/usr/local/bin/codex",
-    allocatePort: async () => 4511,
+    ensurePortAvailable: skipPortAvailabilityCheck,
     spawnProcess: (_command, _args, options) => {
       detached = options.detached;
       return child;
@@ -238,7 +316,7 @@ test("stopManagedCodexAppServer returns a clear failure when the child does not 
   const child = new ChildProcessStub(4242);
   const server = await startManagedCodexAppServer({
     resolveBinary: async () => "/usr/local/bin/codex",
-    allocatePort: async () => 4511,
+    ensurePortAvailable: skipPortAvailabilityCheck,
     spawnProcess: () => child,
     waitForReady: async () => {},
   });
@@ -258,7 +336,7 @@ test("stopManagedCodexAppServer escalates to SIGKILL when SIGTERM does not exit"
   const signals: Array<NodeJS.Signals | number> = [];
   const server = await startManagedCodexAppServer({
     resolveBinary: async () => "/usr/local/bin/codex",
-    allocatePort: async () => 4511,
+    ensurePortAvailable: skipPortAvailabilityCheck,
     spawnProcess: () => child,
     waitForReady: async () => {},
   });

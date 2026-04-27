@@ -54,13 +54,19 @@ export type ManagedCodexAppServer = {
   stop: (options?: StopManagedCodexAppServerOptions) => Promise<void>;
 };
 
+export const DEFAULT_MANAGED_CODEX_APP_SERVER_PORT = 4200;
+
+export const formatManagedCodexAppServerAddress = (port: number) => {
+  return `ws://127.0.0.1:${port}`;
+};
+
 type ResolveBinary = (binaryName: string) => Promise<string | null>;
-type AllocatePort = () => Promise<number>;
 type SpawnProcess = (
   command: string,
   args: string[],
   options: SpawnOptions,
 ) => ChildProcessLike;
+type EnsurePortAvailable = (port: number) => Promise<void>;
 
 export type DetectCodexBinaryOptions = {
   resolveBinary?: ResolveBinary;
@@ -68,8 +74,9 @@ export type DetectCodexBinaryOptions = {
 
 export type StartManagedCodexAppServerOptions = {
   cwd?: string;
+  port?: number;
   resolveBinary?: ResolveBinary;
-  allocatePort?: AllocatePort;
+  ensurePortAvailable?: EnsurePortAvailable;
   spawnProcess?: SpawnProcess;
   waitForReady?: WaitForReady;
 };
@@ -110,36 +117,17 @@ const defaultResolveBinary: ResolveBinary = async (binaryName) => {
   }
 };
 
-const defaultAllocatePort: AllocatePort = async () => {
-  const server = createServer();
-
-  try {
-    await new Promise<void>((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(0, "127.0.0.1", () => {
-        resolve();
-      });
-    });
-
-    const address = server.address();
-
-    if (!address || typeof address === "string") {
-      throw new CodexSupervisorError(
-        "CODEX_APP_SERVER_FAILED_TO_START",
-        "Failed to allocate a loopback port for the managed Codex App Server.",
-      );
-    }
-
-    return address.port;
-  } finally {
-    await new Promise<void>((resolve) => {
-      server.close(() => resolve());
-    });
-  }
-};
-
 const defaultSpawnProcess: SpawnProcess = (command, args, options) => {
   return spawn(command, args, options) as unknown as ChildProcessLike;
+};
+
+const parseManagedCodexAppServerPort = (address: string) => {
+  try {
+    const port = Number(new URL(address).port);
+    return Number.isFinite(port) ? port : undefined;
+  } catch {
+    return undefined;
+  }
 };
 
 const appendDiagnosticChunk = (buffer: string[], chunk: string | Uint8Array) => {
@@ -179,6 +167,45 @@ const createStartupFailureError = ({
       startupTimeoutMs,
     },
   );
+};
+
+const defaultEnsurePortAvailable: EnsurePortAvailable = async (port) => {
+  const server = createServer();
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const handleError = (error: Error) => {
+        reject(error);
+      };
+
+      server.once("error", handleError);
+      server.listen(port, "127.0.0.1", () => {
+        server.off("error", handleError);
+        resolve();
+      });
+    });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+
+    throw createStartupFailureError({
+      message: `Managed Codex App Server port ${port} is not available on 127.0.0.1.`,
+      startupDisposition: "failed",
+      diagnostics: detail,
+    });
+  } finally {
+    if (server.listening) {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+
+          resolve();
+        });
+      });
+    }
+  }
 };
 
 const waitForChildExit = async (child: ChildProcessLike, timeoutMs: number) => {
@@ -349,15 +376,39 @@ export const startManagedCodexAppServer = async (
   const binaryPath = await detectCodexBinary({
     resolveBinary: options.resolveBinary,
   });
-  const allocatePort = options.allocatePort ?? defaultAllocatePort;
   const spawnProcess = options.spawnProcess ?? defaultSpawnProcess;
   const waitForReady = options.waitForReady ?? defaultWaitForReady;
-  const port = await allocatePort();
-  const address = `ws://127.0.0.1:${port}`;
+  const ensurePortAvailable = options.ensurePortAvailable ?? defaultEnsurePortAvailable;
+  const port = options.port ?? DEFAULT_MANAGED_CODEX_APP_SERVER_PORT;
+  const address = formatManagedCodexAppServerAddress(port);
   let child: ChildProcessLike;
+
+  try {
+    await ensurePortAvailable(port);
+  } catch (error) {
+    log.error("Managed Codex App Server port is unavailable", {
+      appServerAddress: address,
+      appServerPort: port,
+      cwd: options.cwd,
+      error,
+    });
+
+    if (error instanceof CodexSupervisorError) {
+      throw error;
+    }
+
+    const detail = error instanceof Error ? error.message : String(error);
+
+    throw createStartupFailureError({
+      message: `Managed Codex App Server port ${port} is not available on 127.0.0.1.`,
+      startupDisposition: "failed",
+      diagnostics: detail,
+    });
+  }
 
   log.info("Starting managed Codex App Server", {
     appServerAddress: address,
+    appServerPort: port,
     cwd: options.cwd,
   });
 
@@ -379,6 +430,7 @@ export const startManagedCodexAppServer = async (
     const detail = error instanceof Error ? error.message : String(error);
     log.error("Managed Codex App Server spawn failed", {
       appServerAddress: address,
+      appServerPort: port,
       cwd: options.cwd,
       error,
     });
@@ -399,6 +451,7 @@ export const startManagedCodexAppServer = async (
   if (!child.pid) {
     log.error("Managed Codex App Server did not expose a child pid", {
       appServerAddress: address,
+      appServerPort: port,
     });
     throw createStartupFailureError({
       message: "Managed Codex App Server did not expose a child pid.",
@@ -421,6 +474,7 @@ export const startManagedCodexAppServer = async (
   } catch (error) {
     log.error("Managed Codex App Server readiness failed", {
       appServerAddress: address,
+      appServerPort: port,
       appServerPid: child.pid,
       diagnostics: getDiagnostics(),
       error,
@@ -451,6 +505,7 @@ export const startManagedCodexAppServer = async (
 
   log.info("Managed Codex App Server ready", {
     appServerAddress: address,
+    appServerPort: port,
     appServerPid: child.pid,
   });
 
@@ -484,6 +539,7 @@ export const stopManagedCodexAppServer = async (
     component: "codex",
     operation: "managed-app-server",
     appServerAddress: server.address,
+    appServerPort: parseManagedCodexAppServerPort(server.address),
     appServerPid: server.pid,
   });
   const signalServer = (signal: NodeJS.Signals) => {
