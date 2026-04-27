@@ -24,11 +24,16 @@ import { z } from "zod";
 import {
   acquireInstanceLock,
   clearRuntimeState,
+  writeStartupError,
   writeRuntimeSummary,
+  type StartupError,
 } from "./cli/runtime-state";
 import { resolveCodeHelmPaths } from "./cli/paths";
 import { JsonRpcClient, type JsonRpcRequestOptions } from "./codex/jsonrpc-client";
 import {
+  CodexSupervisorError,
+  DEFAULT_MANAGED_CODEX_APP_SERVER_PORT,
+  formatManagedCodexAppServerAddress,
   startManagedCodexAppServer,
   type ManagedCodexAppServer,
 } from "./codex/supervisor";
@@ -6747,6 +6752,7 @@ export type StartCodeHelmOptions = {
     },
   ) => Promise<StartedCodeHelmHandle>;
   stateDir?: string;
+  writeStartupError?: typeof writeStartupError;
   writeRuntimeSummary?: typeof writeRuntimeSummary;
 };
 
@@ -9000,8 +9006,14 @@ export const startCodeHelm = async (
   const mode = options.mode ?? "foreground";
   const installSignalHandlers = options.installSignalHandlers ?? true;
   const publishRuntimeSummary = options.writeRuntimeSummary ?? writeRuntimeSummary;
+  const publishStartupError = options.writeStartupError ?? writeStartupError;
   const startManagedServer = options.startManagedCodexAppServer ?? startManagedCodexAppServer;
   const startRuntime = options.startRuntime ?? startCodeHelmRuntime;
+  const selectedManagedAppServerPort =
+    options.managedAppServerPort ?? DEFAULT_MANAGED_CODEX_APP_SERVER_PORT;
+  const selectedManagedAppServerAddress = formatManagedCodexAppServerAddress(
+    selectedManagedAppServerPort,
+  );
   let runtimeConfig = config;
   let managedCodexAppServer: ManagedCodexAppServer | undefined;
   let runtimeHandle: StartedCodeHelmHandle | undefined;
@@ -9065,11 +9077,11 @@ export const startCodeHelm = async (
         : process.cwd();
       runtimeLogger.info("Starting managed Codex App Server", {
         cwd: managedAppServerCwd,
-        appServerPort: options.managedAppServerPort,
+        appServerPort: selectedManagedAppServerPort,
       });
       managedCodexAppServer = await startManagedServer({
         cwd: managedAppServerCwd,
-        port: options.managedAppServerPort,
+        port: selectedManagedAppServerPort,
       });
       runtimeLogger.info("Managed Codex App Server ready", {
         appServerAddress: managedCodexAppServer.address,
@@ -9114,6 +9126,27 @@ export const startCodeHelm = async (
 
     if (options.stateDir) {
       clearState({ stateDir: options.stateDir });
+    }
+
+    const startupErrorStateDir = options.stateDir;
+    const shouldPublishStartupError =
+      mode === "background"
+      && startupErrorStateDir !== undefined
+      && config.codex.appServerUrl === DEFAULT_CODEX_APP_SERVER_URL
+      && error instanceof CodexSupervisorError
+      && error.code === "CODEX_APP_SERVER_FAILED_TO_START";
+
+    if (shouldPublishStartupError) {
+      publishStartupError({
+        stateDir: startupErrorStateDir,
+        error: {
+          stage: "managed-app-server",
+          appServerAddress: selectedManagedAppServerAddress,
+          message: "Managed Codex App Server failed to start.",
+          diagnostics: error.diagnostics ?? error.message,
+          occurredAt: new Date().toISOString(),
+        } satisfies StartupError,
+      });
     }
 
     throw error;

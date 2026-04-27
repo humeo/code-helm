@@ -2592,6 +2592,114 @@ test("startCodeHelm does not enter a running runtime when managed Codex startup 
   expect(clearedStateDirs).toEqual(["/tmp/codehelm-state"]);
 });
 
+test("background start writes startup-error after managed app-server startup failure", async () => {
+  const calls: string[] = [];
+  let writtenError:
+    | {
+      stage: "managed-app-server";
+      appServerAddress: string;
+      message: string;
+      diagnostics?: string;
+      occurredAt: string;
+    }
+    | undefined;
+
+  await expect(
+    startCodeHelm({
+      ...createAppConfig(),
+      codex: {
+        appServerUrl: DEFAULT_CODEX_APP_SERVER_URL,
+      },
+    }, {
+      installSignalHandlers: false,
+      mode: "background",
+      stateDir: "/tmp/codehelm-state",
+      managedAppServerPort: 4201,
+      acquireInstanceLock: () => ({
+        pid: process.pid,
+        cleanedStaleState: false,
+      }),
+      clearRuntimeState: () => {
+        calls.push("clear-runtime-state");
+      },
+      writeStartupError: ({ error }) => {
+        calls.push("write-startup-error");
+        writtenError = error;
+      },
+      startManagedCodexAppServer: async () => {
+        throw new CodexSupervisorError(
+          "CODEX_APP_SERVER_FAILED_TO_START",
+          "Managed Codex App Server failed to start.",
+          {
+            startupDisposition: "failed",
+            diagnostics: "address already in use",
+          },
+        );
+      },
+      startRuntime: async () => {
+        throw new Error("runtime should not start");
+      },
+    }),
+  ).rejects.toMatchObject({
+    code: "CODEX_APP_SERVER_FAILED_TO_START",
+  });
+
+  expect(calls).toEqual(["clear-runtime-state", "write-startup-error"]);
+  expect(writtenError).toMatchObject({
+    stage: "managed-app-server",
+    appServerAddress: "ws://127.0.0.1:4201",
+    message: "Managed Codex App Server failed to start.",
+    diagnostics: "address already in use",
+  });
+  expect(typeof writtenError?.occurredAt).toBe("string");
+  expect(new Date(writtenError!.occurredAt).toISOString()).toBe(writtenError!.occurredAt);
+});
+
+test("foreground start does not write startup-error after managed app-server startup failure", async () => {
+  const calls: string[] = [];
+
+  await expect(
+    startCodeHelm({
+      ...createAppConfig(),
+      codex: {
+        appServerUrl: DEFAULT_CODEX_APP_SERVER_URL,
+      },
+    }, {
+      installSignalHandlers: false,
+      mode: "foreground",
+      stateDir: "/tmp/codehelm-state",
+      managedAppServerPort: 4201,
+      acquireInstanceLock: () => ({
+        pid: process.pid,
+        cleanedStaleState: false,
+      }),
+      clearRuntimeState: () => {
+        calls.push("clear-runtime-state");
+      },
+      writeStartupError: () => {
+        calls.push("write-startup-error");
+      },
+      startManagedCodexAppServer: async () => {
+        throw new CodexSupervisorError(
+          "CODEX_APP_SERVER_FAILED_TO_START",
+          "Managed Codex App Server failed to start.",
+          {
+            startupDisposition: "failed",
+            diagnostics: "address already in use",
+          },
+        );
+      },
+      startRuntime: async () => {
+        throw new Error("runtime should not start");
+      },
+    }),
+  ).rejects.toMatchObject({
+    code: "CODEX_APP_SERVER_FAILED_TO_START",
+  });
+
+  expect(calls).toEqual(["clear-runtime-state"]);
+});
+
 test("startCodeHelm starts managed Codex App Server in foreground using current cwd", async () => {
   let receivedCwd: string | undefined;
 
