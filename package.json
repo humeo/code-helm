@@ -1,6 +1,6 @@
 {
   "name": "code-helm",
-  "version": "0.2.10",
+  "version": "0.2.11",
   "description": "Control local Codex sessions from Discord: approve, resume, interrupt, and monitor AI coding work from your phone.",
   "license": "MIT",
   "bin": {
